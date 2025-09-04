@@ -24,7 +24,7 @@ This function takes a system of ordinary differential equations (ODEs) defined a
 \enumerate{
 \item Computes the Jacobian matrix with respect to state variables.
 \item Computes the explicit time derivatives of each ODE.
-\item Generates a C++ struct suitable for use in stiff solvers with automatic differentiation (AD).
+\item Generates a C++ struct suitable for use in stiff solvers of Boost.Odeint with automatic differentiation (AD) type CppAD::AD.
 }
 }
 \details{
@@ -32,7 +32,7 @@ The C++ code replaces:
 \itemize{
 \item state variables with \verb{x[0..n-1]},
 \item initial values with \verb{params[0..n-1]},
-\item parameters with \code{params[n..]},
+\item dynamical parameters with \code{params[n..]},
 \item time variable with \code{t}.
 }
 }

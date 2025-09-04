@@ -3,12 +3,12 @@
 #' This function takes a system of ordinary differential equations (ODEs) defined as character strings and:
 #' 1. Computes the Jacobian matrix with respect to state variables.
 #' 2. Computes the explicit time derivatives of each ODE.
-#' 3. Generates a C++ struct suitable for use in stiff solvers with automatic differentiation (AD).
+#' 3. Generates a C++ struct suitable for use in stiff solvers of Boost.Odeint with automatic differentiation (AD) type CppAD::AD.
 #'
 #' The C++ code replaces:
 #' - state variables with `x[0..n-1]`,
 #' - initial values with `params[0..n-1]`,
-#' - parameters with `params[n..]`,
+#' - dynamical parameters with `params[n..]`,
 #' - time variable with `t`.
 #'
 #' @param odes Named character vector of ODEs. Names correspond to state variables.
