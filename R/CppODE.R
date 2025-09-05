@@ -1,154 +1,240 @@
-#' Generate a generic Boost.Odeint observer (C++ code)
+#' Generate full C++ code for an ODE model with sensitivities
 #'
-#' This function generates a C++ `observer` struct for Boost.Odeint that
-#' (1) records states at each observer callback and
-#' (2) applies **fixed-time events** with a configurable time tolerance.
+#' This function orchestrates ODE definition, Jacobian generation,
+#' event handling, and sensitivity calculation into a complete C++ file.
 #'
-#' Notes:
-#' - Root (zero-crossing) events are **not** handled here, because an observer
-#'   only sees the current (x, t). Robust root handling requires bracketing and
-#'   refinement in the integration loop (sign change between successive states),
-#'   which should be emitted separately.
-#' - Event methods supported: "replace", "add".
-#' - The observer is generic in the number of states; it pushes back all `x[i]`
-#'   to a flat output vector `y` at each callback.
+#' @param odes Named character vector of ODEs.
+#' @param events Optional data.frame of fixed-time events (see GetBoostObserver).
+#' @param fixed Not yet implemented.
+#' @param compile Logical, compile immediately into shared library?
+#' @param modelname Optional string, defaults to random.
+#' @param deriv Logical, include first derivatives (Jacobian)?
+#' @param secderiv Logical, include second derivatives (Hessian)?
+#' @param verbose Logical, print progress?
 #'
-#' @param states Character vector of state names (order defines x indices).
-#' @param events Data frame of events with columns:
-#'   \describe{
-#'     \item{var}{State name the event targets (one of `states`).}
-#'     \item{time}{Numeric time for fixed-time event (use `NA` for root events).}
-#'     \item{value}{Numeric value (used with method).}
-#'     \item{method}{Character: "replace" or "add". `NA` is treated as "replace".}
-#'     \item{root}{Optional character expression for root event (ignored here).}
-#'   }
-#'   Only rows with non-`NA` `time` are embedded in the observer. Root events
-#'   are intentionally skipped (they require a custom integration loop).
-#' @param time_tol Numeric tolerance for matching fixed event times. If `NULL`,
-#'   exact comparison (`==`) is used. Recommended: a small value like `1e-10`.
+#' @return Character string of full C++ code.
+#' @export
+CppFun <- function(odes, events = NULL, fixed = NULL,
+                   compile = TRUE, modelname = NULL,
+                   deriv = TRUE, secderiv = FALSE, verbose = FALSE) {
+
+  odes <- unclass(odes)
+  odes <- gsub("\n", "", odes)
+  odes_attr <- attributes(odes)
+
+  # States & params
+  states <- names(odes)
+  symbols <- getSymbols(c(odes, if (!is.null(events)) c(events$value, events$time)))
+  params <- setdiff(symbols, c(states, "time"))
+
+  if (is.null(modelname)) {
+    modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
+  }
+
+  # --- Generate ODE system code ---
+  sympy   <- reticulate::import("sympy")
+  parser  <- reticulate::import("sympy.parsing.sympy_parser")
+
+  syms_states <- lapply(states, function(s) sympy$Symbol(s, real = TRUE))
+  names(syms_states) <- states
+  syms_params <- lapply(params, function(p) sympy$Symbol(p, real = TRUE))
+  names(syms_params) <- params
+  local_dict <- c(syms_states, syms_params)
+  local_dict[["time"]] <- sympy$Symbol("time", real = TRUE)
+
+  transformations <- reticulate::tuple(
+    c(parser$standard_transformations,
+      list(parser$convert_xor, parser$implicit_multiplication_application))
+  )
+
+  includings <- c("#define R_NO_REMAP",
+                  "#include <R.h>",
+                  "#include <Rinternals.h>",
+                  "#include <algorithm>",
+                  "#include <vector>",
+                  "#include <cmath>",
+                  "#include <boost/numeric/odeint.hpp>",
+                  "#include <boost/numeric/ublas/vector.hpp>",
+                  "#include <boost/numeric/ublas/matrix.hpp>",
+                  "#include <cppad/cppad.hpp>")
+
+  usings <- c("using namespace boost::numeric::odeint;",
+              "using boost::numeric::ublas::vector;",
+              "using boost::numeric::ublas::matrix;",
+              "using AD = CppAD::AD<double>;")
+
+  ode_lines <- c(
+    "// ODE system",
+    "struct ode_system {",
+    "  std::vector<AD> params;",
+    "  void operator()(const vector<AD>& x, vector<AD>& dxdt, const AD& t) {"
+  )
+  for (i in seq_along(states)) {
+    expr <- parser$parse_expr(odes[[i]],
+                              local_dict      = local_dict,
+                              transformations = transformations,
+                              evaluate        = TRUE)
+    rhs <- Sympy2CppCode(expr, states, params, length(states), expr_name = states[i])
+    ode_lines <- c(ode_lines, sprintf("    dxdt[%d] = %s;", i-1, rhs))
+  }
+  ode_lines <- c(ode_lines, "  }", "};")
+  ode_lines <- paste(ode_lines, collapse = "\n")
+
+  # --- Jacobian code (always required) ---
+  jac <- ComputeJacobianSymb(odes, states = states, params = params)
+  jac_lines <- attr(jac, "CppCode")
+
+  # --- Observer code (always generate, even if events = NULL) ---
+  observer_lines <- GetBoostObserver(states, params, events)
+
+  main
+
+
+
+  return(modelname)
+}
+
+
+
+
+#' Generate Boost.Odeint observer (fixed-time events with params)
 #'
-#' @return A single character string with the full C++ code for:
-#'   - an `apply_event` helper,
-#'   - an `observer` struct that records outputs and applies fixed-time events.
-#'   The code uses `CppAD::AD<double>` as `AD` and `boost::numeric::ublas::vector<AD>` as state.
+#' This function generates C++ code for a `Boost.Odeint` observer struct
+#' that records states at each callback and applies **fixed-time events**
+#' exactly when `curr_t == time`.
+#'
+#' Features:
+#' - Events are applied at exact times (no tolerance).
+#' - Each event appears at most once (no counters needed).
+#' - Allowed methods:
+#'   * `1` or `"replace"` → overwrite the state with value
+#'   * `2` or `"add"`     → add value to the state
+#'   * `3` or `"multiply"`→ multiply the state with value
+#' - Event `time` and `value` can be:
+#'   * numeric constants
+#'   * state names (replaced with `x[index]`)
+#'   * parameter names (replaced with `p[index]`, where indices follow after the states)
+#'
+#' @param states Character vector of state names (order defines `x[i]` indices).
+#' @param params Character vector of parameter names (order defines `p[j]` indices,
+#'        shifted by `length(states)` in generated code).
+#' @param events Optional data frame with columns:
+#'   - `var`: state name the event targets
+#'   - `time`: numeric constant, state name, or parameter name
+#'   - `value`: numeric constant, state name, or parameter name
+#'   - `method`: integer (1,2,3) or string ("replace","add","multiply")
+#'
+#' @return A single character string containing the C++ observer code.
+#'
 #' @examples
+#' states <- c("A","B")
+#' params <- c("p1","p2")
+#'
 #' ev <- data.frame(
 #'   var    = c("A","B","A"),
-#'   time   = c(1, 2, 5),
-#'   value  = c(0.5, 1.0, 2.0),
-#'   method = c("replace", "add", NA),
-#'   root   = c(NA, NA, NA),
+#'   time   = c("p1", "2.0", "5.0"),
+#'   value  = c("A", "p2", "3.0"),
+#'   method = c("replace", "add", "multiply"),
 #'   stringsAsFactors = FALSE
 #' )
-#' code <- GetBoostObserver(states = c("A","B"), events = ev, time_tol = 1e-10)
-#' cat(code)
+#'
+#' code1 <- GetBoostObserver(states, params, ev)
+#' code2 <- GetBoostObserver(states, params)  # no events
+#' cat(code1)
+#' cat(code2)
+#'
 #' @export
-GetBoostObserver <- function(states, events, time_tol = NULL) {
+GetBoostObserver <- function(states, params, events = NULL) {
   stopifnot(is.character(states), length(states) >= 1L)
+  stopifnot(is.character(params))
 
-  # Validate events
-  req_cols <- c("var", "time", "value", "method", "root")
-  if (!all(req_cols %in% names(events))) {
-    stop("`events` must have columns: var, time, value, method, root")
-  }
-  if (any(!events$var %in% states)) {
-    stop("All events$var must be one of the given `states`.")
-  }
-  # Default method: replace
-  events$method[is.na(events$method)] <- "replace"
-  # Accept only replace/add here
-  if (any(!tolower(events$method) %in% c("replace","add"))) {
-    stop("Only event methods 'replace' and 'add' are supported in this observer.")
-  }
+  ev_checks <- ""
+  n_ev <- 0L
 
-  # Use only fixed-time events in the observer
-  fixed <- events[!is.na(events$time), , drop = FALSE]
-
-  # Map state name -> index
-  idx_of <- function(name, vec) match(name, vec) - 1L
-
-  # Build the fixed-event checks inside operator()(x, t)
-  if (nrow(fixed) == 0L) {
-    ev_checks <- "    // no fixed-time events"
-  } else {
-    # Time tolerance condition string
-    if (is.null(time_tol)) {
-      time_cond <- function(tt) sprintf("curr_t == %s", tt)
-    } else {
-      tol <- sprintf("%.17g", time_tol)
-      time_cond <- function(tt) sprintf("std::fabs(curr_t - %s) <= %s", tt, tol)
+  if (!is.null(events)) {
+    req_cols <- c("var", "time", "value", "method")
+    if (!all(req_cols %in% names(events))) {
+      stop("`events` must have columns: var, time, value, method")
+    }
+    if (any(!events$var %in% states)) {
+      stop("All events$var must be one of the given `states`.")
     }
 
-    # One counter per event to enforce 'fire once'
-    checks <- character(nrow(fixed))
-    for (i in seq_len(nrow(fixed))) {
-      vi   <- idx_of(fixed$var[i], states)
-      tt   <- sprintf("%.17g", fixed$time[i])
-      val  <- sprintf("%.17g", fixed$value[i])
-      meth <- fixed$method[i]
+    # Map method to integer 1/2/3
+    method_map <- c("replace" = 1L, "add" = 2L, "multiply" = 3L)
+    events$method <- vapply(events$method, function(m) {
+      if (is.numeric(m)) {
+        if (!(m %in% 1:3)) stop("Method integers must be 1, 2 or 3.")
+        as.integer(m)
+      } else if (is.character(m)) {
+        ml <- tolower(m)
+        if (!ml %in% names(method_map)) stop("Unknown method: ", m)
+        method_map[ml]
+      } else {
+        stop("Invalid method type: must be integer or string.")
+      }
+    }, integer(1))
+
+    # Map to C++ expression
+    cpp_expr <- function(x) {
+      num <- suppressWarnings(as.numeric(x))
+      if (!is.na(num)) return(sprintf("%.17g", num))
+      si <- match(x, states)
+      if (!is.na(si)) return(sprintf("x[%d]", si - 1L))
+      pi <- match(x, params)
+      if (!is.na(pi)) return(sprintf("p[%d]", length(states) + pi - 1L))
+      stop("Unknown symbol in event: ", x)
+    }
+
+    idx_of <- function(name) match(name, states) - 1L
+
+    checks <- character(nrow(events))
+    for (i in seq_len(nrow(events))) {
+      vi    <- idx_of(events$var[i])
+      texpr <- cpp_expr(events$time[i])
+      vexpr <- cpp_expr(events$value[i])
+      meth  <- events$method[i]
       checks[i] <- sprintf(
-        "    if (%s && evt[%d] < 1) { apply_event(x, %d, \"%s\", %s); evt[%d]++; }",
-        time_cond(tt), i - 1L, vi, meth, val, i - 1L
+        "    if (curr_t == %s) { apply_event(x, %d, %d, %s); }",
+        texpr, vi, meth, vexpr
       )
     }
     ev_checks <- paste(checks, collapse = "\n")
+    n_ev <- nrow(events)
   }
 
-  # Number of fixed events (for evt counters)
-  n_fixed <- nrow(fixed)
-
-  # Emit C++ helper and observer
-  cpp <- sprintf('
-/* -------------------------------------------
- * Helper to apply an event to a state vector
- * ------------------------------------------- */
-inline void apply_event(vector<AD>& x, int var_index, const std::string& method, double value) {
-  if (method == "replace") {
-    x[var_index] = AD(value);
-  } else if (method == "add") {
-    x[var_index] = x[var_index] + AD(value);
-  } else {
-    // Unknown method: default to replace
-    x[var_index] = AD(value);
+  cpp_code <- sprintf('
+inline void apply_event(vector<AD>& x, int var_index, int method, const AD& value) {
+  if (method == 1) {
+    x[var_index] = value;                 // replace
+  } else if (method == 2) {
+    x[var_index] = x[var_index] + value;  // add
+  } else if (method == 3) {
+    x[var_index] = x[var_index] * value;  // multiply
   }
 }
 
-/* -----------------------------------------------------------
- * Generic observer for Boost.Odeint with CppAD state type.
- *
- * Responsibilities:
- *  - Push current time and state to output containers.
- *  - Fire fixed-time events when the current time matches
- *    the event time (within a user-specified tolerance).
- *
- * Notes:
- *  - Root (zero-crossing) events are NOT handled here.
- *    They must be detected and refined in the integration
- *    loop (bracketing + bisection) before applying events.
- * ----------------------------------------------------------- */
 struct observer {
-  std::vector<AD>& times;  // recorded times (AD for compatibility with the tape)
-  std::vector<AD>& y;      // flattened state outputs: x[0], ..., x[n-1] per row
-  std::vector<int>& evt;   // one-shot counters for fixed-time events
-  explicit observer(std::vector<AD>& t, std::vector<AD>& y_, std::vector<int>& ec)
-    : times(t), y(y_), evt(ec) {}
+  std::vector<AD>& times;
+  std::vector<AD>& y;
+  const vector<AD>& p;
+
+  explicit observer(std::vector<AD>& t, std::vector<AD>& y_, const vector<AD>& p_)
+    : times(t), y(y_), p(p_) {}
 
   void operator()(vector<AD>& x, const AD& t) {
     const double curr_t = CppAD::Value(t);
-
-    // Fire fixed-time events (if any)
 %s
-
-    // Record time and states
     times.push_back(t);
-    for (size_t i = 0; i < x.size(); ++i) {
-      y.push_back(x[i]);
-    }
+    for (size_t i = 0; i < x.size(); ++i) y.push_back(x[i]);
   }
 };
 
-// Number of fixed-time events in this observer: %d
-', ev_checks, n_fixed)
+// Number of fixed-time events: %d
+', if (nzchar(ev_checks)) paste0("\n", ev_checks, "\n") else "", n_ev)
 
-  cpp
+  attr(cpp_code, "EventNumber") <- n_ev
+  return(cpp_code)
 }
+
+

@@ -2,61 +2,66 @@
 % Please edit documentation in R/CppODE.R
 \name{GetBoostObserver}
 \alias{GetBoostObserver}
-\title{Generate a generic Boost.Odeint observer (C++ code)}
+\title{Generate Boost.Odeint observer (fixed-time events with params)}
 \usage{
-GetBoostObserver(states, events, time_tol = NULL)
+GetBoostObserver(states, params, events = NULL)
 }
 \arguments{
-\item{states}{Character vector of state names (order defines x indices).}
+\item{states}{Character vector of state names (order defines \code{x[i]} indices).}
 
-\item{events}{Data frame of events with columns:
-\describe{
-\item{var}{State name the event targets (one of \code{states}).}
-\item{time}{Numeric time for fixed-time event (use \code{NA} for root events).}
-\item{value}{Numeric value (used with method).}
-\item{method}{Character: "replace" or "add". \code{NA} is treated as "replace".}
-\item{root}{Optional character expression for root event (ignored here).}
-}
-Only rows with non-\code{NA} \code{time} are embedded in the observer. Root events
-are intentionally skipped (they require a custom integration loop).}
+\item{params}{Character vector of parameter names (order defines \code{p[j]} indices,
+shifted by \code{length(states)} in generated code).}
 
-\item{time_tol}{Numeric tolerance for matching fixed event times. If \code{NULL},
-exact comparison (\code{==}) is used. Recommended: a small value like \code{1e-10}.}
+\item{events}{Optional data frame with columns:
+\itemize{
+\item \code{var}: state name the event targets
+\item \code{time}: numeric constant, state name, or parameter name
+\item \code{value}: numeric constant, state name, or parameter name
+\item \code{method}: integer (1,2,3) or string ("replace","add","multiply")
+}}
 }
 \value{
-A single character string with the full C++ code for:
-\itemize{
-\item an \code{apply_event} helper,
-\item an \code{observer} struct that records outputs and applies fixed-time events.
-The code uses \verb{CppAD::AD<double>} as \code{AD} and \verb{boost::numeric::ublas::vector<AD>} as state.
-}
+A single character string containing the C++ observer code.
 }
 \description{
-This function generates a C++ \code{observer} struct for Boost.Odeint that
-(1) records states at each observer callback and
-(2) applies \strong{fixed-time events} with a configurable time tolerance.
+This function generates C++ code for a \code{Boost.Odeint} observer struct
+that records states at each callback and applies \strong{fixed-time events}
+exactly when \code{curr_t == time}.
 }
 \details{
-Notes:
+Features:
 \itemize{
-\item Root (zero-crossing) events are \strong{not} handled here, because an observer
-only sees the current (x, t). Robust root handling requires bracketing and
-refinement in the integration loop (sign change between successive states),
-which should be emitted separately.
-\item Event methods supported: "replace", "add".
-\item The observer is generic in the number of states; it pushes back all \code{x[i]}
-to a flat output vector \code{y} at each callback.
+\item Events are applied at exact times (no tolerance).
+\item Each event appears at most once (no counters needed).
+\item Allowed methods:
+\itemize{
+\item \code{1} or \code{"replace"} → overwrite the state with value
+\item \code{2} or \code{"add"}     → add value to the state
+\item \code{3} or \code{"multiply"}→ multiply the state with value
+}
+\item Event \code{time} and \code{value} can be:
+\itemize{
+\item numeric constants
+\item state names (replaced with \code{x[index]})
+\item parameter names (replaced with \code{p[index]}, where indices follow after the states)
+}
 }
 }
 \examples{
+states <- c("A","B")
+params <- c("p1","p2")
+
 ev <- data.frame(
   var    = c("A","B","A"),
-  time   = c(1, 2, 5),
-  value  = c(0.5, 1.0, 2.0),
-  method = c("replace", "add", NA),
-  root   = c(NA, NA, NA),
+  time   = c("p1", "2.0", "5.0"),
+  value  = c("A", "p2", "3.0"),
+  method = c("replace", "add", "multiply"),
   stringsAsFactors = FALSE
 )
-code <- GetBoostObserver(states = c("A","B"), events = ev, time_tol = 1e-10)
-cat(code)
+
+code1 <- GetBoostObserver(states, params, ev)
+code2 <- GetBoostObserver(states, params)  # no events
+cat(code1)
+cat(code2)
+
 }

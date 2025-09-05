@@ -4,41 +4,50 @@
 \alias{ComputeJacobianSymb}
 \title{Compute the Jacobian of a system of ODEs and generate C++ code}
 \usage{
-ComputeJacobianSymb(odes, time_var = "time")
+ComputeJacobianSymb(odes, states = NULL, params = NULL)
 }
 \arguments{
-\item{odes}{Named character vector of ODEs. Names correspond to state variables.}
+\item{odes}{Named character vector of ODE right-hand sides.
+Names correspond to state variables.}
 
-\item{time_var}{Character. The name of the time variable in the ODEs (default: "time").}
+\item{states}{Character vector of state variable names.
+If \code{NULL}, taken from \code{names(odes)}.}
+
+\item{params}{Character vector of parameter names (excluding state and "time").
+If \code{NULL}, inferred automatically.}
 }
 \value{
 A list with:
 \describe{
 \item{f.x}{Jacobian matrix entries as strings (R representation).}
-\item{f.t}{Explicit derivatives with respect to time as strings (R representation).}
+\item{f.time}{Explicit derivatives with respect to time as strings.}
 }
-The returned list has an attribute \code{CppCode} containing the full C++ struct code.
+The returned list has an attribute \code{CppCode} containing the full C++ struct.
 }
 \description{
-This function takes a system of ordinary differential equations (ODEs) defined as character strings and:
+This function takes a system of ordinary differential equations (ODEs) defined
+as character strings and:
 \enumerate{
-\item Computes the Jacobian matrix with respect to state variables.
+\item Computes the Jacobian matrix with respect to the state variables.
 \item Computes the explicit time derivatives of each ODE.
-\item Generates a C++ struct suitable for use in stiff solvers of Boost.Odeint with automatic differentiation (AD) type CppAD::AD.
+\item Generates a C++ struct suitable for stiff solvers in Boost.Odeint,
+using \code{CppAD::AD} for automatic differentiation.
 }
 }
 \details{
-The C++ code replaces:
+The mapping to C++ is:
 \itemize{
-\item state variables with \verb{x[0..n-1]},
-\item initial values with \verb{params[0..n-1]},
-\item dynamical parameters with \code{params[n..]},
-\item time variable with \code{t}.
+\item State variables \code{x1,...,xn} → \code{x[0],...,x[n-1]}.
+\item Initial values \code{x1_0,...,xn_0} → \code{params[0],...,params[n-1]}.
+\item Dynamical parameters \code{p1,...,pm} → \code{params[n],...,params[n+m-1]}.
+\item The time variable \code{time} → \code{t}.
 }
 }
 \examples{
 odes <- c(x = "v", v = "mu*(1 - x^2)*v - x")
 res <- ComputeJacobianSymb(odes)
+res$f.x
+res$f.time
 cat(attr(res, "CppCode"))
 }
 \author{

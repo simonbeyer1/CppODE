@@ -2,9 +2,9 @@
 % Please edit documentation in R/symbolics.R
 \name{Sympy2CppCode}
 \alias{Sympy2CppCode}
-\title{Convert a SymPy expression to C++ code suitable for AD solvers}
+\title{Convert a SymPy expression to C++ code suitable for Boost solvers with CppAD}
 \usage{
-Sympy2CppCode(expr, states, params, n, time_var, expr_name = NULL)
+Sympy2CppCode(expr, states, params, n, expr_name = NULL)
 }
 \arguments{
 \item{expr}{SymPy expression.}
@@ -15,22 +15,25 @@ Sympy2CppCode(expr, states, params, n, time_var, expr_name = NULL)
 
 \item{n}{Number of states.}
 
-\item{time_var}{Name of the time variable.}
-
-\item{expr_name}{Optional. Name of the ODE for error messages.}
+\item{expr_name}{Optional. Name of the ODE (used only in error messages).}
+}
+\value{
+A character string with valid C++ code for use in AD solvers.
 }
 \description{
-This internal function converts a SymPy expression into C++ code, replacing:
+This internal function converts a SymPy expression into valid C++ code,
+replacing symbols according to the following rules:
 \itemize{
-\item states with \verb{x[0..n-1]},
-\item initial values with \verb{params[0..n-1]},
-\item parameters with \code{params[n..]},
-\item time symbol with \code{t}.
+\item States \code{s1,...,sn} → \code{x[0],...,x[n-1]}.
+\item Initial values \code{s1_0,...,sn_0} → \code{params[0],...,params[n-1]}.
+\item Parameters \code{p1,...,pm} → \code{params[n],...,params[n+m-1]}.
+\item The time variable \code{time} → \code{t}.
 }
 }
 \details{
-Throws an error if the expression contains functions not supported in C++.
+Throws an error if the expression contains constructs not supported in C++.
 }
 \author{
-Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
+Simon Beyer
 }
+\keyword{internal}

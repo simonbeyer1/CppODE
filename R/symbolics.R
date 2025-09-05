@@ -1,66 +1,77 @@
 #' Compute the Jacobian of a system of ODEs and generate C++ code
 #'
-#' This function takes a system of ordinary differential equations (ODEs) defined as character strings and:
-#' 1. Computes the Jacobian matrix with respect to state variables.
-#' 2. Computes the explicit time derivatives of each ODE.
-#' 3. Generates a C++ struct suitable for use in stiff solvers of Boost.Odeint with automatic differentiation (AD) type CppAD::AD.
+#' This function takes a system of ordinary differential equations (ODEs) defined
+#' as character strings and:
+#' \enumerate{
+#'   \item Computes the Jacobian matrix with respect to the state variables.
+#'   \item Computes the explicit time derivatives of each ODE.
+#'   \item Generates a C++ struct suitable for stiff solvers in Boost.Odeint,
+#'         using \code{CppAD::AD} for automatic differentiation.
+#' }
 #'
-#' The C++ code replaces:
-#' - state variables with `x[0..n-1]`,
-#' - initial values with `params[0..n-1]`,
-#' - dynamical parameters with `params[n..]`,
-#' - time variable with `t`.
+#' The mapping to C++ is:
+#' \itemize{
+#'   \item State variables \code{x1,...,xn} → \code{x[0],...,x[n-1]}.
+#'   \item Initial values \code{x1_0,...,xn_0} → \code{params[0],...,params[n-1]}.
+#'   \item Dynamical parameters \code{p1,...,pm} → \code{params[n],...,params[n+m-1]}.
+#'   \item The time variable \code{time} → \code{t}.
+#' }
 #'
-#' @param odes Named character vector of ODEs. Names correspond to state variables.
-#' @param time_var Character. The name of the time variable in the ODEs (default: "time").
-#'
-#' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
+#' @param odes Named character vector of ODE right-hand sides.
+#'   Names correspond to state variables.
+#' @param states Character vector of state variable names.
+#'   If \code{NULL}, taken from \code{names(odes)}.
+#' @param params Character vector of parameter names (excluding state and "time").
+#'   If \code{NULL}, inferred automatically.
 #'
 #' @return A list with:
 #' \describe{
 #'   \item{f.x}{Jacobian matrix entries as strings (R representation).}
-#'   \item{f.t}{Explicit derivatives with respect to time as strings (R representation).}
+#'   \item{f.time}{Explicit derivatives with respect to time as strings.}
 #' }
-#' The returned list has an attribute `CppCode` containing the full C++ struct code.
+#' The returned list has an attribute \code{CppCode} containing the full C++ struct.
+#'
+#' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
 #' @export
-#' @importFrom reticulate import
 #' @examples
 #' odes <- c(x = "v", v = "mu*(1 - x^2)*v - x")
 #' res <- ComputeJacobianSymb(odes)
+#' res$f.x
+#' res$f.time
 #' cat(attr(res, "CppCode"))
-ComputeJacobianSymb <- function(odes, time_var = "time") {
+ComputeJacobianSymb <- function(odes, states = NULL, params = NULL) {
   # Import SymPy + Parser via reticulate
   sympy   <- reticulate::import("sympy")
   parser  <- reticulate::import("sympy.parsing.sympy_parser")
 
   # --- Define state variables ---
-  states <- names(odes)
+  if (is.null(states)) states <- names(odes)
   n <- length(states)
   syms_states <- lapply(states, function(s) sympy$Symbol(s, real = TRUE))
   names(syms_states) <- states
 
-  # --- Identify parameters (anything not a state or time variable) ---
-  params <- setdiff(getSymbols(odes), c(states, time_var))
+  # --- Identify parameters ---
+  if (is.null(params)) {
+    params <- setdiff(getSymbols(odes), c(states, "time"))
+  }
   m <- length(params)
   syms_params <- lapply(params, function(p) sympy$Symbol(p, real = TRUE))
   names(syms_params) <- params
 
   # --- Define time symbol ---
-  t <- sympy$Symbol(time_var, real = TRUE)
+  t <- sympy$Symbol("time", real = TRUE)
 
   # --- Build local dict for the parser ---
   local_dict <- c(syms_states, syms_params)
-  local_dict[[time_var]] <- t
+  local_dict[["time"]] <- t
 
-  # --- Parser transformations to make R-like input SymPy-friendly ---
-  # convert_xor:   interprets ^ as ** (power)
-  # implicit_mult: allows 2x, x(y+1), etc.
+  # --- Parser transformations (for ^ and implicit mult) ---
   transformations <- reticulate::tuple(
     c(parser$standard_transformations,
       list(parser$convert_xor, parser$implicit_multiplication_application))
   )
 
-  # --- Parse ODEs into SymPy expressions (now ^ works) ---
+  # --- Parse ODEs into SymPy expressions ---
   exprs <- lapply(odes, function(eq)
     parser$parse_expr(eq,
                       local_dict       = local_dict,
@@ -70,12 +81,12 @@ ComputeJacobianSymb <- function(odes, time_var = "time") {
 
   # --- Compute R matrices for Jacobian and explicit time derivatives ---
   f.x <- matrix("", nrow = n, ncol = n, dimnames = list(states, states))
-  f.t <- character(n)
+  f.time <- character(n)
   for (i in seq_along(states)) {
     for (j in seq_along(states)) {
       f.x[i, j] <- as.character(sympy$diff(exprs[[i]], syms_states[[j]]))
     }
-    f.t[i] <- as.character(sympy$diff(exprs[[i]], t))
+    f.time[i] <- as.character(sympy$diff(exprs[[i]], t))
   }
 
   # --- Generate C++ code ---
@@ -88,46 +99,49 @@ ComputeJacobianSymb <- function(odes, time_var = "time") {
 
   for (i in seq_len(n)) {
     for (j in seq_len(n)) {
-      code <- Sympy2CppCode(sympy$diff(exprs[[i]], syms_states[[j]]), states, params, n, time_var, expr_name = states[i])
+      code <- Sympy2CppCode(sympy$diff(exprs[[i]], syms_states[[j]]), states, params, n, expr_name = states[i])
       cpp_lines <- c(cpp_lines, sprintf("    J(%d,%d)=%s;", i-1, j-1, code))
     }
   }
 
   for (i in seq_len(n)) {
-    code <- Sympy2CppCode(sympy$diff(exprs[[i]], t), states, params, n, time_var, expr_name = states[i])
+    code <- Sympy2CppCode(sympy$diff(exprs[[i]], t), states, params, n, expr_name = states[i])
     cpp_lines <- c(cpp_lines, sprintf("    dfdt[%d]=%s;", i-1, code))
   }
 
   cpp_lines <- c(cpp_lines, "  }", "};")
   cpp_code <- paste(cpp_lines, collapse = "\n")
 
-  out <- list(f.x = f.x, f.t = f.t)
+  out <- list(f.x = f.x, f.time = f.time)
   attr(out, "CppCode") <- cpp_code
   return(out)
 }
 
 
-
-#' Convert a SymPy expression to C++ code suitable for AD solvers
+#' Convert a SymPy expression to C++ code suitable for Boost solvers with CppAD
 #'
-#' This internal function converts a SymPy expression into C++ code, replacing:
-#' - states with `x[0..n-1]`,
-#' - initial values with `params[0..n-1]`,
-#' - parameters with `params[n..]`,
-#' - time symbol with `t`.
+#' This internal function converts a SymPy expression into valid C++ code,
+#' replacing symbols according to the following rules:
+#' \itemize{
+#'   \item States \code{s1,...,sn} → \code{x[0],...,x[n-1]}.
+#'   \item Initial values \code{s1_0,...,sn_0} → \code{params[0],...,params[n-1]}.
+#'   \item Parameters \code{p1,...,pm} → \code{params[n],...,params[n+m-1]}.
+#'   \item The time variable \code{time} → \code{t}.
+#' }
 #'
-#' Throws an error if the expression contains functions not supported in C++.
+#' Throws an error if the expression contains constructs not supported in C++.
 #'
 #' @param expr SymPy expression.
 #' @param states Character vector of state variable names.
 #' @param params Character vector of parameter names.
 #' @param n Number of states.
-#' @param time_var Name of the time variable.
-#' @param expr_name Optional. Name of the ODE for error messages.
+#' @param expr_name Optional. Name of the ODE (used only in error messages).
 #'
-#' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
+#' @return A character string with valid C++ code for use in AD solvers.
 #'
-Sympy2CppCode <- function(expr, states, params, n, time_var, expr_name = NULL) {
+#' @keywords internal
+#' @author Simon Beyer
+Sympy2CppCode <- function(expr, states, params, n, expr_name = NULL) {
   sympy <- reticulate::import("sympy")
   code <- sympy$cxxcode(expr, standard = "c++17", strict = FALSE)
 
@@ -139,13 +153,21 @@ Sympy2CppCode <- function(expr, states, params, n, time_var, expr_name = NULL) {
     ))
   }
 
-  for (i in seq_along(states)) code <- gsub(paste0("\\b", states[i], "\\b"), sprintf("x[%d]", i-1), code)
-  for (i in seq_along(states)) code <- gsub(paste0("\\b", states[i], "_0\\b"), sprintf("params[%d]", i-1), code)
-  for (i in seq_along(params)) code <- gsub(paste0("\\b", params[i], "\\b"), sprintf("params[%d]", n + i - 1), code)
-  code <- gsub(paste0("\\b", time_var, "\\b"), "t", code)
+  # Replace state vars
+  for (i in seq_along(states)) {
+    code <- gsub(paste0("\\b", states[i], "\\b"), sprintf("x[%d]", i-1), code)
+    code <- gsub(paste0("\\b", states[i], "_0\\b"), sprintf("params[%d]", i-1), code)
+  }
+  # Replace parameters
+  for (i in seq_along(params)) {
+    code <- gsub(paste0("\\b", params[i], "\\b"), sprintf("params[%d]", n + i - 1), code)
+  }
+  # Replace time
+  code <- gsub("\\btime\\b", "t", code)
 
   gsub("\\s+", "", code)
 }
+
 
 
 #' Replace symbols in a character vector by other symbols
