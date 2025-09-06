@@ -23,6 +23,7 @@
 #'   If \code{NULL}, taken from \code{names(odes)}.
 #' @param params Character vector of parameter names (excluding state and "time").
 #'   If \code{NULL}, inferred automatically.
+#' @param numType Character describing the numerical type
 #'
 #' @return A list with:
 #' \describe{
@@ -32,6 +33,7 @@
 #' The returned list has an attribute \code{CppCode} containing the full C++ struct.
 #'
 #' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
+#' @import reticulate
 #' @export
 #' @examples
 #' odes <- c(x = "v", v = "mu*(1 - x^2)*v - x")
@@ -39,7 +41,7 @@
 #' res$f.x
 #' res$f.time
 #' cat(attr(res, "CppCode"))
-ComputeJacobianSymb <- function(odes, states = NULL, params = NULL) {
+ComputeJacobianSymb <- function(odes, states = NULL, params = NULL, numType = "AD") {
   # Import SymPy + Parser via reticulate
   sympy   <- reticulate::import("sympy")
   parser  <- reticulate::import("sympy.parsing.sympy_parser")
@@ -93,8 +95,8 @@ ComputeJacobianSymb <- function(odes, states = NULL, params = NULL) {
   cpp_lines <- c(
     "// Jacobian for stiff solver",
     "struct jacobian {",
-    "  vector<AD> params;",
-    "  void operator()(const vector<AD>& x, matrix<AD>& J, const AD& t, vector<AD>& dfdt) {"
+    sprintf("  vector<%s> params;", numType),
+    sprintf("  void operator()(const vector<%s>& x, matrix<%s>& J, const %s& t, vector<%s>& dfdt) {", numType, numType, numType, numType)
   )
 
   for (i in seq_len(n)) {
@@ -110,6 +112,7 @@ ComputeJacobianSymb <- function(odes, states = NULL, params = NULL) {
   }
 
   cpp_lines <- c(cpp_lines, "  }", "};")
+  cpp_lines <- if (numType == "AD") gsub("std::", "CppAD::", cpp_lines, fixed = TRUE) else cpp_lines
   cpp_code <- paste(cpp_lines, collapse = "\n")
 
   out <- list(f.x = f.x, f.time = f.time)
@@ -138,7 +141,7 @@ ComputeJacobianSymb <- function(odes, states = NULL, params = NULL) {
 #' @param expr_name Optional. Name of the ODE (used only in error messages).
 #'
 #' @return A character string with valid C++ code for use in AD solvers.
-#'
+#' @import reticulate
 #' @keywords internal
 #' @author Simon Beyer
 Sympy2CppCode <- function(expr, states, params, n, expr_name = NULL) {

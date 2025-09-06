@@ -13,10 +13,11 @@
 #' @param verbose Logical, print progress?
 #'
 #' @return Character string of full C++ code.
+#' @import reticulate
 #' @export
 CppFun <- function(odes, events = NULL, fixed = NULL,
                    compile = TRUE, modelname = NULL,
-                   deriv = TRUE, secderiv = FALSE, verbose = FALSE) {
+                   derivs = TRUE, secderivs = FALSE, verbose = FALSE) {
 
   odes <- unclass(odes)
   odes <- gsub("\n", "", odes)
@@ -60,14 +61,21 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
 
   usings <- c("using namespace boost::numeric::odeint;",
               "using boost::numeric::ublas::vector;",
-              "using boost::numeric::ublas::matrix;",
-              "using AD = CppAD::AD<double>;")
+              "using boost::numeric::ublas::matrix;")
+
+  # USE CppAD:AD if sensitivities are requested
+  if(derivs || secderiv) {
+    numType = "AD"
+    usings <- c(usings, "using AD = CppAD::AD<double>;")
+  } else {
+    numType = "double"
+  }
 
   ode_lines <- c(
     "// ODE system",
     "struct ode_system {",
-    "  vector<AD> params;",
-    "  void operator()(const vector<AD>& x, vector<AD>& dxdt, const AD& t) {"
+    sprintf("  vector<%s> params;", numType),
+    sprintf("  void operator()(const vector<%s>& x, vector<%s>& dxdt, const %s& t) {", numType, numType, numType)
   )
   for (i in seq_along(states)) {
     expr <- parser$parse_expr(odes[[i]],
@@ -75,16 +83,17 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
                               transformations = transformations,
                               evaluate        = TRUE)
     rhs <- Sympy2CppCode(expr, states, params, length(states), expr_name = states[i])
+    rhs <- if (numType == "AD") gsub("std::", "CppAD::", rhs, fixed = TRUE) else rhs
     ode_lines <- c(ode_lines, sprintf("    dxdt[%d] = %s;", i-1, rhs))
   }
   ode_lines <- c(ode_lines, "  }", "};")
   ode_lines <- paste(ode_lines, collapse = "\n")
 
-  # --- Jacobian code (always required) ---
-  jac <- ComputeJacobianSymb(odes, states = states, params = params)
+  # --- Jacobian code ---
+  jac <- ComputeJacobianSymb(odes, states = states, params = params, numType = numType)
   jac_lines <- attr(jac, "CppCode")
 
-  # --- Observer code (always generate, even if events = NULL) ---
+  # --- Observer code ---
   observer_lines <- GetBoostObserver(states, params, events)
 
   filename <- paste0(modelname, ".cpp")

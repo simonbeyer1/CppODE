@@ -4,7 +4,7 @@
 \alias{ComputeJacobianSymb}
 \title{Compute the Jacobian of a system of ODEs and generate C++ code}
 \usage{
-ComputeJacobianSymb(odes, states = NULL, params = NULL)
+ComputeJacobianSymb(odes, states = NULL, params = NULL, numType = "AD")
 }
 \arguments{
 \item{odes}{Named character vector of ODE right-hand sides.
@@ -15,6 +15,8 @@ If \code{NULL}, taken from \code{names(odes)}.}
 
 \item{params}{Character vector of parameter names (excluding state and "time").
 If \code{NULL}, inferred automatically.}
+
+\item{numType}{Character describing the numerical type}
 }
 \value{
 A list with:
