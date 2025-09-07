@@ -1,5 +1,4 @@
 rm(list = ls(all.names = TRUE))
-
 # Arbeitsverzeichnis auf den Ordner mit integrate_vdp_call.cpp setzen
 .workingDir <- dirname(rstudioapi::getSourceEditorContext()$path)
 setwd(.workingDir)
@@ -7,20 +6,25 @@ setwd(.workingDir)
 library(ggplot2)
 library(dplyr)
 library(tidyverse)
+library(CppODE)
+
+eqns <- c(x = "v", v = "mu * (1 - x^2) * v - x")
+f <- CppODE::CppFun(eqns, modelname = "vdp", deriv = F)
+
 
 Sys.setenv(
   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
   PKG_CXXFLAGS = "-std=c++17 -O3 -Ofast -march=native -DNDEBUG -fPIC"
 )
 
-src <- "integrate_vdp_sens_stiff_events_standalone_2.cpp"   # <— WICHTIG: dieser Dateiname!
+src <- "vdp.cpp"   # <— WICHTIG: dieser Dateiname!
 system2(file.path(R.home("bin"), "R"),
         args = c("CMD","SHLIB","--preclean", src),
         stdout = TRUE, stderr = TRUE)
 
 
 # Shared Library laden
-dyn.load("integrate_vdp_sens_stiff_events_standalone_2.so")
+dyn.load("integrate_vdp_sens_stiff_events_standalone.so")
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
   .Call("solve",
@@ -54,7 +58,6 @@ library(dMod)
 .dmoddir <- file.path(.workingDir, "wd")
 if (!dir.exists(.dmoddir)) dir.create(.dmoddir)
 setwd(.dmoddir)
-eqns <- c(x = "v", v = "mu * (1 - x^2) * v - x")
 events <- eventlist() %>%
   addEvent(var = "x", time = "time_root", value=2, root = "x", method="replace")
   # addEvent(var = "x", time = 5, value=2, root = NA, method="replace")

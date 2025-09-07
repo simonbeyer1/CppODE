@@ -17,7 +17,7 @@
 #' @export
 CppFun <- function(odes, events = NULL, fixed = NULL,
                    compile = TRUE, modelname = NULL,
-                   derivs = TRUE, secderivs = FALSE, verbose = FALSE) {
+                   deriv = TRUE, secderiv = FALSE, verbose = FALSE) {
 
   odes <- unclass(odes)
   odes <- gsub("\n", "", odes)
@@ -64,7 +64,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
               "using boost::numeric::ublas::matrix;")
 
   # USE CppAD:AD if sensitivities are requested
-  if(derivs || secderiv) {
+  if(deriv || secderiv) {
     numType = "AD"
     usings <- c(usings, "using AD = CppAD::AD<double>;")
   } else {
