@@ -4,7 +4,7 @@
 \alias{ComputeJacobianSymb}
 \title{Compute the Jacobian of a system of ODEs and generate C++ code}
 \usage{
-ComputeJacobianSymb(odes, states = NULL, params = NULL, numType = "AD")
+ComputeJacobianSymb(odes, states = NULL, params = NULL, AD = TRUE)
 }
 \arguments{
 \item{odes}{Named character vector of ODE right-hand sides.

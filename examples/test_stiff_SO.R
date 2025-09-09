@@ -8,25 +8,27 @@ library(dplyr)
 library(tidyverse)
 library(CppODE)
 
-eqns <- c(x = "v", v = "mu * (1 - x^2) * v - x")
-f <- CppODE::CppFun(eqns, modelname = "vdp", deriv = F)
+eqns <- c(x = "v * time * exp(-gamma*time)", v = "mu*(1 - x^2)*v - x")
+events = data.frame(var = "x", time = "time_event", value=1, method="add")
 
+f <- CppODE::CppFun(eqns, events = events, modelname = "vdp_s", secderiv = F)
 
 Sys.setenv(
   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
   PKG_CXXFLAGS = "-std=c++17 -O3 -Ofast -march=native -DNDEBUG -fPIC"
 )
 
-src <- "vdp.cpp"   # <— WICHTIG: dieser Dateiname!
+src <- "vdp_s.cpp"   # <— WICHTIG: dieser Dateiname!
 system2(file.path(R.home("bin"), "R"),
         args = c("CMD","SHLIB","--preclean", src),
         stdout = TRUE, stderr = TRUE)
 
 
 # Shared Library laden
-dyn.load("integrate_vdp_sens_stiff_events_standalone.so")
+dyn.load("vdp_s.so")
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
+  params <- params[c("x", "v", "gamma", "mu", "time_event")]
   .Call("solve",
         as.numeric(times),
         as.numeric(params),
@@ -34,8 +36,8 @@ solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
         as.numeric(reltol))
 }
 
-params <- c(x=2, v=0, mu=2)
-times <- seq(0, 10, length.out = 300)
+params <- c(x=2, v=0, gamma=0.1, mu = 2, time_event = 5)
+times <- seq(0, 10, length.out = 10000)
 
 boostCppADtime <- system.time({
   solve(times, params, abstol = 1e-6, reltol = 1e-6)
@@ -59,18 +61,17 @@ library(dMod)
 if (!dir.exists(.dmoddir)) dir.create(.dmoddir)
 setwd(.dmoddir)
 events <- eventlist() %>%
-  addEvent(var = "x", time = "time_root", value=2, root = "x", method="replace")
-  # addEvent(var = "x", time = 5, value=2, root = NA, method="replace")
+  addEvent(var = "x", time = "time_event", value=1, method="add")
 odemodel <- odemodel(eqns, events = events, modelname = "vdp")
 x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-6, atol = 1e-6))
 setwd(.workingDir)
 
 dModtime <- system.time({
-  x(times, c(params, time_root = 0))
+  x(times, c(params))
 })
 
-prd <- x(times, c(params, time_root = 0)) %>% as.data.frame() %>% dplyr::select(time, name , value)
-prd_derivs <- x(times, c(params, time_root = 0)) %>% getDerivs() %>% as.data.frame() %>% dplyr::select(time, name , value)
+prd <- x(times, c(params)) %>% as.data.frame() %>% dplyr::select(time, name , value)
+prd_derivs <- x(times, c(params)) %>% getDerivs() %>% as.data.frame() %>% dplyr::select(time, name , value)
 
 
 

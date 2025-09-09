@@ -7,8 +7,6 @@
 CppFun(
   odes,
   events = NULL,
-  fixed = NULL,
-  compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
   secderiv = FALSE,
@@ -20,10 +18,6 @@ CppFun(
 
 \item{events}{Optional data.frame of fixed-time events (see GetBoostObserver).}
 
-\item{fixed}{Not yet implemented.}
-
-\item{compile}{Logical, compile immediately into shared library?}
-
 \item{modelname}{Optional string, defaults to random.}
 
 \item{deriv}{Logical, include first derivatives (Jacobian)?}
@@ -31,9 +25,13 @@ CppFun(
 \item{secderiv}{Logical, include second derivatives (Hessian)?}
 
 \item{verbose}{Logical, print progress?}
+
+\item{fixed}{Not yet implemented.}
+
+\item{compile}{Not yet implemented.}
 }
 \value{
-Character string of full C++ code.
+Character name of file
 }
 \description{
 This function orchestrates ODE definition, Jacobian generation,

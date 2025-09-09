@@ -2,38 +2,34 @@
 % Please edit documentation in R/symbolics.R
 \name{Sympy2CppCode}
 \alias{Sympy2CppCode}
-\title{Convert a SymPy expression to C++ code suitable for Boost solvers with CppAD}
+\title{Sympy2CppCode: Convert SymPy expression to C++ code (CppAD-compatible if needed)}
 \usage{
-Sympy2CppCode(expr, states, params, n, expr_name = NULL)
+Sympy2CppCode(expr, states, params, n, expr_name = NULL, AD = TRUE)
 }
 \arguments{
-\item{expr}{SymPy expression.}
+\item{expr}{SymPy expression (reticulate/sympy object).}
 
-\item{states}{Character vector of state variable names.}
+\item{states}{Character vector of state names (e.g. \code{c("s1","s2",...)}).}
 
-\item{params}{Character vector of parameter names.}
+\item{params}{Character vector of parameter names (e.g. \code{c("p1","p2",...)}).}
 
 \item{n}{Number of states.}
 
-\item{expr_name}{Optional. Name of the ODE (used only in error messages).}
+\item{expr_name}{Optional: name of the ODE (used only in error messages).}
+
+\item{AD}{Logical. If \code{TRUE}, output is made CppAD-compatible.}
 }
 \value{
-A character string with valid C++ code for use in AD solvers.
+A character string with valid C++ code.
 }
 \description{
-This internal function converts a SymPy expression into valid C++ code,
-replacing symbols according to the following rules:
-\itemize{
-\item States \code{s1,...,sn} → \code{x[0],...,x[n-1]}.
-\item Initial values \code{s1_0,...,sn_0} → \code{params[0],...,params[n-1]}.
-\item Parameters \code{p1,...,pm} → \code{params[n],...,params[n+m-1]}.
-\item The time variable \code{time} → \code{t}.
-}
-}
-\details{
-Throws an error if the expression contains constructs not supported in C++.
+This internal helper converts a SymPy expression into valid C++ code.
+Symbol names are replaced systematically, and—if \code{AD = TRUE}—non-smooth
+functions (\code{abs}, \code{max}, \code{min}, \code{Heaviside}, \code{sign}/\code{sgn}) and any
+ternary operators are rewritten into \verb{CppAD::CondExp*} expressions so the
+code is compatible with CppAD (automatic differentiation).
 }
 \author{
-Simon Beyer
+Simon Beyer (revised)
 }
 \keyword{internal}

@@ -2,7 +2,6 @@
 
 export(ComputeJacobianSymb)
 export(CppFun)
-export(GetBoostObserver)
 export(getSymbols)
 export(prodSymb)
 export(replaceNumbers)
