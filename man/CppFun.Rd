@@ -2,11 +2,12 @@
 % Please edit documentation in R/CppODE.R
 \name{CppFun}
 \alias{CppFun}
-\title{Generate full C++ code for an ODE model with sensitivities}
+\title{Generate C++ code for ODE models with sensitivities}
 \usage{
 CppFun(
   odes,
   events = NULL,
+  compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
   secderiv = FALSE,
@@ -14,26 +15,38 @@ CppFun(
 )
 }
 \arguments{
-\item{odes}{Named character vector of ODEs.}
+\item{odes}{Named character vector of ODEs (one entry per state).}
 
-\item{events}{Optional data.frame of fixed-time events (see GetBoostObserver).}
+\item{events}{Optional \code{data.frame} specifying events with columns:
+\code{var} (state), \code{time} (numeric or symbol), \code{value}, and \code{method}
+(\code{"replace"}, \code{"add"}, or \code{"multiply"}).}
 
-\item{modelname}{Optional string, defaults to random.}
+\item{compile}{Logical, if \code{TRUE} compile the generated C++ file.}
 
-\item{deriv}{Logical, include first derivatives (Jacobian)?}
+\item{modelname}{Optional string used for the output filename.
+Defaults to a random identifier.}
 
-\item{secderiv}{Logical, include second derivatives (Hessian)?}
+\item{deriv}{Logical, compute first-order sensitivities (Jacobian).}
 
-\item{verbose}{Logical, print progress?}
+\item{secderiv}{Logical, compute second-order sensitivities (Hessian).}
 
-\item{fixed}{Not yet implemented.}
-
-\item{compile}{Not yet implemented.}
+\item{verbose}{Logical, print progress messages.}
 }
 \value{
-Character name of file
+The name of the generated C++ file (character scalar).
 }
 \description{
-This function orchestrates ODE definition, Jacobian generation,
-event handling, and sensitivity calculation into a complete C++ file.
+This function builds a complete C++ implementation of a system of ordinary
+differential equations (ODEs), including:
+}
+\details{
+\itemize{
+\item The ODE right-hand side and its Jacobian (for stiff solvers)
+\item Optional fixed-time events (state replacement, addition, multiplication)
+\item First- and second-order sensitivities with respect to model parameters
+and/or initial conditions
+}
+
+The generated C++ file can be compiled and called from R to efficiently
+solve the ODE system and return trajectories together with sensitivities.
 }

@@ -8,36 +8,36 @@ library(dplyr)
 library(tidyverse)
 library(CppODE)
 
-eqns <- c(A = "-k1*A^2*time", B = "k1*A - k2*B")
-events = data.frame(var = "A", time = 5, value=1, method="add")
+eqns <- c(A = "-k1*A^2 *time")
+events = data.frame(var = "A", time = "t_e", value=1, method="add")
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "ABmodel_s", secderiv = F)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
 
 Sys.setenv(
   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
   PKG_CXXFLAGS = "-std=c++17 -O3 -Ofast -march=native -DNDEBUG -fPIC"
 )
 
-src <- "ABmodel_s.cpp"   # <— WICHTIG: dieser Dateiname!
+src <- "Amodel_s.cpp"   # <— WICHTIG: dieser Dateiname!
 system2(file.path(R.home("bin"), "R"),
         args = c("CMD","SHLIB","--preclean", src),
         stdout = TRUE, stderr = TRUE)
 
 
 # Shared Library laden
-dyn.load("ABmodel_s.so")
+dyn.load("Amodel_s.so")
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
-  params <- params[c("A", "B", "k1", "k2")]
-  .Call("solve",
+  params <- params[c("A", "k1", "t_e")]
+  .Call("solve_Amodel_s",
         as.numeric(times),
         as.numeric(params),
         as.numeric(abstol),
         as.numeric(reltol))
 }
 
-params <- c(A=1, B=0, k1=0.1, k2=0.1)
-times <- seq(0, 10, length.out = 1000)
+params <- c(A=1, k1=0.1, t_e=3)
+times <- c(seq(0, 10, length.out = 300))
 
 boostCppADtime <- system.time({
   solve(times, params, abstol = 1e-6, reltol = 1e-6)
@@ -61,17 +61,17 @@ library(dMod)
 if (!dir.exists(.dmoddir)) dir.create(.dmoddir)
 setwd(.dmoddir)
 events <- eventlist() %>%
-  addEvent(var = "A", time = 5, value=1, method="add")
-odemodel <- odemodel(eqns, events = events, modelname = "vdp")
+  addEvent(var = "A", time = "t_e", value=1, method="add")
+odemodel <- odemodel(eqns, events = events, modelname = "Amodel")
 x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-6, atol = 1e-6))
 setwd(.workingDir)
 
 dModtime <- system.time({
-  x(times, c(params))
+  x(times, params)
 })
 
-prd <- x(times, c(params)) %>% as.data.frame() %>% dplyr::select(time, name , value)
-prd_derivs <- x(times, c(params)) %>% getDerivs() %>% as.data.frame() %>% dplyr::select(time, name , value)
+prd <- x(times, params) %>% as.data.frame() %>% dplyr::select(time, name , value)
+prd_derivs <- x(times, params) %>% getDerivs() %>% as.data.frame() %>% dplyr::select(time, name , value)
 
 
 
@@ -88,44 +88,75 @@ ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   theme_dMod()
 
 
-dA_dt_e <- function(t, t_e, A0, k1) {
-  # Vorbereitungen
-  denom_e <- 0.5 * k1 * t_e^2 + 1 / A0
-  A_e <- 1 / denom_e
-  A_e_plus <- A_e + 1
+# Funktion zur Berechnung von A(t), \partial A / \partial t_e und \partial^2 A / \partial t_e^2
+calculate_A <- function(time, A0, k1, t_e) {
+  # Initialisieren der Ergebnisvektoren
+  A_values <- numeric(length(time))
+  A_te_values <- numeric(length(time))
+  A_te_te_values <- numeric(length(time))
 
-  # Ableitung von A_e nach t_e
-  dA_e_dt_e <- -k1 * t_e / denom_e^2
+  # Anfangszeitpunkt t_0 als ersten Zeitpunkt im Vektor
+  t_0 <- min(time)
 
-  # Nenner der A(t)
-  D <- 0.5 * k1 * (t^2 - t_e^2) + 1 / A_e_plus
+  # Berechnung von A(t), \partial A / \partial t_e und \partial^2 A / \partial t_e^2
+  for (i in 1:length(time)) {
+    t <- time[i]
 
-  # Ableitung
-  dA <- (1 / D^2) * (k1 * t_e - (1 / A_e_plus^2) * dA_e_dt_e)
+    if (t < t_e) {
+      # Lösung für t < t_e
+      denom <- k1 * (t^2 - t_0^2) + 2 / A0
+      A_values[i] <- 2 / denom
+      A_te_values[i] <- 0  # Partielle Ableitung ist 0 für t < t_e
+      A_te_te_values[i] <- 0  # Zweite partielle Ableitung ist 0 für t < t_e
+    } else {
+      # Wert bei t = t_e^- und Sprung zu t_e^+
+      denom_te_minus <- k1 * (t_e^2 - t_0^2) + 2 / A0
+      A_te_minus <- 2 / denom_te_minus
+      A_te_plus <- A_te_minus + 1
 
-  # Setze Sensitivität auf 0 für t < t_e
-  dA[t < t_e] <- 0
+      # Denominator für t >= t_e
+      denom_te_plus <- 2 + k1 * (t_e^2 - t_0^2) + 2 / A0
 
-  return(dA)
+      if (t == t_e) {
+        # Wert bei t = t_e (nach dem Sprung)
+        A_values[i] <- A_te_plus
+        # Erste partielle Ableitung bei t = t_e
+        A_te_values[i] <- -4 * k1 * t_e / (denom_te_minus^2)
+        # Zweite partielle Ableitung bei t = t_e
+        A_te_te_values[i] <- (-4 * k1 * (-3 * k1 * t_e^2 - k1 * t_0^2 + 2 / A0)) / (denom_te_minus^3)
+      } else {
+        # Lösung für t > t_e
+        denom <- k1 * (t^2 - t_e^2) + 2 / A_te_plus
+        A_values[i] <- 2 / denom
+
+        # Erste partielle Ableitung für t > t_e
+        d_A_te_plus_inv <- 4 * k1 * t_e / (denom_te_plus^2)
+        d_D_te <- -2 * k1 * t_e + 2 * d_A_te_plus_inv
+        A_te_values[i] <- -2 / (denom^2) * d_D_te
+
+        # Zweite partielle Ableitung für t > t_e
+        d2_A_te_plus_inv <- 4 * k1 / (denom_te_plus^2) - 16 * k1^2 * t_e^2 / (denom_te_plus^3)
+        d2_D_te <- -2 * k1 + 2 * d2_A_te_plus_inv
+        A_te_te_values[i] <- 4 / (denom^3) * (d_D_te^2) - 2 / (denom^2) * d2_D_te
+      }
+    }
+  }
+
+  # Erstellen des Dataframes
+  result <- data.frame(
+    time = rep(time, 3),
+    name = c(rep("A", length(time)), rep("A.t_e", length(time)), rep("A.t_e.t_e", length(time))),
+    value = c(A_values, A_te_values, A_te_te_values),
+    solver = "analytical"
+  )
+
+  return(result)
 }
 
-# Parameter setzen
-t_e <- 5
-A0 <- 1
-k1 <- 0.1
 
-# Sensitivitäten berechnen
-sensi_vals <- dA_dt_e(t = times, t_e = t_e, A0 = A0, k1 = k1)
+df_analytical <- calculate_A(times, 1, 0.1, 3)
 
-# Datenframe zum Plotten
-df_analytisch <- data.frame(
-  time = times,
-  value = sensi_vals,
-  name = "A.time_event",
-  solver = "analytical"
-)
-
-res <- rbind(res, df_analytisch)
+res <- rbind(res, df_analytical)
 
 ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   geom_line() +
