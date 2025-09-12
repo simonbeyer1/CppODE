@@ -6,7 +6,6 @@ setwd(.workingDir)
 library(ggplot2)
 library(dplyr)
 library(tidyverse)
-library(CppODE)
 
 eqns <- c(x = "v * time * exp(-gamma*time)", v = "mu*(1 - x^2)*v - x")
 events = data.frame(var = "x", time = "time_event", value=1, method="add")

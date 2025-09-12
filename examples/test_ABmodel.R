@@ -6,12 +6,11 @@ setwd(.workingDir)
 library(ggplot2)
 library(dplyr)
 library(tidyverse)
-library(CppODE)
 
 eqns <- c(A = "-k1*A^2 *time")
 events = data.frame(var = "A", time = "t_e", value=1, method="add")
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
+# f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
 
 Sys.setenv(
   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
@@ -43,8 +42,7 @@ boostCppADtime <- system.time({
   solve(times, params, abstol = 1e-6, reltol = 1e-6)
 })
 
-
-res_CppAD <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>% as.data.frame() %>%
+res_CppAD <- solve(times, params, abstol = 1e-8, reltol = 1e-6) %>% as.data.frame() %>%
   pivot_longer(cols = -time, names_to = "name", values_to = "value") %>%
   mutate(solver = "boost::odeint + CppAD")
 
@@ -154,7 +152,7 @@ calculate_A <- function(time, A0, k1, t_e) {
 }
 
 
-df_analytical <- calculate_A(times, 1, 0.1, 3)
+df_analytical <- calculate_A(c(times, 3, 3+1e-10), 1, 0.1, 3)
 
 res <- rbind(res, df_analytical)
 
@@ -164,3 +162,4 @@ ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   xlab("time") +
   ylab("value") +
   theme_dMod()
+
