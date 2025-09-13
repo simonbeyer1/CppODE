@@ -8,9 +8,9 @@ library(dplyr)
 library(tidyverse)
 
 eqns <- c(A = "-k1*A^2 *time")
-events = data.frame(var = "A", time = "t_e", value=1, method="add")
+events = data.frame(var = c("A","A"), time = c("t_e", "t_e2"), value=c(1,1), method=c("add", "replace"))
 
-# f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
 
 Sys.setenv(
   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
@@ -39,7 +39,7 @@ params <- c(A=1, k1=0.1, t_e=3)
 times <- c(seq(0, 10, length.out = 300))
 
 boostCppADtime <- system.time({
-  solve(times, params, abstol = 1e-6, reltol = 1e-6)
+  solve(times, params, abstol = 1e-8, reltol = 1e-6)
 })
 
 res_CppAD <- solve(times, params, abstol = 1e-8, reltol = 1e-6) %>% as.data.frame() %>%
@@ -61,7 +61,7 @@ setwd(.dmoddir)
 events <- eventlist() %>%
   addEvent(var = "A", time = "t_e", value=1, method="add")
 odemodel <- odemodel(eqns, events = events, modelname = "Amodel")
-x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-6, atol = 1e-6))
+x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-8, atol = 1e-6))
 setwd(.workingDir)
 
 dModtime <- system.time({
@@ -152,9 +152,9 @@ calculate_A <- function(time, A0, k1, t_e) {
 }
 
 
-df_analytical <- calculate_A(c(times, 3, 3+1e-10), 1, 0.1, 3)
+df_analytical <- calculate_A(c(times, 3), 1, 0.1, 3)
 
-res <- rbind(res, df_analytical)
+res <- rbind(res_CppAD, df_analytical) %>% filter(name %in% df_analytical$name)
 
 ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   geom_line() +

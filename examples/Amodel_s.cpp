@@ -56,6 +56,7 @@ struct observer {
 
   void operator()(vector<AD>& x, const AD& t) {
     if (CppAD::Value(t) == params[2]) apply_event(x, 0, 2, 1);
+    if (CppAD::Value(t) == params[3]) apply_event(x, 0, 1, 1);
     times.push_back(t);
     for (size_t i = 0; i < x.size(); ++i) y.push_back(x[i]);
   }
@@ -69,9 +70,9 @@ inline void make_upper_triangle_indices_all(size_t nvars, CppAD::vector<size_t>&
  
 extern "C" SEXP solve_Amodel_s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP) {
   const int x_N = 1;
-  const int p_N = 2;
+  const int p_N = 3;
   if (!Rf_isReal(timesSEXP) || Rf_length(timesSEXP) < 2) Rf_error("times must be numeric, length >= 2");
-  if (!Rf_isReal(paramsSEXP) || Rf_length(paramsSEXP) != x_N + p_N) Rf_error("params must be numeric length 3");
+  if (!Rf_isReal(paramsSEXP) || Rf_length(paramsSEXP) != x_N + p_N) Rf_error("params must be numeric length 4");
   if (!Rf_isReal(abstolSEXP) || !Rf_isReal(reltolSEXP)) Rf_error("abstol/reltol must be numeric scalars");
 
   const int T_N = Rf_length(timesSEXP);
@@ -93,6 +94,7 @@ extern "C" SEXP solve_Amodel_s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP,
   std::vector<AD> t_ad;
   for (int i = 0; i < T_N; ++i) t_ad.push_back(times[i]);
   t_ad.push_back(full_params[2]);
+  t_ad.push_back(full_params[3]);
   std::sort(t_ad.begin(), t_ad.end(), [](const AD& a, const AD& b) { return CppAD::Value(a) < CppAD::Value(b); });
 
   ode_system sys(full_params);
@@ -113,9 +115,9 @@ extern "C" SEXP solve_Amodel_s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP,
 
   CppAD::vector<double> xval(indep.size());
   for (size_t i = 0; i < xval.size(); ++i) xval[i] = CppAD::Value(indep[i]);
-  const int nvars = 3;
+  const int nvars = 4;
 
-  const int nrow = n_out, ncol = 11;
+  const int nrow = n_out, ncol = 16;
   SEXP ans = PROTECT(Rf_allocMatrix(REALSXP, nrow, ncol));
   double* out = REAL(ans);
   auto IDX = [nrow](int r, int c){ return r + c * nrow; };
@@ -134,7 +136,7 @@ extern "C" SEXP solve_Amodel_s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP,
     for (int i = 0; i < n_out; ++i) {
       for (int s = 0; s < 1; ++s) {
         const int r = i * x_N + s;
-        for (int v = 0; v < 3; ++v) {
+        for (int v = 0; v < 4; ++v) {
           const int jcol = v;
           const int Jidx = r * (x_N + p_N) + jcol;
           out[IDX(i, base_col + s * (x_N + p_N) + v)] = J[Jidx];
@@ -144,8 +146,8 @@ extern "C" SEXP solve_Amodel_s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP,
   }
 
   // Second-order sensitivities wrt all independent variables (upper triangle)
-  const int base2 = 5;
-  const int M = 6;
+  const int base2 = 6;
+  const int M = 10;
   {
     CppAD::vector<size_t> row, col;
     make_upper_triangle_indices_all(M == 0 ? 0 : (x_N + p_N), row, col);
@@ -170,18 +172,23 @@ extern "C" SEXP solve_Amodel_s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP,
     }
   }
 
-  SEXP coln = PROTECT(Rf_allocVector(STRSXP, 11));
+  SEXP coln = PROTECT(Rf_allocVector(STRSXP, 16));
   SET_STRING_ELT(coln, 0, Rf_mkChar("time"));
   SET_STRING_ELT(coln, 1, Rf_mkChar("A"));
   SET_STRING_ELT(coln, 2, Rf_mkChar("A.A"));
   SET_STRING_ELT(coln, 3, Rf_mkChar("A.k1"));
   SET_STRING_ELT(coln, 4, Rf_mkChar("A.t_e"));
-  SET_STRING_ELT(coln, 5, Rf_mkChar("A.A.A"));
-  SET_STRING_ELT(coln, 6, Rf_mkChar("A.A.k1"));
-  SET_STRING_ELT(coln, 7, Rf_mkChar("A.k1.k1"));
-  SET_STRING_ELT(coln, 8, Rf_mkChar("A.A.t_e"));
-  SET_STRING_ELT(coln, 9, Rf_mkChar("A.k1.t_e"));
-  SET_STRING_ELT(coln, 10, Rf_mkChar("A.t_e.t_e"));
+  SET_STRING_ELT(coln, 5, Rf_mkChar("A.t_e2"));
+  SET_STRING_ELT(coln, 6, Rf_mkChar("A.A.A"));
+  SET_STRING_ELT(coln, 7, Rf_mkChar("A.A.k1"));
+  SET_STRING_ELT(coln, 8, Rf_mkChar("A.k1.k1"));
+  SET_STRING_ELT(coln, 9, Rf_mkChar("A.A.t_e"));
+  SET_STRING_ELT(coln, 10, Rf_mkChar("A.k1.t_e"));
+  SET_STRING_ELT(coln, 11, Rf_mkChar("A.t_e.t_e"));
+  SET_STRING_ELT(coln, 12, Rf_mkChar("A.A.t_e2"));
+  SET_STRING_ELT(coln, 13, Rf_mkChar("A.k1.t_e2"));
+  SET_STRING_ELT(coln, 14, Rf_mkChar("A.t_e.t_e2"));
+  SET_STRING_ELT(coln, 15, Rf_mkChar("A.t_e2.t_e2"));
   SEXP dimn = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(dimn, 0, R_NilValue);
   SET_VECTOR_ELT(dimn, 1, coln);

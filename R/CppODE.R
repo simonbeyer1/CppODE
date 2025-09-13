@@ -474,5 +474,14 @@ CppFun <- function(odes, events = NULL,
   sink()
 
   if (verbose) message("Wrote: ", normalizePath(filename))
+
+  attr(modelname, "equations") <- odes
+  attr(modelname, "variables") <- states
+  attr(modelname, "parameters") <- parameters
+  attr(modelname, "events") <- events
+  attr(modelname, "jacobian") <- jacobian
+  attr(modelname, "solver" ) <- solver
+  attr(modelname, "modelname") <- modelname
+
   return(modelname)
 }
