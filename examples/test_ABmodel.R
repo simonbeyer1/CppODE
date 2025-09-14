@@ -8,26 +8,31 @@ library(dplyr)
 library(tidyverse)
 
 eqns <- c(A = "-k1*A^2 *time")
+
+# jac <- ComputeJacobianSymb(eqns)
+
 events = data.frame(var = c("A","A"), time = c("t_e", "t_e2"), value=c(1,1), method=c("add", "replace"))
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = F)
 
-Sys.setenv(
-  PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
-  PKG_CXXFLAGS = "-std=c++17 -O3 -Ofast -march=native -DNDEBUG -fPIC"
-)
-
-src <- "Amodel_s.cpp"   # <— WICHTIG: dieser Dateiname!
-system2(file.path(R.home("bin"), "R"),
-        args = c("CMD","SHLIB","--preclean", src),
-        stdout = TRUE, stderr = TRUE)
-
-
-# Shared Library laden
-dyn.load("Amodel_s.so")
+# Sys.setenv(
+#   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
+#   PKG_CXXFLAGS = "-std=c++17 -O3 -Ofast -march=native -DNDEBUG -fPIC"
+# )
+#
+# src <- "Amodel_s.cpp"   # <— WICHTIG: dieser Dateiname!
+# system2(file.path(R.home("bin"), "R"),
+#         args = c("CMD","SHLIB","--preclean", src),
+#         stdout = TRUE, stderr = FALSE)
+#
+#
+# # Shared Library laden
+# dyn.load("Amodel_s.so")
+CppODE::compileAndLoad("Amodel_s")
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
-  params <- params[c("A", "k1", "t_e")]
+  paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
+  params <- params[paramnames]
   .Call("solve_Amodel_s",
         as.numeric(times),
         as.numeric(params),
@@ -35,7 +40,7 @@ solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
         as.numeric(reltol))
 }
 
-params <- c(A=1, k1=0.1, t_e=3)
+params <- c(A=1, k1=0.1, t_e=3, t_e2 = 5)
 times <- c(seq(0, 10, length.out = 300))
 
 boostCppADtime <- system.time({
@@ -59,7 +64,8 @@ library(dMod)
 if (!dir.exists(.dmoddir)) dir.create(.dmoddir)
 setwd(.dmoddir)
 events <- eventlist() %>%
-  addEvent(var = "A", time = "t_e", value=1, method="add")
+  addEvent(var = "A", time = "t_e", value=1, method="add") %>%
+  addEvent(var = "A", time = "t_e2", value=1, method="replace")
 odemodel <- odemodel(eqns, events = events, modelname = "Amodel")
 x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-8, atol = 1e-6))
 setwd(.workingDir)
@@ -154,7 +160,7 @@ calculate_A <- function(time, A0, k1, t_e) {
 
 df_analytical <- calculate_A(c(times, 3), 1, 0.1, 3)
 
-res <- rbind(res_CppAD, df_analytical) %>% filter(name %in% df_analytical$name)
+res <- rbind(res, df_analytical) %>% filter(name %in% df_analytical$name)
 
 ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   geom_line() +

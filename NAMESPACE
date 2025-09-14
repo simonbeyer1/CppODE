@@ -2,6 +2,7 @@
 
 export(ComputeJacobianSymb)
 export(CppFun)
+export(compileAndLoad)
 export(getSymbols)
 export(prodSymb)
 export(replaceNumbers)

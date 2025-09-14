@@ -477,11 +477,69 @@ CppFun <- function(odes, events = NULL,
 
   attr(modelname, "equations") <- odes
   attr(modelname, "variables") <- states
-  attr(modelname, "parameters") <- parameters
+  attr(modelname, "parameters") <- params
   attr(modelname, "events") <- events
-  attr(modelname, "jacobian") <- jacobian
-  attr(modelname, "solver" ) <- solver
-  attr(modelname, "modelname") <- modelname
+  attr(modelname, "jacobian") <- list(jac$f.x, jac$f.time)
+  attr(modelname, "solver" ) <- "BOOSTodeint::rosenbrock4"
 
   return(modelname)
 }
+
+#' Compile and load a C++ source file in R (platform-aware)
+#'
+#' This function compiles a C++ source file into a shared library (`.so`, `.dll`, or `.dylib`)
+#' using `R CMD SHLIB`, applies platform-appropriate compiler flags, and dynamically loads
+#' the resulting shared object into the current R session.
+#'
+#' @param filename Character string. The base name of the C++ file (without `.cpp` extension).
+#' @param verbose Logical. If `TRUE`, compiler output is printed. Default is `FALSE`.
+#'
+#' @return Invisibly returns the name of the loaded shared object file.
+#' @export
+compileAndLoad <- function(filename, verbose = FALSE) {
+  # Append .cpp extension
+  filename_cpp <- paste0(filename, ".cpp")
+
+  # Determine platform-specific CXXFLAGS
+  is_windows <- .Platform$OS.type == "windows"
+
+  cxxflags <- if (is_windows) {
+    "-std=c++17 -O2 -DNDEBUG"
+  } else {
+    "-std=c++17 -O2 -DNDEBUG -fPIC"
+  }
+
+  # Set compiler environment variables
+  Sys.setenv(
+    PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
+    PKG_CXXFLAGS = cxxflags
+  )
+
+  # Compile the source file
+  shlibOut <- system2(
+    file.path(R.home("bin"), "R"),
+    args = c("CMD", "SHLIB", "--preclean", filename_cpp),
+    stdout = TRUE,
+    stderr = TRUE
+  )
+
+  # Print compiler output if verbose
+  if (verbose) {
+    cat(paste(shlibOut, collapse = "\n"), "\n")
+  } else {
+    cat(paste(shlibOut[1], "\n"))
+  }
+
+  # Build shared library name
+  soFile <- paste0(filename, .Platform$dynlib.ext)
+
+  # Load the compiled shared object
+  if (file.exists(soFile)) {
+    try(dyn.unload(soFile), silent = TRUE)  # Unload if already loaded
+    dyn.load(soFile)
+    invisible(soFile)
+  } else {
+    stop("Compiled shared library not found: ", soFile)
+  }
+}
+
