@@ -10,7 +10,7 @@ library(tidyverse)
 # jac <- ComputeJacobianSymb(eqns)
 eqns <- c(A = "-k1*A^2 *time")
 events = data.frame(var = "A", time = "t_e", value= 1, method = "add")
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", deriv = T, secderiv = T)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", deriv = F, secderiv = F)
 CppODE::compileAndLoad("Amodel_s", verbose = F)
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
@@ -30,7 +30,7 @@ boostCppADtime <- system.time({
   solve(times, params, abstol = 1e-8, reltol = 1e-6)
 })
 
-res_CppAD <- solve(times, params, abstol = 1e-8, reltol = 1e-6) %>% as.data.frame() %>%
+res_CppAD <- solve(times, params, abstol = 1e-12, reltol = 1e-12) %>% as.data.frame() %>%
   pivot_longer(cols = -time, names_to = "name", values_to = "value") %>%
   mutate(solver = "boost::odeint + CppAD")
 
@@ -73,74 +73,73 @@ ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   ylab("value") +
   theme_dMod()
 
-
 calculate_A <- function(time, A0, k1, t_e) {
-  # Initialisieren der Ergebnisvektoren
+  # Ergebnisvektoren
   A_values <- numeric(length(time))
   A_te_values <- numeric(length(time))
   A_te_te_values <- numeric(length(time))
-  A_k1_k1_values <- numeric(length(time))   # neuer Vektor für 2. Ableitung nach k1
+  A_k1_k1_values <- numeric(length(time))   # zweite Ableitung nach k1
 
-  # Anfangszeitpunkt t_0 als ersten Zeitpunkt im Vektor
+  # Anfangszeitpunkt
   t_0 <- min(time)
 
-  for (i in 1:length(time)) {
+  for (i in seq_along(time)) {
     t <- time[i]
 
     if (t < t_e) {
-      # Lösung für t < t_e
+      # t < t_e
       denom <- k1 * (t^2 - t_0^2) + 2 / A0
       A_values[i] <- 2 / denom
       A_te_values[i] <- 0
       A_te_te_values[i] <- 0
 
-      # Zweite Ableitung nach k1
-      # A = 2 / denom, denom = k1*(t^2 - t0^2) + 2/A0
-      d_denom_dk1 <- (t^2 - t_0^2)
-      d2_denom_dk1 <- 0
-      A_k1_k1_values[i] <- 4 * (d_denom_dk1^2) / (denom^3)
+      B <- (t^2 - t_0^2)
+      A_k1_k1_values[i] <- 4 * B^2 / (denom^3)
 
     } else {
-      # Wert bei t = t_e^- und Sprung zu t_e^+
-      denom_te_minus <- k1 * (t_e^2 - t_0^2) + 2 / A0
-      A_te_minus <- 2 / denom_te_minus
-      A_te_plus <- A_te_minus + 1
-      denom_te_plus <- 2 + k1 * (t_e^2 - t_0^2) + 2 / A0
+      # Werte bei t_e
+      M <- k1 * (t_e^2 - t_0^2) + 2 / A0       # = denom_te_minus
+      A_te_minus <- 2 / M
+      A_te_plus  <- A_te_minus + 1
+      denom_te_plus <- M + 2                   # = 2 + k1*(t_e^2 - t_0^2) + 2/A0
 
       if (t == t_e) {
-        # Wert bei t = t_e (nach dem Sprung)
+        # t = t_e (nach Sprung)
         A_values[i] <- A_te_plus
-        A_te_values[i] <- -4 * k1 * t_e / (denom_te_minus^2)
-        A_te_te_values[i] <- (-4 * k1 * (-3 * k1 * t_e^2 - k1 * t_0^2 + 2 / A0)) / (denom_te_minus^3)
+        A_te_values[i] <- -4 * k1 * t_e / (M^2)
+        A_te_te_values[i] <- (-4 * k1 * (-3 * k1 * t_e^2 - k1 * t_0^2 + 2 / A0)) / (M^3)
 
-        # Zweite Ableitung nach k1 bei t = t_e
-        d_denom_dk1 <- (t_e^2 - t_0^2)
-        A_k1_k1_values[i] <- 4 * (d_denom_dk1^2) / (denom_te_minus^3)
+        C <- (t_e^2 - t_0^2)
+        A_k1_k1_values[i] <- 4 * C^2 / (M^3)
 
       } else {
-        # Lösung für t > t_e
-        denom <- k1 * (t^2 - t_e^2) + 2 / A_te_plus
-        A_values[i] <- 2 / denom
+        # t > t_e
+        # g(k1) = 2/A_te_plus = 2*M/(M+2)
+        g      <- 2 * M / denom_te_plus
+        gprime <- 4 * (t_e^2 - t_0^2) / (denom_te_plus^2)
+        g2     <- -8 * (t_e^2 - t_0^2)^2 / (denom_te_plus^3)
 
-        # Erste partielle Ableitung für t > t_e
+        D  <- k1 * (t^2 - t_e^2) + g
+        A_values[i] <- 2 / D
+
+        # A.k1.k1 korrekt mit Kettenregel
+        Dprime <- (t^2 - t_e^2) + gprime
+        D2     <- g2
+        A_k1_k1_values[i] <- 4 * (Dprime^2) / (D^3) - 2 * D2 / (D^2)
+
+        # Die t_e-Ableitungen wie gehabt
         d_A_te_plus_inv <- 4 * k1 * t_e / (denom_te_plus^2)
         d_D_te <- -2 * k1 * t_e + 2 * d_A_te_plus_inv
-        A_te_values[i] <- -2 / (denom^2) * d_D_te
+        A_te_values[i] <- -2 / (D^2) * d_D_te
 
-        # Zweite partielle Ableitung für t > t_e
         d2_A_te_plus_inv <- 4 * k1 / (denom_te_plus^2) - 16 * k1^2 * t_e^2 / (denom_te_plus^3)
         d2_D_te <- -2 * k1 + 2 * d2_A_te_plus_inv
-        A_te_te_values[i] <- 4 / (denom^3) * (d_D_te^2) - 2 / (denom^2) * d2_D_te
-
-        # Zweite Ableitung nach k1 für t > t_e
-        d_denom_dk1 <- (t^2 - t_e^2)
-        d2_denom_dk1 <- 0  # linear in k1
-        A_k1_k1_values[i] <- 4 * (d_denom_dk1^2) / (denom^3)
+        A_te_te_values[i] <- 4 / (D^3) * (d_D_te^2) - 2 / (D^2) * d2_D_te
       }
     }
   }
 
-  # Erstellen des Dataframes
+  # Dataframe
   result <- data.frame(
     time = rep(time, 4),
     name = c(
@@ -155,7 +154,6 @@ calculate_A <- function(time, A0, k1, t_e) {
 
   return(result)
 }
-
 
 
 df_analytical <- calculate_A(c(times, 3), 1, 0.1, 3)
