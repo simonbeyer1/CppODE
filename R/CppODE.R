@@ -7,6 +7,7 @@
 #' * Optional fixed-time events (state replacement, addition, multiplication)
 #' * First- and second-order sensitivities with respect to model parameters
 #'   and/or initial conditions
+#' * Selection of "fixed" variables that are excluded from sensitivity analysis
 #'
 #' The generated C++ file can be compiled and called from R to efficiently
 #' solve the ODE system and return trajectories together with sensitivities.
@@ -15,6 +16,9 @@
 #' @param events Optional `data.frame` specifying events with columns:
 #'   `var` (state), `time` (numeric or symbol), `value`, and `method`
 #'   (`"replace"`, `"add"`, or `"multiply"`).
+#' @param fixed Optional character vector naming states and/or parameters
+#'   to be treated as fixed (i.e., not included as independent variables
+#'   in sensitivity analysis). Defaults to none.
 #' @param compile Logical, if `TRUE` compile the generated C++ file.
 #' @param modelname Optional string used for the output filename.
 #'   Defaults to a random identifier.
@@ -22,13 +26,13 @@
 #' @param secderiv Logical, compute second-order sensitivities (Hessian).
 #' @param verbose Logical, print progress messages.
 #'
-#' @return The name of the generated C++ file (character scalar).
+#' @return The name of the generated C++ file (character scalar). Attributes
+#'   include the ODE equations, variables, parameters, fixed variables, events,
+#'   symbolic Jacobian, and solver type.
 #' @import reticulate
 #' @export
-CppFun <- function(odes, events = NULL,
-                   compile = TRUE, modelname = NULL,
-                   deriv = TRUE, secderiv = FALSE,
-                   verbose = FALSE) {
+CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname = NULL,
+                   deriv = TRUE, secderiv = FALSE, verbose = FALSE) {
 
   # --- Clean ODEs ---
   odes <- unclass(odes)
@@ -39,6 +43,32 @@ CppFun <- function(odes, events = NULL,
   states  <- names(odes)
   symbols <- getSymbols(c(odes, if (!is.null(events)) c(events$value, events$time)))
   params  <- setdiff(symbols, c(states, "time"))
+
+  # --- fixed vs sensitive ---
+  if (is.null(fixed)) fixed <- character(0)
+  if (!is.character(fixed)) stop("`fixed` must be character vector")
+
+  fixed_states <- intersect(fixed, states)
+  fixed_params <- intersect(fixed, params)
+  sens_states  <- setdiff(states, fixed_states)
+  sens_params  <- setdiff(params, fixed_params)
+
+  # positions (0-based)
+  state_idx0 <- setNames(seq_along(states) - 1L, states)
+  param_idx0 <- setNames(seq_along(params) - 1L, params)
+
+  sens_state_idx0 <- unname(state_idx0[sens_states])
+  sens_param_idx0 <- unname(param_idx0[sens_params])
+
+  # maps back to domain positions
+  state_sens_pos <- rep(-1L, length(states))
+  if (length(sens_state_idx0))
+    state_sens_pos[sens_state_idx0 + 1L] <- seq_along(sens_state_idx0) - 1L
+
+  param_sens_pos <- rep(-1L, length(params))
+  if (length(sens_param_idx0))
+    param_sens_pos[sens_param_idx0 + 1L] <- seq_along(sens_param_idx0) - 1L
+
 
   if (is.null(modelname)) {
     modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
@@ -197,9 +227,12 @@ CppFun <- function(odes, events = NULL,
   # --- Solve function ---
   xN <- length(states)
   pN <- length(params)
+  sens_xN <- length(sens_states)
+  sens_pN <- length(sens_params)
+
 
   # Column names
-  indep_names <- c(states, params)
+  indep_names <- c(sens_states, sens_params)
   nvars       <- length(indep_names)
   base_colnames <- c("time", states)
 
@@ -210,19 +243,18 @@ CppFun <- function(odes, events = NULL,
       use.names = FALSE
     )
   }
-
   sec_colnames <- character(0)
   if (secderiv) {
-    idx <- which(
-      outer(seq_len(nvars), seq_len(nvars), function(i, j) i <= j),
-      arr.ind = TRUE
-    )
-    pair_names <- paste(indep_names[idx[, 1]], indep_names[idx[, 2]], sep = ".")
+    pair_idx <- do.call(rbind, lapply(seq_len(nvars), function(j) {
+      cbind(j, seq.int(j, nvars))
+    }))
+    pair_names <- paste(indep_names[pair_idx[, 1]], indep_names[pair_idx[, 2]], sep = ".")
     sec_colnames <- unlist(
       lapply(states, function(si) paste(si, pair_names, sep = ".")),
       use.names = FALSE
     )
   }
+
 
   all_colnames <- c(base_colnames, deriv_colnames, sec_colnames)
   n_base       <- length(base_colnames)
@@ -253,27 +285,59 @@ CppFun <- function(odes, events = NULL,
 
   # Independent + AD setup
   if (AD) {
-    externC <- c(externC,
-                 sprintf('  std::vector<%s> indep(x_N + p_N);', numType),
-                 '  for (int i = 0; i < x_N + p_N; ++i) indep[i] = params[i];',
-                 '  CppAD::Independent(indep);',
-                 ''
+    externC <- c(
+      externC,
+      sprintf("  const int sens_xN = %d;", sens_xN),
+      sprintf("  const int sens_pN = %d;", sens_pN),
+      "  const int dom_N = sens_xN + sens_pN;",
+      if (length(sens_state_idx0)) {
+        sprintf("  const int sens_state_idx[%d] = {%s};",
+                length(sens_state_idx0), paste(sens_state_idx0, collapse = ","))
+      } else "  const int* sens_state_idx = nullptr;",
+      if (length(sens_param_idx0)) {
+        sprintf("  const int sens_param_idx[%d] = {%s};",
+                length(sens_param_idx0), paste(sens_param_idx0, collapse = ","))
+      } else "  const int* sens_param_idx = nullptr;",
+      sprintf("  const int state_sens_pos[%d] = {%s};",
+              length(state_sens_pos),
+              paste(state_sens_pos, collapse = ","))
+      ,
+      sprintf("  const int param_sens_pos[%d] = {%s};",
+              length(param_sens_pos),
+              paste(param_sens_pos, collapse = ","))
+      ,
+      sprintf("  std::vector<%s> indep(dom_N);", numType),
+      "// fill sensitive states",
+      "  for (int j = 0; j < sens_xN; ++j) indep[j] = params[sens_state_idx[j]];",
+      "// fill sensitive params",
+      "  for (int j = 0; j < sens_pN; ++j) indep[sens_xN + j] = params[x_N + sens_param_idx[j]];",
+      "  CppAD::Independent(indep);",
+      ""
     )
   }
 
   # Initial states + params vector
   externC <- c(externC,
                sprintf('  vector<%s> x(x_N);', numType),
-               if (AD)
-                 '  for (int i = 0; i < x_N; ++i) x[i] = indep[i];'
-               else
-                 '  for (int i = 0; i < x_N; ++i) x[i] = params[i];',
+               if (AD) c(
+                 "// build x from indep or fixed params",
+                 "  for (int i = 0; i < x_N; ++i) {",
+                 "    if (state_sens_pos[i] >= 0) x[i] = indep[state_sens_pos[i]];",
+                 "    else x[i] = params[i];",
+                 "  }"
+               ) else
+                 "  for (int i = 0; i < x_N; ++i) x[i] = params[i];",
                '',
                sprintf('  vector<%s> full_params(x_N + p_N);', numType),
-               if (AD)
-                 '  for (int i = 0; i < x_N + p_N; ++i) full_params[i] = indep[i];'
-               else
-                 '  for (int i = 0; i < x_N + p_N; ++i) full_params[i] = params[i];',
+               if (AD) c(
+                 "// full_params in original order: [x0..., params...]",
+                 "  for (int i = 0; i < x_N; ++i) full_params[i] = x[i];",
+                 "  for (int j = 0; j < p_N; ++j) {",
+                 "    if (param_sens_pos[j] >= 0) full_params[x_N + j] = indep[sens_xN + param_sens_pos[j]];",
+                 "    else full_params[x_N + j] = params[x_N + j];",
+                 "  }"
+               ) else
+                 "  for (int i = 0; i < x_N + p_N; ++i) full_params[i] = params[i];",
                '',
                sprintf('  std::vector<%s> t_ad;', numType),
                '  for (int i = 0; i < T_N; ++i) t_ad.push_back(times[i]);'
@@ -380,10 +444,10 @@ CppFun <- function(odes, events = NULL,
                  '    for (int i = 0; i < n_out; ++i) {',
                  sprintf('      for (int s = 0; s < %d; ++s) {', xN),
                  '        const int r = i * x_N + s;',
-                 sprintf('        for (int v = 0; v < %d; ++v) {', nvars),
+                 '        for (int v = 0; v < dom_N; ++v) {',
                  '          const int jcol = v;',
-                 '          const int Jidx = r * (x_N + p_N) + jcol;',
-                 '          out[IDX(i, base_col + s * (x_N + p_N) + v)] = J[Jidx];',
+                 '          const int Jidx = r * dom_N + jcol;',
+                 '          out[IDX(i, base_col + s * dom_N + v)] = J[Jidx];',
                  '        }',
                  '      }',
                  '    }',
@@ -400,18 +464,18 @@ CppFun <- function(odes, events = NULL,
                  sprintf('  const int M = %d;', triN),
                  '  {',
                  '    CppAD::vector<size_t> row, col;',
-                 '    for (int r = 0; r < (x_N + p_N); ++r) {',
-                 '      for (int c = r; c < (x_N + p_N); ++c) {',
+                 '    for (int r = 0; r < dom_N; ++r) {',
+                 '      for (int c = r; c < dom_N; ++c) {',
                  '        row.push_back(r);',
                  '        col.push_back(c);',
                  '      }',
                  '    }',
                  '    CppAD::vector<double> w(f.Range()), h(row.size());',
-                 '    CppAD::vectorBool pattern((x_N + p_N) * (x_N + p_N));',
-                 '    for (int r = 0; r < (x_N + p_N); ++r) {',
-                 '      for (int c = 0; c < (x_N + p_N); ++c) {',
-                 '        if (c >= r) pattern[r * (x_N + p_N) + c] = true;',
-                 '        else        pattern[r * (x_N + p_N) + c] = false;',
+                 '    CppAD::vectorBool pattern(dom_N * dom_N);',
+                 '    for (int r = 0; r < dom_N; ++r) {',
+                 '      for (int c = 0; c < dom_N; ++c) {',
+                 '        if (c >= r) pattern[r * dom_N + c] = true;',
+                 '        else        pattern[r * dom_N + c] = false;',
                  '      }',
                  '    }',
                  '    CppAD::sparse_hessian_work work;',
@@ -422,8 +486,8 @@ CppFun <- function(odes, events = NULL,
                  '        w[r] = 1.0;',
                  '        f.SparseHessian(xval, w, pattern, row, col, h, work);',
                  '        int idx = 0;',
-                 '        for (int vj = 0; vj < (x_N + p_N); ++vj) {',
-                 '          for (int vk = vj; vk < (x_N + p_N); ++vk) {',
+                 '        for (int vj = 0; vj < dom_N; ++vj) {',
+                 '          for (int vk = vj; vk < dom_N; ++vk) {',
                  '            out[IDX(i, base2 + s * M + idx)] = h[idx];',
                  '            ++idx;',
                  '          }',
@@ -434,6 +498,7 @@ CppFun <- function(odes, events = NULL,
                  ''
     )
   }
+
 
   # Column names
   externC <- c(externC,
@@ -476,8 +541,9 @@ CppFun <- function(odes, events = NULL,
   attr(modelname, "variables") <- states
   attr(modelname, "parameters") <- params
   attr(modelname, "events") <- events
+  attr(modelname, "fixed") <- c(fixed_states, fixed_params)
   attr(modelname, "jacobian") <- list(jac$f.x, jac$f.time)
-  attr(modelname, "solver" ) <- "BOOSTodeint::rosenbrock4"
+  attr(modelname, "solver") <- "boost::odeint::rosenbrock4"
 
   return(modelname)
 }

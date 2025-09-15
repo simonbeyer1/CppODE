@@ -7,6 +7,7 @@
 CppFun(
   odes,
   events = NULL,
+  fixed = NULL,
   compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
@@ -21,6 +22,10 @@ CppFun(
 \code{var} (state), \code{time} (numeric or symbol), \code{value}, and \code{method}
 (\code{"replace"}, \code{"add"}, or \code{"multiply"}).}
 
+\item{fixed}{Optional character vector naming states and/or parameters
+to be treated as fixed (i.e., not included as independent variables
+in sensitivity analysis). Defaults to none.}
+
 \item{compile}{Logical, if \code{TRUE} compile the generated C++ file.}
 
 \item{modelname}{Optional string used for the output filename.
@@ -33,7 +38,9 @@ Defaults to a random identifier.}
 \item{verbose}{Logical, print progress messages.}
 }
 \value{
-The name of the generated C++ file (character scalar).
+The name of the generated C++ file (character scalar). Attributes
+include the ODE equations, variables, parameters, fixed variables, events,
+symbolic Jacobian, and solver type.
 }
 \description{
 This function builds a complete C++ implementation of a system of ordinary
@@ -45,6 +52,7 @@ differential equations (ODEs), including:
 \item Optional fixed-time events (state replacement, addition, multiplication)
 \item First- and second-order sensitivities with respect to model parameters
 and/or initial conditions
+\item Selection of "fixed" variables that are excluded from sensitivity analysis
 }
 
 The generated C++ file can be compiled and called from R to efficiently
