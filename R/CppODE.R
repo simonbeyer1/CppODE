@@ -234,18 +234,6 @@ CppFun <- function(odes, events = NULL,
   base2_offset    <- n_base + n_deriv
   triN            <- nvars * (nvars + 1L) / 2L
 
-  # Helper for Hessian indices
-  make_upper_indices_code <- if (secderiv) {
-    paste0(
-      "inline void make_upper_triangle_indices_all(size_t nvars, ",
-      "CppAD::vector<size_t>& row, CppAD::vector<size_t>& col) {\n",
-      "  row.clear(); col.clear();\n",
-      "  for (size_t j = 0; j < nvars; ++j)\n",
-      "    for (size_t k = j; k < nvars; ++k) { row.push_back(j); col.push_back(k); }\n",
-      "}\n"
-    )
-  } else ""
-
   # --- Extern "C" solve_modelname() ---
   externC <- c(
     sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP) {', modelname),
@@ -412,10 +400,20 @@ CppFun <- function(odes, events = NULL,
                  sprintf('  const int M = %d;', triN),
                  '  {',
                  '    CppAD::vector<size_t> row, col;',
-                 '    make_upper_triangle_indices_all(M == 0 ? 0 : (x_N + p_N), row, col);',
+                 '    for (int r = 0; r < (x_N + p_N); ++r) {',
+                 '      for (int c = r; c < (x_N + p_N); ++c) {',
+                 '        row.push_back(r);',
+                 '        col.push_back(c);',
+                 '      }',
+                 '    }',
                  '    CppAD::vector<double> w(f.Range()), h(row.size());',
-                 '    CppAD::vector<bool> pattern((x_N + p_N) * (x_N + p_N));',
-                 '    for (size_t iP = 0; iP < pattern.size(); ++iP) pattern[iP] = true;',
+                 '    CppAD::vectorBool pattern((x_N + p_N) * (x_N + p_N));',
+                 '    for (int r = 0; r < (x_N + p_N); ++r) {',
+                 '      for (int c = 0; c < (x_N + p_N); ++c) {',
+                 '        if (c >= r) pattern[r * (x_N + p_N) + c] = true;',
+                 '        else        pattern[r * (x_N + p_N) + c] = false;',
+                 '      }',
+                 '    }',
                  '    CppAD::sparse_hessian_work work;',
                  '    for (int i = 0; i < n_out; ++i) {',
                  sprintf('      for (int s = 0; s < %d; ++s) {', xN),
@@ -469,7 +467,6 @@ CppFun <- function(odes, events = NULL,
   cat(ode_lines, "\n\n")
   cat(jac_lines, "\n\n")
   cat(observer_lines, "\n\n")
-  if (secderiv) cat(make_upper_indices_code, "\n")
   cat(externC)
   sink()
 

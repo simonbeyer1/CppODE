@@ -13,7 +13,7 @@ eqns <- c(A = "-k1*A^2 *time")
 
 events = data.frame(var = c("A","A"), time = c("t_e", "t_e2"), value=c(1,1), method=c("add", "replace"))
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = F)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
 
 # Sys.setenv(
 #   PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
@@ -28,7 +28,7 @@ f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = F)
 #
 # # Shared Library laden
 # dyn.load("Amodel_s.so")
-CppODE::compileAndLoad("Amodel_s")
+CppODE::compileAndLoad("Amodel_s", verbose = F)
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
   paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
