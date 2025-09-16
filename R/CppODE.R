@@ -100,7 +100,8 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
     "#include <cmath>",
     "#include <boost/numeric/odeint.hpp>",
     "#include <boost/numeric/ublas/vector.hpp>",
-    "#include <boost/numeric/ublas/matrix.hpp>"
+    "#include <boost/numeric/ublas/matrix.hpp>",
+    "#include <StepChecker.hpp>"
   )
   usings <- c(
     "using namespace boost::numeric::odeint;",
@@ -171,7 +172,10 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
             numType, numType, numType),
     "    : times(t), y(y_), params(p_) {}",
     "",
-    sprintf("  void operator()(vector<%s>& x, const %s& t) {", numType, numType)
+    # const signature
+    sprintf("  void operator()(const vector<%s>& x, const %s& t) {", numType, numType),
+    # const_cast hack
+    sprintf("    vector<%s>& x_nc = const_cast<vector<%s>&>(x);", numType, numType)
   )
 
   if (!is.null(events)) {
@@ -193,7 +197,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
       num <- suppressWarnings(as.numeric(x))
       if (!is.na(num)) return(sprintf("%.17g", num))
       si <- match(x, states)
-      if (!is.na(si)) return(sprintf("x[%d]", si - 1L))
+      if (!is.na(si)) return(sprintf("x_nc[%d]", si - 1L))   # <--- wichtig: x_nc
       pi <- match(x, params)
       if (!is.na(pi)) return(sprintf("params[%d]", length(states) + pi - 1L))
       stop("Unknown symbol in event: ", x)
@@ -206,10 +210,10 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
       vexpr <- cpp_expr_events(events$value[i])
       meth  <- events$method[i]
       if (numType == "AD") {
-        sprintf("    if (CppAD::Value(t) == %s) apply_event(x, %d, %d, %s);",
+        sprintf("    if (CppAD::Value(t) == %s) apply_event(x_nc, %d, %d, %s);",
                 texpr, vi, meth, vexpr)
       } else {
-        sprintf("    if (t == %s) apply_event(x, %d, %d, %s);",
+        sprintf("    if (t == %s) apply_event(x_nc, %d, %d, %s);",
                 texpr, vi, meth, vexpr)
       }
     }, character(1))
@@ -219,7 +223,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
   observer_lines <- c(
     observer_lines,
     "    times.push_back(t);",
-    "    for (size_t i = 0; i < x.size(); ++i) y.push_back(x[i]);",
+    "    for (size_t i = 0; i < x_nc.size(); ++i) y.push_back(x_nc[i]);",  # <--- x_nc
     "  }",
     "};"
   )
@@ -269,7 +273,8 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
 
   # --- Extern "C" solve_modelname() ---
   externC <- c(
-    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP) {', modelname),
+    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP) {', modelname),
+    "try {",
     sprintf('  const int x_N = %d;', xN),
     sprintf('  const int p_N = %d;', pN),
     '  if (!Rf_isReal(timesSEXP) || Rf_length(timesSEXP) < 2) Rf_error("times must be numeric, length >= 2");',
@@ -281,6 +286,16 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
     '  const double* params = REAL(paramsSEXP);',
     '  const double abstol  = REAL(abstolSEXP)[0];',
     '  const double reltol  = REAL(reltolSEXP)[0];',
+    '',
+    '  if (!Rf_isInteger(maxprogressSEXP) || Rf_length(maxprogressSEXP) != 1) Rf_error("maxprogress must be a single integer");',
+    '  if (!Rf_isInteger(maxstepsSEXP) || Rf_length(maxstepsSEXP) != 1) Rf_error("maxsteps must be a single integer");',
+    '',
+    '  int tmp_progress = INTEGER(maxprogressSEXP)[0];',
+    '  int tmp_steps    = INTEGER(maxstepsSEXP)[0];',
+    '  if (tmp_progress <= 0) Rf_error("maxprogress must be > 0");',
+    '  if (tmp_steps    <= 0) Rf_error("maxsteps must be > 0");',
+    '',
+    '  StepChecker checker(tmp_progress, tmp_steps);',
     ''
   )
 
@@ -388,7 +403,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
                sprintf('  std::vector<%s> result_times;', numType),
                sprintf('  std::vector<%s> y;', numType),
                sprintf('  observer obs(result_times, y, full_params);'),
-               '  integrate_times(stepper, std::make_pair(sys, jac), x, t_ad.begin(), t_ad.end(), dt, obs);',
+               '  integrate_times(stepper, std::make_pair(sys, jac), x, t_ad.begin(), t_ad.end(), dt, obs, checker);',
                '',
                '  const int n_out = static_cast<int>(result_times.size());',
                '  if (n_out <= 0) Rf_error("Integration produced no output");',
@@ -518,7 +533,12 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
                '',
                '  UNPROTECT(3);',
                '  return ans;',
-               '}'
+               "  } catch (const std::exception& e) {",
+               "    Rf_error(\"ODE solver failed: %s\", e.what());",
+               "  } catch (...) {",
+               "    Rf_error(\"ODE solver failed: unknown C++ exception\");",
+               "  }",
+               "}"
   )
 
   externC <- paste(externC, collapse = "\n")
@@ -562,49 +582,41 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
 #' @return Invisibly returns the name of the loaded shared object file.
 #' @export
 compileAndLoad <- function(filename, verbose = FALSE) {
-  # Append .cpp extension
   filename_cpp <- paste0(filename, ".cpp")
-
-  # Determine platform-specific CXXFLAGS
   is_windows <- .Platform$OS.type == "windows"
 
-  cxxflags <- if (is_windows) {
-    "-std=c++17 -O2 -DNDEBUG"
-  } else {
-    "-std=c++17 -O2 -DNDEBUG -fPIC"
-  }
+  cxxflags <- if (is_windows) "-std=c++17 -O2 -DNDEBUG" else "-std=c++17 -O2 -DNDEBUG -fPIC"
 
-  # Set compiler environment variables
+  include_flags <- c(
+    if (!is_windows) c("-I/usr/include", "-I/usr/local/include"),
+    paste0("-I", shQuote(system.file("include", package = "CppODE")))
+  )
+
   Sys.setenv(
-    PKG_CPPFLAGS = "-I/usr/include -I/usr/local/include",
+    PKG_CPPFLAGS = paste(include_flags, collapse = " "),
     PKG_CXXFLAGS = cxxflags
   )
 
-  # Compile the source file
   shlibOut <- system2(
     file.path(R.home("bin"), "R"),
-    args = c("CMD", "SHLIB", "--preclean", filename_cpp),
-    stdout = TRUE,
-    stderr = TRUE
+    args = c("CMD", "SHLIB", "--preclean", shQuote(filename_cpp)),
+    stdout = TRUE, stderr = TRUE
   )
 
-  # Print compiler output if verbose
   if (verbose) {
     cat(paste(shlibOut, collapse = "\n"), "\n")
-  } else {
+  } else if (length(shlibOut)) {
     cat(paste(shlibOut[1], "\n"))
   }
 
-  # Build shared library name
   soFile <- paste0(filename, .Platform$dynlib.ext)
-
-  # Load the compiled shared object
   if (file.exists(soFile)) {
-    try(dyn.unload(soFile), silent = TRUE)  # Unload if already loaded
+    try(dyn.unload(soFile), silent = TRUE)
     dyn.load(soFile)
     invisible(soFile)
   } else {
     stop("Compiled shared library not found: ", soFile)
   }
 }
+
 

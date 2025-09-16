@@ -10,16 +10,19 @@ library(tidyverse)
 # jac <- ComputeJacobianSymb(eqns)
 eqns <- c(A = "-k1*A^2 *time")
 events = data.frame(var = "A", time = "t_e", value= 1, method = "add")
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = T)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = F, compile = F)
+CppODE::compileAndLoad(f, verbose = F)
 
-solve <- function(times, params, abstol = 1e-8, reltol = 1e-6) {
+solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxtrysteps = 500, maxsteps = 1e6) {
   paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
   params <- params[paramnames]
   .Call("solve_Amodel_s",
         as.numeric(times),
         as.numeric(params),
         as.numeric(abstol),
-        as.numeric(reltol))
+        as.numeric(reltol),
+        as.integer(maxtrysteps),
+        as.integer(maxsteps))
 }
 
 params <- c(A=1, k1=0.1, t_e=3)
@@ -157,7 +160,7 @@ calculate_A <- function(time, A0, k1, t_e) {
 
 df_analytical <- calculate_A(c(times, 3), 1, 0.1, 3)
 
-res <- rbind(res, df_analytical) %>% filter(name %in% df_analytical$name)
+res <- rbind(res, df_analytical)
 
 ggplot(res, aes(x = time, y = value, color = solver, linetype = solver)) +
   geom_line() +
