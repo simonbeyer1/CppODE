@@ -26,7 +26,8 @@ CppFun(
 to be treated as fixed (i.e., not included as independent variables
 in sensitivity analysis). Defaults to none.}
 
-\item{compile}{Logical, if \code{TRUE} compile the generated C++ file.}
+\item{compile}{Logical, if \code{TRUE} compile the generated C++ file
+and load the source file in R (platform-aware)}
 
 \item{modelname}{Optional string used for the output filename.
 Defaults to a random identifier.}

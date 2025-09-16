@@ -19,7 +19,8 @@
 #' @param fixed Optional character vector naming states and/or parameters
 #'   to be treated as fixed (i.e., not included as independent variables
 #'   in sensitivity analysis). Defaults to none.
-#' @param compile Logical, if `TRUE` compile the generated C++ file.
+#' @param compile Logical, if `TRUE` compile the generated C++ file
+#'   and load the source file in R (platform-aware)
 #' @param modelname Optional string used for the output filename.
 #'   Defaults to a random identifier.
 #' @param deriv Logical, compute first-order sensitivities (Jacobian).
@@ -536,6 +537,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
   sink()
 
   if (verbose) message("Wrote: ", normalizePath(filename))
+  if (compile) compileAndLoad(modelname, verbose)
 
   attr(modelname, "equations") <- odes
   attr(modelname, "variables") <- states
