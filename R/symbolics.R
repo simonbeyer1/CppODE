@@ -548,9 +548,7 @@ replaceNumbers <- function(x) {
 #' @param char Character vector (e.g. equation)
 #' @param exclude Character vector, the symbols to be excluded from the return value
 #' @return character vector with the symbols
-#' @examples getSymbols(c("A*AB+B^2"))
 #' @author Daniel Kaschek
-#' @export
 getSymbols <- function(char, exclude = NULL) {
   if (is.null(char))
     return(NULL)
@@ -560,90 +558,6 @@ getSymbols <- function(char, exclude = NULL) {
   names <- unique(out$text[out$token == "SYMBOL"])
   if(!is.null(exclude)) names <- names[!names%in%exclude]
   return(names)
-
-}
-
-
-#' Compute matrix product symbolically
-#'
-#' @param M matrix of type character
-#' @param N matrix of type character
-#' @return Matrix of type character, the matrix product of M and N
-#' @export
-prodSymb <- function(M, N) {
-
-  red <- sapply(list(M, N), is.null)
-  if(all(red)) {
-    return()
-  } else if(red[1]) {
-    return(N)
-  } else if(red[2]) {
-    return(M)
-  }
-
-  dimM <- dim(M)
-  dimN <- dim(N)
-  if(dimM[2] != dimN[1]) {
-    cat("Something is wrong with the dimensions of the matrices\n")
-    return(NA)
-  }
-  m <- 1:dimM[1]
-  n <- 1:dimN[2]
-  grid <- expand.grid(m,n)
-
-  MN <- apply(grid, 1, function(ik) {
-
-    v <- M[ik[1],]
-    w <- N[,ik[2]]
-    result <- ""
-    for(i in 1:length(v)) {
-      if(i==1 & !(0 %in% c(w[i], v[i]))) result <- paste("(", v[i], ") * (", w[i], ")", sep="")
-      if(i==1 & (0 %in% c(w[i], v[i]))) result <- "0"
-      if(i >1 & !(0 %in% c(w[i], v[i]))) result <- paste(result," + (", v[i], ") * (", w[i], ")", sep="")
-      if(i >1 & (0 %in% c(w[i], v[i]))) result <- result
-
-    }
-    if(substr(result, 1,3)=="0 +") result <- substr(result, 5, nchar(result))
-    return(result)})
-
-  return(matrix(MN, nrow=dimM[1], ncol=dimN[2]))
-
-
-}
-
-#' Compute matrix sumSymbolically
-#'
-#' @param M matrix of type character
-#' @param N matrix of type character
-#' @return Matrix of type character, the matrix sum of M and N
-#' @author Daniel Kaschek
-#' @export
-sumSymb <- function(M, N) {
-
-  red <- sapply(list(M, N), is.null)
-  if(all(red)) {
-    return()
-  } else if(red[1]) {
-    return(N)
-  } else if(red[2]) {
-    return(M)
-  }
-
-
-  if (inherits(M, "matrix")) dimM <- dim(M) else dimM <- c(length(M),1)
-  if (inherits(N, "matrix")) dimN <- dim(N) else dimN <- c(length(N),1)
-
-  M <- as.character(M)
-  N <- as.character(N)
-  result <- c()
-
-  for(i in 1:length(M)) {
-    if(M[i] == "0" & N[i] == "0") result[i] <- "0"
-    if(M[i] == "0" & N[i] != "0") result[i] <- N[i]
-    if(M[i] != "0" & N[i] == "0") result[i] <- M[i]
-    if(M[i] != "0" & N[i] != "0") result[i] <- paste(M[i]," + ",N[i], sep="")
-  }
-  return(matrix(result, nrow=dimM[1], ncol=dimM[2]))
 
 }
 

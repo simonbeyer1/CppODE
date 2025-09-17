@@ -8,7 +8,7 @@ library(dplyr)
 library(tidyverse)
 
 # jac <- ComputeJacobianSymb(eqns)
-eqns <- c(A = "-import*A^2 *time")
+eqns <- c(A = "-k1*A^2 *time")
 events = data.frame(var = "A", time = "t_e", value= 1, method = "add")
 f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = F, compile = F)
 CppODE::compileAndLoad(f, verbose = F)

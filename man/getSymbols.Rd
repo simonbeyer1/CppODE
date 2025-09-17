@@ -17,9 +17,6 @@ character vector with the symbols
 \description{
 Get symbols from a character
 }
-\examples{
-getSymbols(c("A*AB+B^2"))
-}
 \author{
 Daniel Kaschek
 }
