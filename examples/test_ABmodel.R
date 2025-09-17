@@ -8,7 +8,7 @@ library(dplyr)
 library(tidyverse)
 
 # jac <- ComputeJacobianSymb(eqns)
-eqns <- c(A = "-k1*A^2 *time")
+eqns <- c(A = "-import*A^2 *time")
 events = data.frame(var = "A", time = "t_e", value= 1, method = "add")
 f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s", secderiv = F, compile = F)
 CppODE::compileAndLoad(f, verbose = F)
@@ -29,10 +29,10 @@ params <- c(A=1, k1=0.1, t_e=3)
 times <- c(seq(0, 10, length.out = 1000))
 
 boostCppADtime <- system.time({
-  solve(times, params, abstol = 1e-8, reltol = 1e-6)
+  solve(times, params, abstol = 1e-6, reltol = 1e-6)
 })
 
-res_CppAD <- solve(times, params, abstol = 1e-8, reltol = 1e-8) %>% as.data.frame() %>%
+res_CppAD <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>% as.data.frame() %>%
   pivot_longer(cols = -time, names_to = "name", values_to = "value") %>%
   mutate(solver = "boost::odeint + CppAD")
 

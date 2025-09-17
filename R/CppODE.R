@@ -561,6 +561,8 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
 
   attr(modelname, "equations") <- odes
   attr(modelname, "variables") <- states
+  attr(modelname, "sensvariables") <- deriv_colnames
+  attr(modelname, "secsensvariables") <- sec_colnames
   attr(modelname, "parameters") <- params
   attr(modelname, "events") <- events
   attr(modelname, "fixed") <- c(fixed_states, fixed_params)
@@ -611,7 +613,7 @@ compileAndLoad <- function(filename, verbose = FALSE) {
 
   soFile <- paste0(filename, .Platform$dynlib.ext)
   if (file.exists(soFile)) {
-    try(dyn.unload(soFile), silent = TRUE)
+    try(dyn.unload(soFile), silent = !verbose)
     dyn.load(soFile)
     invisible(soFile)
   } else {
