@@ -3,6 +3,4 @@
 export(ComputeJacobianSymb)
 export(CppFun)
 export(compileAndLoad)
-export(replaceNumbers)
-export(replaceSymbols)
 import(reticulate)

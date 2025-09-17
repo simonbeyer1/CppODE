@@ -463,86 +463,6 @@ cleanup_generated_code <- function(code) {
   return(code)
 }
 
-#' Replace symbols in a character vector by other symbols
-#'
-#' @param what vector of type character, the symbols to be replaced, e.g. c("A", "B")
-#' @param by vector of type character, the replacement, e.g. c("x[0]", "x[1]")
-#' @param x vector of type character, the object where the replacement should take place
-#' @return vector of type character, conserves the names of x.
-#' @examples replaceSymbols(c("A", "B"), c("x[0]", "x[1]"), c("A*B", "A+B+C"))
-#' @author Daniel Kaschek
-#' @export
-replaceSymbols <- function(what, by, x) {
-
-  xOrig <- x
-  is.not.zero <- which(x!="0")
-  x <- x[is.not.zero]
-
-  mynames <- names(x)
-
-  x.parsed <- parse(text = x, keep.source = TRUE)
-  data <- utils::getParseData(x.parsed)
-
-  by <- rep(by, length.out=length(what))
-  names(by) <- what
-
-  data$text[data$text%in%what] <- by[data$text[data$text%in%what]]
-  data <- data[data$token!="expr",]
-
-
-
-  breaks <- c(0, which(diff(data$line1) == 1), length(data$line1))
-
-  out <- lapply(1:(length(breaks)-1), function(i) {
-
-    paste(data$text[(breaks[i]+1):(breaks[i+1])], collapse="")
-
-  })
-
-  names(out) <- mynames
-  out <- unlist(out)
-
-  xOrig[is.not.zero] <- out
-
-  return(xOrig)
-}
-
-#' Replace integer number in a character vector by other double
-#'
-#' @param x vector of type character, the object where the replacement should take place
-#' @return vector of type character, conserves the names of x.
-#' @author Daniel Kaschek
-#' @export
-replaceNumbers <- function(x) {
-
-  xOrig <- x
-  is.not.zero <- which(x!="0")
-  x <- x[is.not.zero]
-
-  mynames <- names(x)
-
-  x.parsed <- parse(text = x, keep.source = TRUE)
-  data <- utils::getParseData(x.parsed)
-  data$text[data$token == "NUM_CONST"] <- format(as.numeric(data$text[data$token == "NUM_CONST"]), nsmall = 1)
-  breaks <- c(0, which(diff(data$line1) == 1), length(data$line1))
-
-  out <- lapply(1:(length(breaks)-1), function(i) {
-
-    paste(data$text[(breaks[i]+1):(breaks[i+1])], collapse="")
-
-  })
-
-  names(out) <- mynames
-  out <- unlist(out)
-
-  xOrig[is.not.zero] <- out
-
-  return(xOrig)
-
-
-}
-
-
 #' Get symbols from a character
 #'
 #' @param char Character vector (e.g. equation)
@@ -560,4 +480,73 @@ getSymbols <- function(char, exclude = NULL) {
   return(names)
 
 }
+
+#' Sanitize symbol names for compatibility with the SymPy parser
+#'
+#' Reserved identifiers (Python keywords and selected built-ins) cannot be used
+#' directly as variable names. This function replaces such names with the same
+#' name plus an underscore appended (e.g. `while` -> `while_`).
+#'
+#' A warning is emitted for each renamed symbol.
+#'
+#' @param symbols Character vector of symbol names.
+#' @return Character vector with sanitized names.
+sanitizeSymbols <- function(symbols) {
+  reserved <- c(
+    # Python keywords
+    "False","None","True","and","as","assert","async","await","break","class",
+    "continue","def","del","elif","else","except","finally","for","from","global",
+    "if","import","in","is","lambda","nonlocal","not","or","pass","raise","return",
+    "try","while","with","yield",
+    # Some built-ins that should not be used as variable names
+    "list","dict","set","int","float"
+  )
+
+  out <- symbols
+  for (i in seq_along(symbols)) {
+    if (symbols[i] %in% reserved) {
+      newname <- paste0(symbols[i], "_")
+      warning(sprintf("Symbol '%s' is reserved – renamed to '%s'.",
+                      symbols[i], newname))
+      out[i] <- newname
+    }
+  }
+  out
+}
+
+#' Sanitize expressions for compatibility with the SymPy parser
+#'
+#' This function scans character expressions (ODE right-hand sides, event
+#' values, etc.) for reserved Python keywords and replaces them with the same
+#' name plus an underscore appended.
+#'
+#' Function names like `min`, `max`, `abs`, and `sum` are left untouched,
+#' since they are valid in SymPy expressions.
+#'
+#' A warning is emitted for each replacement performed.
+#'
+#' @param exprs Character vector of expressions.
+#' @return Character vector with sanitized expressions.
+sanitizeExprs <- function(exprs) {
+  sanitized <- exprs
+  reserved_keywords <- c(
+    "False","None","True","and","as","assert","async","await","break","class",
+    "continue","def","del","elif","else","except","finally","for","from","global",
+    "if","import","in","is","lambda","nonlocal","not","or","pass","raise","return",
+    "try","while","with","yield"
+  )
+
+  # Replace reserved keywords only if they appear as standalone names
+  for (sym in reserved_keywords) {
+    pattern <- paste0("\\b", sym, "\\b")
+    repl    <- paste0(sym, "_")
+    if (any(grepl(pattern, sanitized))) {
+      warning(sprintf("Reserved keyword '%s' found in expression – replaced by '%s'.",
+                      sym, repl))
+      sanitized <- gsub(pattern, repl, sanitized)
+    }
+  }
+  sanitized
+}
+
 

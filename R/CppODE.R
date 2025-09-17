@@ -38,6 +38,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, compile = TRUE, modelname 
   # --- Clean ODEs ---
   odes <- unclass(odes)
   odes <- gsub("\n", "", odes)
+  odes <- sanitizeExprs(odes)
   odes_attr <- attributes(odes)
 
   # --- States & params ---
