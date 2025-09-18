@@ -5,8 +5,8 @@
 This package provides a convenient R interface to generate, compile, and run C++ code for ODE models with automatic differentiation support.  
 Internally, it uses:
 
-- [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/) for efficient ODE integration  
-- [CppAD](https://coin-or.github.io/CppAD/doc/cppad.htm) for automatic differentiation (first- and second-order)  
+- [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/) for ODE integration with rosenbrock34 method
+- [CppAD](https://coin-or.github.io/CppAD/doc/cppad.htm) for automatic differentiation 
 
 ---
 
@@ -38,7 +38,7 @@ brew install boost cppad
 Once the system libraries are available, you can install the package from GitHub:
 
 ```r
-install.packages("devtools")
+install.packages("devtools") # If needed
 devtools::install_github("simonbeyer1/CppODE")
 ```
 
