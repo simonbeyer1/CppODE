@@ -47,7 +47,7 @@ namespace boost { namespace numeric { namespace ublas {
             c_ = c;
             return *this;
         }
-        
+
         // Closure comparison
         BOOST_UBLAS_INLINE
         bool same_closure (const container_const_reference &cr) const {
@@ -98,42 +98,48 @@ namespace boost { namespace numeric { namespace ublas {
     };
 
   /** \brief Base class of all forward iterators.
-   * 
+   *
    *  \param IC the iterator category
    *  \param I the derived iterator type
    *  \param T the value type
-   * 
+   *
    * The forward iterator can only proceed in one direction
    * via the post increment operator.
    */
-    template<class IC, class I, class T>
-    struct forward_iterator_base:
-        public std::iterator<IC, T> {
-        typedef I derived_iterator_type;
-        typedef T derived_value_type;
+  template<class IC, class I, class T>
+  struct forward_iterator_base {
+    using iterator_category = IC;
+    using value_type        = T;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = T*;
+    using reference         = T&;
 
-        // Arithmetic
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator ++ (int) {
-            derived_iterator_type &d (*static_cast<const derived_iterator_type *> (this));
-            derived_iterator_type tmp (d);
-            ++ d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator ++ (derived_iterator_type &d, int) {
-            derived_iterator_type tmp (d);
-            ++ d;
-            return tmp;
-        }
+    typedef I derived_iterator_type;
+    typedef T derived_value_type;
 
-        // Comparison
-        BOOST_UBLAS_INLINE
-        bool operator != (const derived_iterator_type &it) const {
-            const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
-            return ! (*d == it);
-        }
-    };
+    // Arithmetic
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator ++ (int) {
+      derived_iterator_type &d (*static_cast<const derived_iterator_type *> (this));
+      derived_iterator_type tmp (d);
+      ++ d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator ++ (derived_iterator_type &d, int) {
+      derived_iterator_type tmp (d);
+      ++ d;
+      return tmp;
+    }
+
+    // Comparison
+    BOOST_UBLAS_INLINE
+    bool operator != (const derived_iterator_type &it) const {
+      const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
+      return ! (*d == it);
+    }
+  };
+
 
   /** \brief Base class of all bidirectional iterators.
    *
@@ -144,47 +150,53 @@ namespace boost { namespace numeric { namespace ublas {
    * The bidirectional iterator can proceed in both directions
    * via the post increment and post decrement operator.
    */
-    template<class IC, class I, class T>
-    struct bidirectional_iterator_base:
-        public std::iterator<IC, T> {
-        typedef I derived_iterator_type;
-        typedef T derived_value_type;
+  template<class IC, class I, class T>
+  struct bidirectional_iterator_base {
+    using iterator_category = IC;
+    using value_type        = T;
+    using difference_type   = std::ptrdiff_t;
+    using pointer           = T*;
+    using reference         = T&;
 
-        // Arithmetic
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator ++ (int) {
-            derived_iterator_type &d (*static_cast<const derived_iterator_type *> (this));
-            derived_iterator_type tmp (d);
-            ++ d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator ++ (derived_iterator_type &d, int) {
-            derived_iterator_type tmp (d);
-            ++ d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator -- (int) {
-            derived_iterator_type &d (*static_cast<const derived_iterator_type *> (this));
-            derived_iterator_type tmp (d);
-            -- d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator -- (derived_iterator_type &d, int) {
-            derived_iterator_type tmp (d);
-            -- d;
-            return tmp;
-        }
+    typedef I derived_iterator_type;
+    typedef T derived_value_type;
 
-        // Comparison
-        BOOST_UBLAS_INLINE
-        bool operator != (const derived_iterator_type &it) const {
-            const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
-            return ! (*d == it);
-        }
-    };
+    // Arithmetic
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator ++ (int) {
+      derived_iterator_type &d (*static_cast<const derived_iterator_type *> (this));
+      derived_iterator_type tmp (d);
+      ++ d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator ++ (derived_iterator_type &d, int) {
+      derived_iterator_type tmp (d);
+      ++ d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator -- (int) {
+      derived_iterator_type &d (*static_cast<const derived_iterator_type *> (this));
+      derived_iterator_type tmp (d);
+      -- d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator -- (derived_iterator_type &d, int) {
+      derived_iterator_type tmp (d);
+      -- d;
+      return tmp;
+    }
+
+    // Comparison
+    BOOST_UBLAS_INLINE
+    bool operator != (const derived_iterator_type &it) const {
+      const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
+      return ! (*d == it);
+    }
+  };
+
 
   /** \brief Base class of all random access iterators.
    *
@@ -198,98 +210,94 @@ namespace boost { namespace numeric { namespace ublas {
    * via the +, - and +=, -= operators. The random access iterator
    * is LessThan Comparable.
    */
-    template<class IC, class I, class T, class D = std::ptrdiff_t>
-    // ISSUE the default for D seems rather dangerous as it can easily be (silently) incorrect
-    struct random_access_iterator_base:
-        public std::iterator<IC, T> {
-        typedef I derived_iterator_type;
-        typedef T derived_value_type;
-        typedef D derived_difference_type;
+  template<class IC, class I, class T, class D = std::ptrdiff_t>
+  struct random_access_iterator_base {
+    using iterator_category = IC;
+    using value_type        = T;
+    using difference_type   = D;
+    using pointer           = T*;
+    using reference         = T&;
 
-        /* FIXME Need to explicitly pass derived_reference_type as otherwise I undefined type or forward declared
-        typedef typename derived_iterator_type::reference derived_reference_type;
-        // Indexed element
-        BOOST_UBLAS_INLINE
-        derived_reference_type operator [] (derived_difference_type n) {
-            return *(*this + n);
-        }
-        */
+    typedef I derived_iterator_type;
+    typedef T derived_value_type;
+    typedef D derived_difference_type;
 
-        // Arithmetic
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator ++ (int) {
-            derived_iterator_type &d (*static_cast<derived_iterator_type *> (this));
-            derived_iterator_type tmp (d);
-            ++ d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator ++ (derived_iterator_type &d, int) {
-            derived_iterator_type tmp (d);
-            ++ d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator -- (int) {
-            derived_iterator_type &d (*static_cast<derived_iterator_type *> (this));
-            derived_iterator_type tmp (d);
-            -- d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator -- (derived_iterator_type &d, int) {
-            derived_iterator_type tmp (d);
-            -- d;
-            return tmp;
-        }
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator + (derived_difference_type n) const {
-            derived_iterator_type tmp (*static_cast<const derived_iterator_type *> (this));
-            return tmp += n;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator + (const derived_iterator_type &d, derived_difference_type n) {
-            derived_iterator_type tmp (d);
-            return tmp += n;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator + (derived_difference_type n, const derived_iterator_type &d) {
-            derived_iterator_type tmp (d);
-            return tmp += n;
-        }
-        BOOST_UBLAS_INLINE
-        derived_iterator_type operator - (derived_difference_type n) const {
-            derived_iterator_type tmp (*static_cast<const derived_iterator_type *> (this));
-            return tmp -= n;
-        }
-        BOOST_UBLAS_INLINE
-        friend derived_iterator_type operator - (const derived_iterator_type &d, derived_difference_type n) {
-            derived_iterator_type tmp (d);
-            return tmp -= n;
-        }
+    // Arithmetic
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator ++ (int) {
+      derived_iterator_type &d (*static_cast<derived_iterator_type *> (this));
+      derived_iterator_type tmp (d);
+      ++ d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator ++ (derived_iterator_type &d, int) {
+      derived_iterator_type tmp (d);
+      ++ d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator -- (int) {
+      derived_iterator_type &d (*static_cast<derived_iterator_type *> (this));
+      derived_iterator_type tmp (d);
+      -- d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator -- (derived_iterator_type &d, int) {
+      derived_iterator_type tmp (d);
+      -- d;
+      return tmp;
+    }
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator + (derived_difference_type n) const {
+      derived_iterator_type tmp (*static_cast<const derived_iterator_type *> (this));
+      return tmp += n;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator + (const derived_iterator_type &d, derived_difference_type n) {
+      derived_iterator_type tmp (d);
+      return tmp += n;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator + (derived_difference_type n, const derived_iterator_type &d) {
+      derived_iterator_type tmp (d);
+      return tmp += n;
+    }
+    BOOST_UBLAS_INLINE
+    derived_iterator_type operator - (derived_difference_type n) const {
+      derived_iterator_type tmp (*static_cast<const derived_iterator_type *> (this));
+      return tmp -= n;
+    }
+    BOOST_UBLAS_INLINE
+    friend derived_iterator_type operator - (const derived_iterator_type &d, derived_difference_type n) {
+      derived_iterator_type tmp (d);
+      return tmp -= n;
+    }
 
-        // Comparison
-        BOOST_UBLAS_INLINE
-        bool operator != (const derived_iterator_type &it) const {
-            const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
-            return ! (*d == it);
-        }
-        BOOST_UBLAS_INLINE
-        bool operator <= (const derived_iterator_type &it) const {
-            const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
-            return ! (it < *d);
-        }
-        BOOST_UBLAS_INLINE
-        bool operator >= (const derived_iterator_type &it) const {
-            const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
-            return ! (*d < it);
-        }
-        BOOST_UBLAS_INLINE
-        bool operator > (const derived_iterator_type &it) const {
-            const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
-            return it < *d;
-        }
-    };
+    // Comparison
+    BOOST_UBLAS_INLINE
+    bool operator != (const derived_iterator_type &it) const {
+      const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
+      return ! (*d == it);
+    }
+    BOOST_UBLAS_INLINE
+    bool operator <= (const derived_iterator_type &it) const {
+      const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
+      return ! (it < *d);
+    }
+    BOOST_UBLAS_INLINE
+    bool operator >= (const derived_iterator_type &it) const {
+      const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
+      return ! (*d < it);
+    }
+    BOOST_UBLAS_INLINE
+    bool operator > (const derived_iterator_type &it) const {
+      const derived_iterator_type *d = static_cast<const derived_iterator_type *> (this);
+      return it < *d;
+    }
+  };
+
 
   /** \brief Base class of all reverse iterators. (non-MSVC version)
    *
@@ -633,7 +641,7 @@ namespace boost { namespace numeric { namespace ublas {
    * \param C the (mutable) container type
    * \param IC the iterator category
    *
-   * This class implements a random access iterator. The current 
+   * This class implements a random access iterator. The current
    * position is stored as the unsigned integer it_ and the
    * values are accessed via operator()(it_) of the container.
    *
@@ -738,13 +746,13 @@ namespace boost { namespace numeric { namespace ublas {
    * \param C the (immutable) container type
    * \param IC the iterator category
    *
-   * This class implements a random access iterator. The current 
+   * This class implements a random access iterator. The current
    * position is stored as the unsigned integer \c it_ and the
    * values are accessed via \c operator()(it_) of the container.
    *
    * uBLAS extension: \c index()
    *
-   * Note: there is an automatic conversion from 
+   * Note: there is an automatic conversion from
    * \c indexed_iterator to \c indexed_const_iterator
    */
 
@@ -771,7 +779,7 @@ namespace boost { namespace numeric { namespace ublas {
         BOOST_UBLAS_INLINE
         indexed_const_iterator (const container_type &c, size_type it):
             container_const_reference<container_type> (c), it_ (it) {}
-        BOOST_UBLAS_INLINE 
+        BOOST_UBLAS_INLINE
         indexed_const_iterator (const iterator_type &it):
             container_const_reference<container_type> (it ()), it_ (it.index ()) {}
 
@@ -850,7 +858,7 @@ namespace boost { namespace numeric { namespace ublas {
     template<class C, class IC>
     class indexed_iterator2;
 
-  /** \brief A class implementing an indexed random access iterator 
+  /** \brief A class implementing an indexed random access iterator
    * of a matrix.
    *
    * \param C the (mutable) container type
@@ -864,15 +872,15 @@ namespace boost { namespace numeric { namespace ublas {
    * uBLAS extension: \c index1(), \c index2() and access to the
    * dual iterator via \c begin(), \c end(), \c rbegin() and \c rend()
    *
-   * Note: The container has to support the \code find2(rank, i, j) \endcode 
+   * Note: The container has to support the \code find2(rank, i, j) \endcode
    * method
    */
 
     template<class C, class IC>
     class indexed_iterator1:
-        public container_reference<C>, 
+        public container_reference<C>,
         public random_access_iterator_base<IC,
-                                           indexed_iterator1<C, IC>, 
+                                           indexed_iterator1<C, IC>,
                                            typename C::value_type,
                                            typename C::difference_type> {
     public:
@@ -890,7 +898,7 @@ namespace boost { namespace numeric { namespace ublas {
         BOOST_UBLAS_INLINE
         indexed_iterator1 ():
             container_reference<container_type> (), it1_ (), it2_ () {}
-        BOOST_UBLAS_INLINE 
+        BOOST_UBLAS_INLINE
         indexed_iterator1 (container_type &c, size_type it1, size_type it2):
             container_reference<container_type> (c), it1_ (it1), it2_ (it2) {}
 
@@ -946,7 +954,7 @@ namespace boost { namespace numeric { namespace ublas {
 
         BOOST_UBLAS_INLINE
         dual_iterator_type begin () const {
-            return (*this) ().find2 (1, index1 (), 0); 
+            return (*this) ().find2 (1, index1 (), 0);
         }
         BOOST_UBLAS_INLINE
         dual_iterator_type end () const {
@@ -994,7 +1002,7 @@ namespace boost { namespace numeric { namespace ublas {
     template<class C, class IC>
     class indexed_const_iterator2;
 
-  /** \brief A class implementing an indexed random access iterator 
+  /** \brief A class implementing an indexed random access iterator
    * of a matrix.
    *
    * \param C the (immutable) container type
@@ -1010,15 +1018,15 @@ namespace boost { namespace numeric { namespace ublas {
    *
    * Note 1: The container has to support the find2(rank, i, j) method
    *
-   * Note 2: there is an automatic conversion from 
+   * Note 2: there is an automatic conversion from
    * \c indexed_iterator1 to \c indexed_const_iterator1
    */
 
     template<class C, class IC>
     class indexed_const_iterator1:
-        public container_const_reference<C>, 
+        public container_const_reference<C>,
         public random_access_iterator_base<IC,
-                                           indexed_const_iterator1<C, IC>, 
+                                           indexed_const_iterator1<C, IC>,
                                            typename C::value_type,
                                            typename C::difference_type> {
     public:
@@ -1040,7 +1048,7 @@ namespace boost { namespace numeric { namespace ublas {
         BOOST_UBLAS_INLINE
         indexed_const_iterator1 (const container_type &c, size_type it1, size_type it2):
             container_const_reference<container_type> (c), it1_ (it1), it2_ (it2) {}
-        BOOST_UBLAS_INLINE 
+        BOOST_UBLAS_INLINE
         indexed_const_iterator1 (const iterator_type &it):
             container_const_reference<container_type> (it ()), it1_ (it.index1 ()), it2_ (it.index2 ()) {}
 
@@ -1096,19 +1104,19 @@ namespace boost { namespace numeric { namespace ublas {
 
         BOOST_UBLAS_INLINE
         dual_iterator_type begin () const {
-            return (*this) ().find2 (1, index1 (), 0); 
+            return (*this) ().find2 (1, index1 (), 0);
         }
         BOOST_UBLAS_INLINE
         dual_iterator_type end () const {
-            return (*this) ().find2 (1, index1 (), (*this) ().size2 ()); 
+            return (*this) ().find2 (1, index1 (), (*this) ().size2 ());
         }
         BOOST_UBLAS_INLINE
         dual_reverse_iterator_type rbegin () const {
-            return dual_reverse_iterator_type (end ()); 
+            return dual_reverse_iterator_type (end ());
         }
         BOOST_UBLAS_INLINE
         dual_reverse_iterator_type rend () const {
-            return dual_reverse_iterator_type (begin ()); 
+            return dual_reverse_iterator_type (begin ());
         }
 
         // Assignment
@@ -1143,7 +1151,7 @@ namespace boost { namespace numeric { namespace ublas {
         friend class indexed_iterator1<container_type, iterator_category>;
     };
 
-  /** \brief A class implementing an indexed random access iterator 
+  /** \brief A class implementing an indexed random access iterator
    * of a matrix.
    *
    * \param C the (mutable) container type
@@ -1161,9 +1169,9 @@ namespace boost { namespace numeric { namespace ublas {
    */
     template<class C, class IC>
     class indexed_iterator2:
-        public container_reference<C>, 
+        public container_reference<C>,
         public random_access_iterator_base<IC,
-                                           indexed_iterator2<C, IC>, 
+                                           indexed_iterator2<C, IC>,
                                            typename C::value_type,
                                            typename C::difference_type> {
     public:
@@ -1282,7 +1290,7 @@ namespace boost { namespace numeric { namespace ublas {
         size_type it2_;
     };
 
-  /** \brief A class implementing an indexed random access iterator 
+  /** \brief A class implementing an indexed random access iterator
    * of a matrix.
    *
    * \param C the (immutable) container type
@@ -1298,7 +1306,7 @@ namespace boost { namespace numeric { namespace ublas {
    *
    * Note 1: The container has to support the \c find2(rank, i, j) method
    *
-   * Note 2: there is an automatic conversion from 
+   * Note 2: there is an automatic conversion from
    * \c indexed_iterator2 to \c indexed_const_iterator2
    */
 
