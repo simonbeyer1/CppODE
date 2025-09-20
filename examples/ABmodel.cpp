@@ -138,7 +138,7 @@ extern "C" SEXP solve(SEXP timesSEXP, SEXP paramsSEXP,
 
     ode_system sys(full_params);
     jacobian jac(full_params);
-    rosenbrock4_controller<rosenbrock4<AD>> stepper(abstol, reltol);
+    rosenbrock4_controller_ad<rosenbrock4<AD>> stepper(abstol, reltol);
     AD dt = (t_ad.back() - t_ad.front()) * abstol;
 
     std::vector<AD> result_times;

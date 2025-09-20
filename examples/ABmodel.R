@@ -11,7 +11,7 @@ compileAndLoad <- function(filename, verbose = FALSE) {
   filename_cpp <- paste0(filename, ".cpp")
 
   cxxflags <- "-std=c++17 -O2 -DNDEBUG -fPIC"
-  include_flags <- c("-I/home/simon/Documents/Projects/CppODE/inst/include")
+  include_flags <- c("-I/home/simon/Dokumente/Projects/CppODE/inst/include")
 
 
   Sys.setenv(
@@ -41,7 +41,7 @@ compileAndLoad <- function(filename, verbose = FALSE) {
   }
 }
 
-compileAndLoad("ABmodel", verbose = T)
+compileAndLoad("ABmodel", verbose = F)
 
 eqns <- c(A = "-k1*A^2*time", B = "-k1*A^2*time - k2* B")
 
@@ -63,13 +63,13 @@ solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxtrysteps = 1e7
 
 
 params <- c(A=1, B=0, k1=0.1, k2=0.1)
-times <- c(seq(0, 30, length.out = 10))
+times <- c(seq(0, 30, length.out = 100))
 
 boostCppADtime <- system.time({
-  solve(times, params, abstol = 1e-12, reltol = 1e-12)
+  solve(times, params, abstol = 1e-6, reltol = 1e-6)
 })
 
-res_CppAD <- solve(times, params, abstol = 1e-12, reltol = 1e-12) %>% as.data.frame() %>%
+res_CppAD <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>% as.data.frame() %>%
   pivot_longer(cols = -time, names_to = "name", values_to = "value") %>%
   mutate(solver = "boost::odeint + FAD")
 
