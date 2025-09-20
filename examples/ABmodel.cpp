@@ -193,6 +193,6 @@ extern "C" SEXP solve(SEXP timesSEXP, SEXP paramsSEXP,
   } catch (const std::exception& e) {
     Rf_error("ODE solver failed: %s", e.what());
   } catch (...) {
-    Rf_error("ODE solver failed: unknown C++ exception");
+    Rf_error("ODE solver failed: unknown C++ exception! Good Luck :P");
   }
 }
