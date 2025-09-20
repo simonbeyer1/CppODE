@@ -3,4 +3,4 @@
 export(ComputeJacobianSymb)
 export(CppFun)
 export(compileAndLoad)
-import(reticulate)
+importFrom(reticulate,import)

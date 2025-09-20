@@ -6,6 +6,24 @@
 \usage{
 cleanup_generated_code(code)
 }
-\description{
-Clean up generated C++ code
+\arguments{
+\item{code}{Character string with raw C++ code.}
 }
+\value{
+Character string with cleaned-up code.
+}
+\description{
+Performs light post-processing on generated C++ code:
+\itemize{
+\item Removes redundant parentheses around simple values.
+\item Normalizes whitespace.
+\item Adds minimal spacing around arithmetic operators.
+}
+}
+\details{
+This step is optional and purely cosmetic.
+}
+\author{
+Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
+}
+\keyword{internal}

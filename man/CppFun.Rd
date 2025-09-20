@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{CppFun}
 \alias{CppFun}
-\title{Generate C++ code for ODE models with sensitivities}
+\title{Generate C++ code for ODE models with sensitivities and events}
 \usage{
 CppFun(
   odes,
@@ -11,51 +11,94 @@ CppFun(
   compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
-  secderiv = FALSE,
   verbose = FALSE
 )
 }
 \arguments{
-\item{odes}{Named character vector of ODEs (one entry per state).}
+\item{odes}{Named character vector of ODE right-hand sides.
+Names correspond to state variables.}
 
-\item{events}{Optional \code{data.frame} specifying events with columns:
-\code{var} (state), \code{time} (numeric or symbol), \code{value}, and \code{method}
-(\code{"replace"}, \code{"add"}, or \code{"multiply"}).}
+\item{events}{Data frame describing events (see Details).
+Default: \code{NULL} (no events).}
 
-\item{fixed}{Optional character vector naming states and/or parameters
-to be treated as fixed (i.e., not included as independent variables
-in sensitivity analysis). Defaults to none.}
+\item{fixed}{Character vector of fixed states or parameters.
+Only used if \code{deriv = TRUE}.}
 
-\item{compile}{Logical, if \code{TRUE} compile the generated C++ file
-and load the source file in R (platform-aware)}
+\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
-\item{modelname}{Optional string used for the output filename.
-Defaults to a random identifier.}
+\item{modelname}{Optional character string for the output filename base.
+If \code{NULL}, a random identifier is generated.}
 
-\item{deriv}{Logical, compute first-order sensitivities (Jacobian).}
+\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD.
+If \code{FALSE}, use plain doubles (faster, but no sensitivities).}
 
-\item{secderiv}{Logical, compute second-order sensitivities (Hessian).}
-
-\item{verbose}{Logical, print progress messages.}
+\item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
-The name of the generated C++ file (character scalar). Attributes
-include the ODE equations, variables, parameters, fixed variables, events,
-symbolic Jacobian, and solver type.
+A string with the model name (same as \code{modelname}).
+Attributes:
+\itemize{
+\item \code{equations}: ODE definitions
+\item \code{variables}: State variable names
+\item \code{parameters}: Parameter names
+\item \code{events}: Events data.frame
+\item \code{solver}: Solver description
+}
 }
 \description{
-This function builds a complete C++ implementation of a system of ordinary
-differential equations (ODEs), including:
+This function automatically builds a C++ implementation of an ODE system
+suitable for Boost.Odeint stiff solvers (Rosenbrock4 with dense output).
+The generated C++ code supports:
+\itemize{
+\item Numerical integration of user-defined ODEs
+\item Fixed-time and root-triggered events
+\item Optional sensitivity analysis via automatic differentiation
+}
 }
 \details{
-\itemize{
-\item The ODE right-hand side and its Jacobian (for stiff solvers)
-\item Optional fixed-time events (state replacement, addition, multiplication)
-\item First- and second-order sensitivities with respect to model parameters
-and/or initial conditions
-\item Selection of "fixed" variables that are excluded from sensitivity analysis
+\subsection{Implementation details}{
+
+Symbolic parsing and C++ code generation are performed via
+the Python package \strong{SymPy}, accessed through the
+\code{reticulate} R package. Ensure that SymPy is available
+in your Python environment (e.g. install with \code{pip install sympy}).
 }
 
-The generated C++ file can be compiled and called from R to efficiently
-solve the ODE system and return trajectories together with sensitivities.
+\subsection{Events}{
+
+Events can be specified in a data.frame with columns:
+\describe{
+\item{var}{Name of the affected state variable}
+\item{value}{Numeric value to apply at the event}
+\item{method}{"replace", "add", or "multiply"}
+\item{time}{(optional) numeric time point of the event}
+\item{root}{(optional) root expression in terms of \code{x} and \code{time}}
+}
+Each event must specify either a \code{time} or a \code{root}.
+}
+
+\subsection{Sensitivities}{
+
+If \code{deriv = TRUE}, the system is augmented with automatic differentiation
+using FADBAD++. State and parameter sensitivities are computed and returned.
+If \code{deriv = FALSE}, the solver runs with plain doubles and no sensitivities.
+}
+}
+\note{
+Requires \pkg{reticulate} and a working SymPy installation in Python.
+}
+\examples{
+# Define ODEs
+odes <- c(A = "-k1*A*A*time", B = "k1*A*A*time - k2*B")
+
+# Define a fixed-time event
+events <- data.frame(
+  var = "A", value = "1.0", method = "replace", time = 20, root = NA
+)
+
+# Generate and compile C++ code with sensitivities
+model <- CppFun(odes, events = events, deriv = TRUE, verbose = TRUE)
+
+# Generated C++ file is written as <model>.cpp
+
 }

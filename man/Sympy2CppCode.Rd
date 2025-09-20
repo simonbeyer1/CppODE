@@ -2,34 +2,41 @@
 % Please edit documentation in R/symbolics.R
 \name{Sympy2CppCode}
 \alias{Sympy2CppCode}
-\title{Sympy2CppCode: Convert SymPy expression to C++ code (CppAD-compatible if needed)}
+\title{Convert a SymPy expression to C++ code}
 \usage{
 Sympy2CppCode(expr, states, params, n, expr_name = NULL, AD = TRUE)
 }
 \arguments{
 \item{expr}{SymPy expression (reticulate/sympy object).}
 
-\item{states}{Character vector of state names (e.g. \code{c("s1","s2",...)}).}
+\item{states}{Character vector of state variable names.}
 
-\item{params}{Character vector of parameter names (e.g. \code{c("p1","p2",...)}).}
+\item{params}{Character vector of parameter names.}
 
 \item{n}{Number of states.}
 
 \item{expr_name}{Optional: name of the ODE (used only in error messages).}
 
-\item{AD}{Logical. If \code{TRUE}, output is made CppAD-compatible.}
+\item{AD}{Logical. If \code{TRUE}, the numeric type is \code{AD}, otherwise \code{double}.}
 }
 \value{
 A character string with valid C++ code.
 }
 \description{
-This internal helper converts a SymPy expression into valid C++ code.
-Symbol names are replaced systematically, and—if \code{AD = TRUE}—non-smooth
-functions (\code{abs}, \code{max}, \code{min}, \code{Heaviside}, \code{sign}/\code{sgn}) and any
-ternary operators are rewritten into \verb{CppAD::CondExp*} expressions so the
-code is compatible with CppAD (automatic differentiation).
+This helper converts a SymPy expression into valid C++ code.
+Symbol names are systematically replaced:
+\itemize{
+\item State variables \code{x1,...,xn} → \code{x[0],...,x[n-1]}.
+\item Initial values \code{x1_0,...,xn_0} → \code{params[0],...,params[n-1]}.
+\item Parameters \code{p1,...,pm} → \code{params[n],...,params[n+m-1]}.
+\item Time variable \code{time} → \code{t}.
+}
+}
+\details{
+No additional rewrites (e.g. for non-smooth functions or ternary operators)
+are performed – the SymPy C++ output is used directly.
 }
 \author{
-Simon Beyer (revised)
+Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
 }
 \keyword{internal}

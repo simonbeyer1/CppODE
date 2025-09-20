@@ -16,7 +16,8 @@ If \code{NULL}, taken from \code{names(odes)}.}
 \item{params}{Character vector of parameter names (excluding state and "time").
 If \code{NULL}, inferred automatically.}
 
-\item{numType}{Character describing the numerical type}
+\item{AD}{Logical. If \code{TRUE}, numerical type is set to \code{AD},
+otherwise to \code{double}.}
 }
 \value{
 A list with:
@@ -27,13 +28,12 @@ A list with:
 The returned list has an attribute \code{CppCode} containing the full C++ struct.
 }
 \description{
-This function takes a system of ordinary differential equations (ODEs) defined
-as character strings and:
+This function takes a system of ordinary differential equations (ODEs)
+defined as character strings and:
 \enumerate{
 \item Computes the Jacobian matrix with respect to the state variables.
 \item Computes the explicit time derivatives of each ODE.
-\item Generates a C++ struct suitable for stiff solvers in Boost.Odeint,
-using \code{CppAD::AD} for automatic differentiation.
+\item Generates a C++ struct suitable for stiff solvers in Boost.Odeint.
 }
 }
 \details{
@@ -51,6 +51,7 @@ res <- ComputeJacobianSymb(odes)
 res$f.x
 res$f.time
 cat(attr(res, "CppCode"))
+
 }
 \author{
 Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}

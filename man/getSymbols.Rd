@@ -2,21 +2,28 @@
 % Please edit documentation in R/symbolics.R
 \name{getSymbols}
 \alias{getSymbols}
-\title{Get symbols from a character}
+\title{Extract symbols from expressions}
 \usage{
 getSymbols(char, exclude = NULL)
 }
 \arguments{
-\item{char}{Character vector (e.g. equation)}
+\item{char}{Character vector of expressions.}
 
-\item{exclude}{Character vector, the symbols to be excluded from the return value}
+\item{exclude}{Optional character vector of names to exclude.}
 }
 \value{
-character vector with the symbols
+Character vector with unique symbol names.
 }
 \description{
-Get symbols from a character
+Parses a character vector of expressions and returns all symbol names
+(variable identifiers).
+}
+\examples{
+getSymbols("a*b + c")
+getSymbols(c("x + y", "z"), exclude = "y")
+
 }
 \author{
 Daniel Kaschek
 }
+\keyword{internal}
