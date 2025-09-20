@@ -1170,6 +1170,11 @@ template <typename U, unsigned int N> struct Op< FTypeName<U,N> >
 	static bool myGe(const T& x, const T& y) { return x>=y; }
 };
 
+template<class T>
+inline F<T> abs(const F<T>& x) {
+  return (x < T(0)) ? -x : x;
+}
+
 } // namespace fadbad
 
 namespace std {
@@ -1187,6 +1192,8 @@ using fadbad::log;
 using fadbad::sqrt;
 using fadbad::pow;
 using fadbad::sqr;
+using fadbad::abs;
+
 
 // Provide min/max because STL expects them in std::
 template<class T>
