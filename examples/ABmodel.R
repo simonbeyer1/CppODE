@@ -11,7 +11,7 @@ compileAndLoad <- function(filename, verbose = FALSE) {
   filename_cpp <- paste0(filename, ".cpp")
 
   cxxflags <- "-std=c++20 -O2 -DNDEBUG -fPIC"
-  include_flags <- c("-I/home/simon/Dokumente/Projects/CppODE/inst/include")
+  include_flags <- c("-I/home/simon/Documents/Projects/CppODE/inst/include")
 
 
   Sys.setenv(
@@ -41,7 +41,7 @@ compileAndLoad <- function(filename, verbose = FALSE) {
   }
 }
 
-compileAndLoad("ABmodel", verbose = F)
+compileAndLoad("ABmodel", verbose = T)
 
 eqns <- c(A = "-k1*A^2*time", B = "-k1*A^2*time - k2* B")
 
@@ -63,7 +63,7 @@ solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxtrysteps = 1e7
 
 
 params <- c(A=1, B=0, k1=0.1, k2=0.1)
-times <- c(seq(0, 50, length.out = 100))
+times <- c(seq(0, 50, length.out = 10000))
 
 boostCppADtime <- system.time({
   solve(times, params, abstol = 1e-6, reltol = 1e-6)

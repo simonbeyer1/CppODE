@@ -5,9 +5,7 @@
 #include <algorithm>
 #include <vector>
 #include <cmath>
-#include <fadiff.h>
-#include <badiff.h>
-#include <stiff_solver_fad.hpp>
+#include <boost_rosenbrock34_fad.hpp>
 
 
 using namespace boost::numeric::odeint;
@@ -138,14 +136,18 @@ extern "C" SEXP solve(SEXP timesSEXP, SEXP paramsSEXP,
 
     ode_system sys(full_params);
     jacobian jac(full_params);
-    rosenbrock4_controller_ad<rosenbrock4<AD>> stepper(abstol, reltol);
+    auto stepper = rosenbrock4_dense_output<rosenbrock4_controller_ad<rosenbrock4<AD>>>(rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol));
     AD dt = (t_ad.back() - t_ad.front()) * abstol;
 
     std::vector<AD> result_times;
     std::vector<AD> y;
     observer obs(result_times, y);
-    integrate_times(stepper, std::make_pair(sys, jac),
-                    x, t_ad.begin(), t_ad.end(), dt, obs, checker);
+
+    std::vector<FixedEvent<AD>> fixed_events;
+    fixed_events.emplace_back(FixedEvent<AD>{20.0, 0, AD(1.0), EventMethod::Replace});
+
+    integrate_times_dense(stepper, std::make_pair(sys, jac),
+                    x, t_ad.begin(), t_ad.end(), dt, obs, fixed_events, {}, checker);
 
     const int n_out = static_cast<int>(result_times.size());
     if (n_out <= 0) Rf_error("Integration produced no output");
