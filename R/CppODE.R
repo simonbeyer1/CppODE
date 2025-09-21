@@ -78,6 +78,8 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
   # Index maps
   state_idx0 <- setNames(seq_along(states) - 1L, states)
   param_idx0 <- setNames(seq_along(params) - 1L, params)
+  fixed_state_idx  <- state_idx0[fixed_states]
+  fixed_param_idx  <- param_idx0[fixed_params]
 
   # --- Generate unique model name if not provided ---
   if (is.null(modelname)) {
@@ -189,34 +191,58 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
     "",
     sprintf("  ublas::vector<%s> x(x_N);", numType),
     sprintf("  ublas::vector<%s> full_params(dom_N);", numType),
-    "",
-    "  // initialize states",
-    "  for (int i = 0; i < x_N; ++i) {",
-    "    x[i] = REAL(paramsSEXP)[i];",
-    if (deriv) "    x[i].diff(i, dom_N);" else "",
-    "    full_params[i] = x[i];",
-    "  }",
-    "",
-    "  // initialize parameters",
-    "  for (int i = 0; i < p_N; ++i) {",
-    "    full_params[x_N + i] = REAL(paramsSEXP)[x_N + i];",
-    if (deriv) "    full_params[x_N + i].diff(x_N + i, dom_N);" else "",
-    "  }",
-    "",
-    "// --- Copy integration times ---",
-    sprintf("  std::vector<%s> t_ad;", numType),
-    "  for (int i = 0; i < Rf_length(timesSEXP); ++i) t_ad.push_back(REAL(timesSEXP)[i]);",
-    "",
-    "// --- Event containers ---",
-    sprintf("  std::vector<FixedEvent<%s>> fixed_events;", numType),
-    sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
+    "")
+
+  if (deriv) {
+    # declare fixed indices
+    if (length(fixed_state_idx) > 0) {
+      externC <- c(externC,
+                   sprintf("  std::vector<int> fixed_state_idx = {%s};",
+                           paste(fixed_state_idx, collapse = ",")))
+    } else {
+      externC <- c(externC, "  std::vector<int> fixed_state_idx;")
+    }
+    if (length(fixed_param_idx) > 0) {
+      externC <- c(externC,
+                   sprintf("  std::vector<int> fixed_param_idx = {%s};",
+                           paste(fixed_param_idx, collapse = ",")))
+    } else {
+      externC <- c(externC, "  std::vector<int> fixed_param_idx;")
+    }
+  }
+
+  # initialization of states and parameters
+  externC <- c(externC,
+               "  // initialize states",
+               "  for (int i = 0; i < x_N; ++i) {",
+               "    x[i] = REAL(paramsSEXP)[i];",
+               if (deriv) "    x[i].diff(i, dom_N);" else "",
+               "    full_params[i] = x[i];",
+               "  }",
+               "",
+               "  // initialize parameters",
+               "  for (int i = 0; i < p_N; ++i) {",
+               "    full_params[x_N + i] = REAL(paramsSEXP)[x_N + i];",
+               if (deriv) paste0(
+                 "    if (std::find(fixed_param_idx.begin(), fixed_param_idx.end(), i) == fixed_param_idx.end()) ",
+                 "full_params[x_N + i].diff(x_N + i, dom_N);"
+               ) else "",
+               "  }",
+               "",
+               "// --- Copy integration times ---",
+               sprintf("  std::vector<%s> t_ad;", numType),
+               "  for (int i = 0; i < Rf_length(timesSEXP); ++i) t_ad.push_back(REAL(timesSEXP)[i]);",
+               "",
+               "// --- Event containers ---",
+               sprintf("  std::vector<FixedEvent<%s>> fixed_events;", numType),
+               sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
   )
 
-  # --- Helper zum Parsen von Event-Ausdrücken ---
+  # --- Event parsing helper ---
   parse_or_literal <- function(expr, expr_name) {
     if (is.na(expr)) return(NULL)
     if (is.numeric(expr)) {
-      return(as.character(expr))  # Zahl direkt
+      return(as.character(expr))
     } else {
       e <- parser$parse_expr(
         expr,
@@ -227,7 +253,6 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
       code <- Sympy2CppCode(e, states, params, length(states),
                             expr_name = expr_name,
                             AD = (numType == "AD"))
-      # Wichtig: auf full_params mappen
       code <- gsub("\\bparams\\[", "full_params[", code)
       return(code)
     }
@@ -264,7 +289,6 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
     }
   }
 
-
   # --- Integration ---
   if (deriv) {
     stepper_line <- '  auto stepper = rosenbrock4_dense_output<rosenbrock4_controller_ad<rosenbrock4<AD>>>(rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol));'
@@ -288,9 +312,12 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
   )
 
   if (deriv) {
-    # --- Output with sensitivities ---
+    # precompute counts
+    n_sens_states <- length(sens_states)
+    n_sens_params <- length(sens_params)
     externC <- c(externC,
-                 '  const int ncol  = 1 + x_N + x_N * dom_N;',
+                 sprintf("  const int ncol = 1 + x_N + %d * (%d + %d);",
+                         length(states), n_sens_states, n_sens_params),
                  '  SEXP ans = PROTECT(Rf_allocMatrix(REALSXP, n_out, ncol));',
                  '  double* out = REAL(ans);',
                  '  auto IDX = [n_out](int r, int c){ return r + c * n_out; };',
@@ -299,16 +326,29 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
                  '    for (int s = 0; s < x_N; ++s) {',
                  '      AD& xi = y[i * x_N + s];',
                  '      out[IDX(i, 1 + s)] = xi.x();',
-                 '      int base_col = 1 + x_N + s * dom_N;',
-                 '      for (int v = 0; v < dom_N; ++v) out[IDX(i, base_col + v)] = xi.d(v);',
+                 '    }',
+                 '    int col_base = 1 + x_N;',
+                 '    for (int s = 0; s < x_N; ++s) {',
+                 '      AD& xi = y[i * x_N + s];',
+                 '      for (int v = 0; v < dom_N; ++v) {',
+                 '        bool is_fixed_init  = (v < x_N) && (std::find(fixed_state_idx.begin(), fixed_state_idx.end(), v) != fixed_state_idx.end());',
+                 '        bool is_fixed_param = (v >= x_N) && (std::find(fixed_param_idx.begin(), fixed_param_idx.end(), v - x_N) != fixed_param_idx.end());',
+                 '        if (!(is_fixed_init || is_fixed_param)) {',
+                 '          out[IDX(i, col_base++)] = xi.d(v);',
+                 '        }',
+                 '      }',
                  '    }',
                  '  }',
                  '  SEXP coln = PROTECT(Rf_allocVector(STRSXP, ncol));',
                  '  int col = 0;',
                  '  SET_STRING_ELT(coln, col++, Rf_mkChar("time"));')
     for (s in states) externC <- c(externC, sprintf('  SET_STRING_ELT(coln, col++, Rf_mkChar("%s"));', s))
-    for (s in states) for (v in c(states, params))
-      externC <- c(externC, sprintf('  SET_STRING_ELT(coln, col++, Rf_mkChar("%s.%s"));', s, v))
+    for (s in states) {
+      for (v in c(sens_states, sens_params)) {
+        externC <- c(externC,
+                     sprintf('  SET_STRING_ELT(coln, col++, Rf_mkChar("%s.%s"));', s, v))
+      }
+    }
     externC <- c(externC,
                  '  SEXP dimn = PROTECT(Rf_allocVector(VECSXP, 2));',
                  '  SET_VECTOR_ELT(dimn, 0, R_NilValue);',
@@ -403,7 +443,7 @@ compileAndLoad <- function(filename, verbose = FALSE) {
   filename_cpp <- paste0(filename, ".cpp")
   is_windows <- .Platform$OS.type == "windows"
 
-  cxxflags <- if (is_windows) "-std=c++20 -O2 -DNDEBUG" else "-std=c++20 -O2 -DNDEBUG -fPIC"
+  cxxflags <- if (is_windows) "-std=c++23 -O2 -DNDEBUG" else "-std=c++20 -O2 -DNDEBUG -fPIC"
 
   include_flags <- paste0("-I", shQuote(system.file("include", package = "CppODE")))
 

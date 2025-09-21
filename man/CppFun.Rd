@@ -56,14 +56,6 @@ The generated C++ code supports:
 }
 }
 \details{
-\subsection{Implementation details}{
-
-Symbolic parsing and C++ code generation are performed via
-the Python package \strong{SymPy}, accessed through the
-\code{reticulate} R package. Ensure that SymPy is available
-in your Python environment (e.g. install with \code{pip install sympy}).
-}
-
 \subsection{Events}{
 
 Events can be specified in a data.frame with columns:
@@ -83,22 +75,4 @@ If \code{deriv = TRUE}, the system is augmented with automatic differentiation
 using FADBAD++. State and parameter sensitivities are computed and returned.
 If \code{deriv = FALSE}, the solver runs with plain doubles and no sensitivities.
 }
-}
-\note{
-Requires \pkg{reticulate} and a working SymPy installation in Python.
-}
-\examples{
-# Define ODEs
-odes <- c(A = "-k1*A*A*time", B = "k1*A*A*time - k2*B")
-
-# Define a fixed-time event
-events <- data.frame(
-  var = "A", value = "1.0", method = "replace", time = 20, root = NA
-)
-
-# Generate and compile C++ code with sensitivities
-model <- CppFun(odes, events = events, deriv = TRUE, verbose = TRUE)
-
-# Generated C++ file is written as <model>.cpp
-
 }

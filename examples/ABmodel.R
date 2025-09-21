@@ -47,12 +47,10 @@ library(tidyverse)
 odes <- c(A = "-k1*A*A*time", B = "k1*A*A*time - k2*B")
 
 # Define a fixed-time event
-events <- data.frame(
-  var = "A", value = "1.0", method = "add", time = "te", root = NA
-)
+events <- data.frame(var = "A", value = "1.0", method = "add", time = "te", root = NA)
 
 # Generate and compile C++ code with sensitivities
-f <- CppODE::CppFun(odes, events = events, verbose = F, modelname = "AB_model")
+f <- CppODE::CppFun(odes, events = events, fixed = "A", verbose = F, modelname = "AB_model")
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxtrysteps = 5000, maxsteps = 1e6) {
   paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
@@ -71,13 +69,13 @@ solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxtrysteps = 500
 
 
 params <- c(A=1, B=0, k1=0.1, k2=0.1, te=5)
-times <- c(seq(0, 50, length.out = 1000))
+times <- c(seq(0, 50, length.out = 300))
 
 boosttime <- system.time({
-  solve(times, params, abstol = 1e-6, reltol = 1e-6)
+  solve(times, params, abstol = 1e-8, reltol = 1e-6)
 })
 
-res_Cpp <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>% as.data.frame() %>%
+res_Cpp <- solve(times, params, abstol = 1e-8, reltol = 1e-6) %>% as.data.frame() %>%
   pivot_longer(cols = -time, names_to = "name", values_to = "value") %>%
   mutate(solver = "boost::odeint + FAD")
 
@@ -96,7 +94,7 @@ eqns <- c(A = "-k1*A^2*time", B = "k1*A^2*time - k2*B")
 setwd(.dmoddir)
 events <- eventlist() %>%
   addEvent("A", value = "1.0", method = "add", time = "te")
-odemodel <- odemodel(eqns, events = events, modelname = "Amodel")
+odemodel <- odemodel(eqns, events = events, fixed = c("k1"), modelname = "Amodel")
 x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-8, atol = 1e-6))
 setwd(.workingDir)
 
