@@ -6,7 +6,7 @@ This package provides a convenient R interface to generate, compile, and run C++
 Internally, it uses:
 
 - [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/) for stiff ODE integration with the Rosenbrock 3(4) method (error-controlled, dense output).
-- [FADBAD++](https://github.com/stefano-lake/fadbad) for forward- and backward-mode automatic differentiation.  
+- [FADBAD++](https://uning.dk/fadbad.html) for forward- and backward-mode automatic differentiation.  
 
 ---
 
@@ -37,41 +37,39 @@ events <- data.frame(
   var   = "A",
   time  = "t_e",
   value = 1,
-  method= "add"
+  method= "add",
+  root = NA
 )
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s",
-                    deriv = TRUE, compile = FALSE)
-CppODE::compileAndLoad(f, verbose = FALSE)
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s")
 
-solve <- function(times, params,
-                  abstol = 1e-8, reltol = 1e-6,
-                  maxtrysteps = 500, maxsteps = 1e6) {
+solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxattemps = 5000, maxsteps = 1e6) {
   paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
+  # check for missing parameters
+  missing <- setdiff(paramnames, names(params))
+  if (length(missing) > 0) stop(sprintf("Missing parameters: %s", paste(missing, collapse = ", ")))
   params <- params[paramnames]
-  .Call("solve_Amodel_s",
+  .Call(paste0("solve_",as.character(f)),
         as.numeric(times),
         as.numeric(params),
         as.numeric(abstol),
         as.numeric(reltol),
-        as.integer(maxtrysteps),
+        as.integer(maxattemps),
         as.integer(maxsteps))
 }
 
-params <- c(A = 1, k1 = 0.1, t_e = 3)
+params <- c(A = 1, B=0, k1 = 0.1, k2= 0.2, t_e = 3)
 times  <- seq(0, 10, length.out = 300)
 
-res_FADBAD <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>%
+res <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>%
   as.data.frame() %>%
-  tidyr::pivot_longer(cols = -time, names_to = "name", values_to = "value") %>%
-  mutate(solver = "boost::odeint + FADBAD++")
+  tidyr::pivot_longer(cols = -time, names_to = "name", values_to = "value")
 
-ggplot(res_FADBAD, aes(x = time, y = value,
-                       color = solver, linetype = solver)) +
+ggplot(res, aes(x = time, y = value)) +
   geom_line() +
   facet_wrap(~name, scales = "free_y") +
   xlab("time") + ylab("value") +
-  dMod::theme_bw()
+  theme_bw()
 ```
 
 ---
