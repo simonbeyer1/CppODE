@@ -188,6 +188,7 @@ protected:
   bool m_last_rejected;
 };
 
+
 } } } // namespace boost::numeric::odeint
 
 #endif // ROSENBROCK4_CONTROLLER_AD_HPP

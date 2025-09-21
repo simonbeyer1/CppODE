@@ -8,6 +8,7 @@ CppFun(
   odes,
   events = NULL,
   fixed = NULL,
+  includeTimeZero = TRUE,
   compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
@@ -24,12 +25,16 @@ Default: \code{NULL} (no events).}
 \item{fixed}{Character vector of fixed states or parameters.
 Only used if \code{deriv = TRUE}.}
 
+\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that \code{0} is
+included in the integration times even if not supplied by the user.
+Default: \code{TRUE}.}
+
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
 \item{modelname}{Optional character string for the output filename base.
 If \code{NULL}, a random identifier is generated.}
 
-\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD.
+\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD in forward mode.
 If \code{FALSE}, use plain doubles (faster, but no sensitivities).}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
@@ -43,16 +48,18 @@ Attributes:
 \item \code{parameters}: Parameter names
 \item \code{events}: Events data.frame
 \item \code{solver}: Solver description
+\item \code{fixed}: Fixed states/parameters
+\item \code{jacobian}: Symbolic Jacobian expressions
+\item \code{sensvariables}: Names of sensitivity variables (if any)
 }
 }
 \description{
-This function automatically builds a C++ implementation of an ODE system
-suitable for Boost.Odeint stiff solvers (Rosenbrock4 with dense output).
+This function generates a C++ ODE solver using Boost.Odeint’s stiff
+Rosenbrock 4 method with embedded 3(4) error control and dense output.
 The generated C++ code supports:
 \itemize{
-\item Numerical integration of user-defined ODEs
 \item Fixed-time and root-triggered events
-\item Optional sensitivity analysis via automatic differentiation
+\item Optional sensitivity analysis via automatic differentiation (AD) in forward mode
 }
 }
 \details{
@@ -75,4 +82,7 @@ If \code{deriv = TRUE}, the system is augmented with automatic differentiation
 using FADBAD++. State and parameter sensitivities are computed and returned.
 If \code{deriv = FALSE}, the solver runs with plain doubles and no sensitivities.
 }
+}
+\author{
+Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
 }

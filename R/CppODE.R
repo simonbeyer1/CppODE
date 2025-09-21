@@ -1,12 +1,11 @@
 #' Generate C++ code for ODE models with sensitivities and events
 #'
-#' This function automatically builds a C++ implementation of an ODE system
-#' suitable for Boost.Odeint stiff solvers (Rosenbrock4 with dense output).
+#' This function generates a C++ ODE solver using Boost.Odeint’s stiff
+#' Rosenbrock 4 method with embedded 3(4) error control and dense output.
 #' The generated C++ code supports:
 #' \itemize{
-#'   \item Numerical integration of user-defined ODEs
 #'   \item Fixed-time and root-triggered events
-#'   \item Optional sensitivity analysis via automatic differentiation
+#'   \item Optional sensitivity analysis via automatic differentiation (AD) in forward mode
 #' }
 #'
 #' ## Events
@@ -31,10 +30,13 @@
 #'   Default: \code{NULL} (no events).
 #' @param fixed Character vector of fixed states or parameters.
 #'   Only used if \code{deriv = TRUE}.
+#' @param includeTimeZero Logical. If \code{TRUE}, ensure that \code{0} is
+#'   included in the integration times even if not supplied by the user.
+#'   Default: \code{TRUE}.
 #' @param compile Logical. If \code{TRUE}, compiles and loads the generated C++ code.
 #' @param modelname Optional character string for the output filename base.
 #'   If \code{NULL}, a random identifier is generated.
-#' @param deriv Logical. If \code{TRUE}, compute sensitivities using AD.
+#' @param deriv Logical. If \code{TRUE}, compute sensitivities using AD in forward mode.
 #'   If \code{FALSE}, use plain doubles (faster, but no sensitivities).
 #' @param verbose Logical. If \code{TRUE}, print progress messages.
 #'
@@ -46,11 +48,14 @@
 #'     \item \code{parameters}: Parameter names
 #'     \item \code{events}: Events data.frame
 #'     \item \code{solver}: Solver description
+#'     \item \code{fixed}: Fixed states/parameters
+#'     \item \code{jacobian}: Symbolic Jacobian expressions
+#'     \item \code{sensvariables}: Names of sensitivity variables (if any)
 #'   }
-#'
+#' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
 #' @importFrom reticulate import
 #' @export
-CppFun <- function(odes, events = NULL, fixed = NULL,
+CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    compile = TRUE, modelname = NULL,
                    deriv = TRUE, verbose = FALSE) {
 
@@ -229,11 +234,34 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
                ) else "",
                "  }",
                "",
-               "// --- Copy integration times ---",
-               sprintf("  std::vector<%s> t_ad;", numType),
-               "  for (int i = 0; i < Rf_length(timesSEXP); ++i) t_ad.push_back(REAL(timesSEXP)[i]);",
+               "  // --- Copy integration times ---",
+               "  std::vector<double> times_dbl(REAL(timesSEXP), REAL(timesSEXP) + Rf_length(timesSEXP));",
+               ""
+  )
+
+  if (includeTimeZero) {
+    externC <- c(externC,
+                 "  // ensure time zero is included",
+                 "  if (std::find(times_dbl.begin(), times_dbl.end(), 0.0) == times_dbl.end()) {",
+                 "    times_dbl.push_back(0.0);",
+                 "  }",
+                 ""
+    )
+  }
+
+  externC <- c(externC,
+               "  // sort times ascending and remove duplicates",
+               "  std::sort(times_dbl.begin(), times_dbl.end());",
+               "  times_dbl.erase(std::unique(times_dbl.begin(), times_dbl.end()), times_dbl.end());",
                "",
-               "// --- Event containers ---",
+               "  // convert to AD vector",
+               sprintf("  std::vector<%s> times;", numType),
+               "  times.reserve(times_dbl.size());",
+               "  for (double tval : times_dbl) {",
+               "    times.emplace_back(tval);",
+               "  }",
+               "",
+               "  // --- Event containers ---",
                sprintf("  std::vector<FixedEvent<%s>> fixed_events;", numType),
                sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
   )
@@ -291,24 +319,42 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
 
   # --- Integration ---
   if (deriv) {
-    stepper_line <- '  auto stepper = rosenbrock4_dense_output<rosenbrock4_controller_ad<rosenbrock4<AD>>>(rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol));'
+    stepper_line <- paste(
+      "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);",
+      "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+      sep = "\n"
+    )
   } else {
-    stepper_line <- '  auto stepper = rosenbrock4_dense_output<rosenbrock4_controller<rosenbrock4<double>>>(rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol));'
+    stepper_line <- paste(
+      "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);",
+      "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+      sep = "\n"
+    )
   }
 
-  externC <- c(externC,
+  externC <- c(externC,'\n',
+               '  // --- Solver setup ---',
                '  double abstol = REAL(abstolSEXP)[0];',
                '  double reltol = REAL(reltolSEXP)[0];',
                '  ode_system sys(full_params);',
                '  jacobian jac(full_params);',
-               stepper_line,
-               sprintf('  %s dt = (t_ad.back() - t_ad.front())/ Rf_length(timesSEXP);', numType),
+               stepper_line, '\n',
+               '  // --- Determine dt ---',
+               sprintf('  %s dt0 = odeint_utils::estimate_initial_dt(sys, jac, x, times.front(), times.back(), abstol, reltol);', numType),
+               '  auto t_test = times.front();',
+               '  auto x_test = x;',
+               '  auto dt = dt0;',
+               '  int attempts = 0;',
+               '  while (controlledStepper.try_step(std::make_pair(sys, jac), x_test, t_test, dt) == fail) {',
+               '    if (++attempts >= 10000) throw std::runtime_error("Unable to find valid initial stepsize after 10000 attempts");',
+               '  }\n',
+               '  // --- Integration ---',
                sprintf('  std::vector<%s> result_times;', numType),
                sprintf('  std::vector<%s> y;', numType),
                '  observer obs(result_times, y);',
-               '  integrate_times_dense(stepper, std::make_pair(sys, jac), x, t_ad.begin(), t_ad.end(), dt, obs, fixed_events, root_events, checker);',
+               '  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker);',
                '  const int n_out = static_cast<int>(result_times.size());',
-               '  if (n_out <= 0) Rf_error("Integration produced no output");'
+               '  if (n_out <= 0) Rf_error("Integration produced no output");\n'
   )
 
   if (deriv) {
@@ -316,6 +362,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL,
     n_sens_states <- length(sens_states)
     n_sens_params <- length(sens_params)
     externC <- c(externC,
+                 '  // --- Store Results ---',
                  sprintf("  const int ncol = 1 + x_N + %d * (%d + %d);",
                          length(states), n_sens_states, n_sens_params),
                  '  SEXP ans = PROTECT(Rf_allocMatrix(REALSXP, n_out, ncol));',
