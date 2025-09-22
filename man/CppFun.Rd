@@ -83,6 +83,45 @@ using FADBAD++. State and parameter sensitivities are computed and returned.
 If \code{deriv = FALSE}, the solver runs with plain doubles and no sensitivities.
 }
 }
+\examples{
+\dontrun{
+eqns <- c(
+A = "-k1*A^2 * time",
+B = "k1*A^2 * time - k2*B"
+)
+
+events <- data.frame(
+  var   = "A",
+  time  = "t_e",
+  value = 1,
+  method= "add",
+  root = NA
+)
+
+f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s")
+
+solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxattemps = 5000, maxsteps = 1e6) {
+  paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
+  # check for missing parameters
+  missing <- setdiff(paramnames, names(params))
+  if (length(missing) > 0) stop(sprintf("Missing parameters: \%s", paste(missing, collapse = ", ")))
+  params <- params[paramnames]
+  .Call(paste0("solve_",as.character(f)),
+        as.numeric(times),
+        as.numeric(params),
+        as.numeric(abstol),
+        as.numeric(reltol),
+        as.integer(maxattemps),
+        as.integer(maxsteps))
+}
+
+params <- c(A = 1, B=0, k1 = 0.1, k2= 0.2, t_e = 3)
+times  <- seq(0, 10, length.out = 300)
+
+res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
+head(res)
+}
+}
 \author{
 Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
 }
