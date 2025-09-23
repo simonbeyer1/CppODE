@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{CppFun}
 \alias{CppFun}
-\title{Generate C++ code for ODE models with sensitivities and events}
+\title{Generate C++ code for ODE models with events and optional sensitivities}
 \usage{
 CppFun(
   odes,
@@ -17,107 +17,127 @@ CppFun(
 }
 \arguments{
 \item{odes}{Named character vector of ODE right-hand sides.
-Names correspond to state variables.}
+Names must correspond to state variables.}
 
-\item{events}{Data frame describing events (see Details).
+\item{events}{Optional \code{data.frame} describing events (see Details).
 Default: \code{NULL} (no events).}
 
-\item{fixed}{Character vector of fixed states or parameters.
-Only used if \code{deriv = TRUE}.}
+\item{fixed}{Character vector of fixed states or parameters (excluded from
+sensitivity system). Only relevant if \code{deriv = TRUE}.}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that \code{0} is
-included in the integration times even if not supplied by the user.
-Default: \code{TRUE}.}
+\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is
+included among integration times. Default: \code{TRUE}.}
 
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
-\item{modelname}{Optional character string for the output filename base.
-If \code{NULL}, a random identifier is generated.}
+\item{modelname}{Optional base name for the generated C++ file. If \code{NULL},
+a random identifier is used.}
 
-\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD in forward mode.
-If \code{FALSE}, use plain doubles (faster, but no sensitivities).}
+\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD.
+If \code{FALSE}, use plain doubles.}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
-A string with the model name (same as \code{modelname}).
-Attributes:
+The model name (character). The object has attributes:
 \itemize{
 \item \code{equations}: ODE definitions
 \item \code{variables}: State variable names
 \item \code{parameters}: Parameter names
-\item \code{events}: Events data.frame
+\item \code{events}: Events \code{data.frame} (if any)
 \item \code{solver}: Solver description
 \item \code{fixed}: Fixed states/parameters
 \item \code{jacobian}: Symbolic Jacobian expressions
-\item \code{sensvariables}: Names of sensitivity variables (if any)
+\item \code{sensvariables}: Sensitivity variable names (if any)
 }
 }
 \description{
-This function generates a C++ ODE solver using Boost.Odeint’s stiff
-Rosenbrock 4 method with embedded 3(4) error control and dense output.
-The generated C++ code supports:
-\itemize{
-\item Fixed-time and root-triggered events
-\item Optional sensitivity analysis via automatic differentiation (AD) in forward mode
-}
+This function generates and compiles a C++ solver for systems of ODEs using
+Boost.Odeint’s stiff Rosenbrock 4(3) method with dense output and error control.
+The solver can handle fixed-time and root-triggered events, and (optionally)
+compute state and parameter sensitivities via forward-mode automatic
+differentiation (AD) using FADBAD++.
 }
 \details{
 \subsection{Events}{
 
-Events can be specified in a data.frame with columns:
+Events are specified in a \code{data.frame} with columns:
 \describe{
-\item{var}{Name of the affected state variable}
-\item{value}{Numeric value to apply at the event}
-\item{method}{"replace", "add", or "multiply"}
-\item{time}{(optional) numeric time point of the event}
-\item{root}{(optional) root expression in terms of \code{x} and \code{time}}
+\item{var}{Name of the affected state variable.}
+\item{value}{Numeric value to apply at the event.}
+\item{method}{How the value is applied: "replace", "add", or "multiply".}
+\item{time}{(optional) Time point at which the event occurs.}
+\item{root}{(optional) Root expression in terms of states and \code{time}.}
 }
-Each event must specify either a \code{time} or a \code{root}.
+Each event must define either \code{time} or \code{root}. Events with roots
+are triggered whenever the expression crosses zero.
 }
 
 \subsection{Sensitivities}{
 
-If \code{deriv = TRUE}, the system is augmented with automatic differentiation
-using FADBAD++. State and parameter sensitivities are computed and returned.
-If \code{deriv = FALSE}, the solver runs with plain doubles and no sensitivities.
+If \code{deriv = TRUE}, the solver augments the system with automatic
+differentiation and returns forward sensitivities with respect to initial
+conditions and parameters. Fixed states or parameters (specified in
+\code{fixed}) are excluded from the sensitivity system.
+
+If \code{deriv = FALSE}, the solver uses plain doubles (faster) and does not
+compute sensitivities.
+}
+
+\subsection{Output}{
+
+The generated solver function (accessible via \code{.Call}) returns an R
+numeric matrix with columns:
+\itemize{
+\item Time
+\item State variables
+\item (if \code{deriv = TRUE}) Sensitivities in the form \code{state.parameter}
+}
 }
 }
 \examples{
 \dontrun{
+# Define ODE system
 eqns <- c(
-A = "-k1*A^2 * time",
-B = "k1*A^2 * time - k2*B"
+  A = "-k1*A^2 * time",
+  B = "k1*A^2 * time - k2*B"
 )
 
+# Define an event
 events <- data.frame(
   var   = "A",
   time  = "t_e",
   value = 1,
   method= "add",
-  root = NA
+  root  = NA
 )
 
+# Generate and compile solver
 f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s")
 
-solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxattemps = 5000, maxsteps = 1e6) {
-  paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
-  # check for missing parameters
+# Wrap in an R solver function
+solve <- function(times, params,
+                  abstol = 1e-8, reltol = 1e-6,
+                  maxattemps = 5000, maxsteps = 1e6,
+                  roottol = 1e-8, maxroot = 1) {
+  paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
-  if (length(missing) > 0) stop(sprintf("Missing parameters: \%s", paste(missing, collapse = ", ")))
+  if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
   params <- params[paramnames]
-  .Call(paste0("solve_",as.character(f)),
+  .Call(paste0("solve_", as.character(f)),
         as.numeric(times),
         as.numeric(params),
         as.numeric(abstol),
         as.numeric(reltol),
         as.integer(maxattemps),
-        as.integer(maxsteps))
+        as.integer(maxsteps),
+        as.numeric(roottol),
+        as.integer(maxroot))
 }
 
-params <- c(A = 1, B=0, k1 = 0.1, k2= 0.2, t_e = 3)
+# Example run
+params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 3)
 times  <- seq(0, 10, length.out = 300)
-
 res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
 head(res)
 }
