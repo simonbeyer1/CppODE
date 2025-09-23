@@ -7,14 +7,12 @@ library(ggplot2)
 library(dplyr)
 library(tidyverse)
 
-eqns <- c(TCA_buffer = "-k_import * TCA_buffer + k_export_sinus * TCA_cell + k_reflux * TCA_cana",
-            TCA_cana = "k_export_cana * TCA_cell - k_reflux * TCA_cana",
-            TCA_cell = "k_import * TCA_buffer - k_export_sinus * TCA_cell - k_export_cana * TCA_cell")
+eqns <- c(A = "-k1*A^2 * time", B = "k1*A^2 * time - k2 * B")
 
 
-events = data.frame(var = "TCA_buffer", time = NA, value = 1, root = "TCA_buffer-0.1", method = "replace")
+events = data.frame(var = "A", value = 1, method = "add", time = "te", root = NA)
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "bamodel", deriv = T, compile=F)
+f <- CppODE::CppFun(eqns, events = events, modelname = "AB_model_s", deriv = T, compile=F)
 
 solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxattemps = 5000, maxsteps = 1e6, roottol = 1e-8, maxroots = 1) {
   paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
@@ -35,22 +33,9 @@ solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxattemps = 5000
   return(out)
 }
 CppODE::compileAndLoad(f)
-params <- c(k_reflux = 0.1, TCA_buffer = 1, TCA_cell = 0, TCA_cana = 0, k_import = 0.2,
-            k_export_sinus = 0.2, k_export_cana = 0.04)
+params <- c(A=1, B=0, k1=0.1, k2=0.2, te=5)
 
-times  <- seq(0, 50, length.out = 300)
-
-
-out <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
-res <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>%
-  as.data.frame() %>%
-  tidyr::pivot_longer(cols = -time, names_to = "name", values_to = "value")
-
-ggplot(res, aes(x = time, y = value)) +
-  geom_line() +
-  facet_wrap(~name, scales = "free_y") +
-  xlab("time") + ylab("value") +
-  theme_bw()
+times  <- seq(0, 10, length.out = 300)
 
 boosttime <- system.time({
   solve(times, params, abstol = 1e-6, reltol = 1e-6)
@@ -75,7 +60,7 @@ eqns <- c(A = "-k1*A^2*time", B = "k1*A^2*time - k2*B")
 setwd(.dmoddir)
 events <- eventlist() %>%
   addEvent("A", value = "1.0", method = "add", time = "te")
-odemodel <- odemodel(eqns, events = events, fixed = c("k1"), modelname = "Amodel")
+odemodel <- odemodel(eqns, events = events, modelname = "Amodel")
 x <- Xs(odemodel, condition = "Cond1", optionsSens = list(rtol = 1e-8, atol = 1e-6))
 setwd(.workingDir)
 
@@ -196,7 +181,7 @@ calculate_AB <- function(time, A0, B0, k1, k2, te, t0 = min(time)) {
 }
 
 
-df_analytical <- calculate_AB(c(times, 5), 1, 0, 0.1, 0.1, 5)
+df_analytical <- calculate_AB(c(times, 5), 1, 0, 0.1, 0.2, 5)
 
 res <- rbind(res_Cpp, df_analytical) %>% filter(name %in% df_analytical$name)
 
