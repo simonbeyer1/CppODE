@@ -338,6 +338,7 @@ size_t integrate_times_dense(
   typename odeint::unwrap_reference< Observer >::type &obs = observer;
   typename odeint::unwrap_reference< Stepper >::type &st   = stepper;
 
+  // Merge user-specified output times with fixed event times
   auto all_times = merge_user_and_event_times<Time>(start_time, end_time, fixed_events, root_tol);
   if (all_times.empty()) return 0;
 
@@ -345,12 +346,14 @@ size_t integrate_times_dense(
   auto end  = all_times.end();
   Time last_time_point = all_times.back();
 
+  // Initialize integrator at the first time point
   st.initialize(start_state, *iter, dt);
   if (check_and_apply_fixed_events(start_state, st.current_time(), fixed_events, root_tol)) {
     st.initialize(start_state, st.current_time(), dt);
   }
   obs(start_state, *iter++);
 
+  // Keep last function values for each root event to detect sign changes
   std::vector<double> last_vals(root_events.size(),
                                 std::numeric_limits<double>::quiet_NaN());
   std::vector<size_t> root_trigger_count(root_events.size(), 0);
@@ -358,6 +361,7 @@ size_t integrate_times_dense(
   size_t count = 0;
   while (iter != end)
   {
+    // Process all scheduled times that fall into the current integration interval
     while ((iter != end) &&
            less_eq_with_sign(*iter, st.current_time(), st.current_time_step()))
     {
@@ -367,21 +371,55 @@ size_t integrate_times_dense(
       }
       obs(start_state, *iter);
 
+      // Check all root events
       for (size_t i = 0; i < root_events.size(); ++i) {
         auto f_val = root_events[i].func(start_state, *iter);
         double f_now = static_cast<double>(f_val);
+
         if (root_trigger_count[i] < max_trigger_root &&
-            !std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0) {
-          apply_event(start_state, root_events[i].state_index,
+            !std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0)
+        {
+          // Bracket the root between (st.previous_time, st.current_time)
+          Time ta = st.previous_time();
+          Time tb = st.current_time();
+          state_type xa = st.previous_state();
+          state_type xb = st.current_state();
+
+          double fa = static_cast<double>(root_events[i].func(xa, ta));
+          double fb = static_cast<double>(root_events[i].func(xb, tb));
+
+          // Bisection until time interval smaller than root_tol
+          while (std::abs(tb - ta) > root_tol) {
+            Time tm = (ta + tb) / 2.0;
+            state_type xm;
+            st.calc_state(tm, xm);
+            double fm = static_cast<double>(root_events[i].func(xm, tm));
+
+            if (fa * fm <= 0.0) {
+              tb = tm; xb = xm; fb = fm;
+            } else {
+              ta = tm; xa = xm; fa = fm;
+            }
+          }
+
+          // Apply event at the root time
+          apply_event(xb, root_events[i].state_index,
                       root_events[i].value, root_events[i].method);
-          st.initialize(start_state, *iter, dt);
+
+          st.initialize(xb, tb, dt);
+          obs(xb, tb);
+
           root_trigger_count[i]++;
+          last_vals[i] = fb;
+          continue; // skip updating last_vals[i] again at this iteration
         }
+
         last_vals[i] = f_now;
       }
       ++iter;
     }
 
+    // Advance the integrator if we still have time left
     if (less_eq_with_sign(st.current_time() + st.current_time_step(),
                           last_time_point, st.current_time_step()))
     {
