@@ -341,6 +341,57 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
   )
 
+  # --- Event parsing helper ---
+  parse_or_literal <- function(expr, expr_name) {
+    if (is.na(expr)) return(NULL)
+    if (is.numeric(expr)) {
+      return(as.character(expr))
+    } else {
+      e <- parser$parse_expr(
+        expr,
+        local_dict      = local_dict,
+        transformations = transformations,
+        evaluate        = TRUE
+      )
+      code <- Sympy2CppCode(e, states, params, length(states),
+                            expr_name = expr_name,
+                            AD = (numType == "AD"))
+      code <- gsub("\\bparams\\[", "full_params[", code)
+      return(code)
+    }
+  }
+
+  # --- Events ---
+  if (!is.null(events)) {
+    for (i in seq_len(nrow(events))) {
+      var_idx <- state_idx0[events$var[i]]
+      val_code  <- parse_or_literal(events$value[i],  paste0("event_val_", i))
+      time_code <- parse_or_literal(events$time[i],   paste0("event_time_", i))
+      root_code <- parse_or_literal(events$root[i],   paste0("event_root_", i))
+
+      method <- switch(tolower(events$method[i]),
+                       "replace"  = "EventMethod::Replace",
+                       "add"      = "EventMethod::Add",
+                       "multiply" = "EventMethod::Multiply",
+                       stop("Unknown method"))
+
+      if (!is.null(time_code)) {
+        externC <- c(externC,
+                     sprintf("  fixed_events.emplace_back(FixedEvent<%s>{%s, %d, %s, %s});",
+                             numType, time_code, var_idx, val_code, method))
+      } else if (!is.null(root_code)) {
+        externC <- c(externC,
+                     sprintf("  root_events.push_back(RootEvent<ublas::vector<%s>, %s>{",
+                             numType, numType),
+                     sprintf("    [](const ublas::vector<%s>& x, const %s& t){ return %s; },",
+                             numType, numType, root_code),
+                     sprintf("    %d, %s, %s});", var_idx, val_code, method))
+      } else {
+        stop("Event row ", i, " has neither time nor root defined")
+      }
+    }
+  }
+
   # --- Integration ---
   if (deriv) {
     stepper_line <- paste(
