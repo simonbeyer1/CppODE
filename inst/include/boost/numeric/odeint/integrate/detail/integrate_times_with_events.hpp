@@ -1,5 +1,4 @@
 /*
- [auto_generated]
  boost/numeric/odeint/integrate/detail/integrate_times_with_events.hpp
 
  [begin_description]
@@ -52,10 +51,10 @@ enum class EventMethod { Replace, Add, Multiply };
  */
 template<class value_type>
 struct FixedEvent {
-  value_type time;    ///< Trigger time (may be double or AD)
-  int state_index;    ///< Affected state index
-  value_type value;   ///< Value to apply
-  EventMethod method; ///< Operation mode
+  value_type time;
+  int state_index;
+  value_type value;
+  EventMethod method;
 };
 
 /**
@@ -80,11 +79,17 @@ struct RootEvent {
 /**
  * @brief Apply an event action to a state vector.
  *
- * @tparam state_type State vector type
- * @param x State vector
- * @param idx Index of the affected variable
- * @param value Value to apply
- * @param method How to apply (Replace/Add/Multiply)
+ * @tparam state_type State vector type (e.g. ublas::vector<double> or ublas::vector<AD>)
+ *
+ * @param x      Current state vector (modified in place)
+ * @param idx    Index of the affected state variable
+ * @param value  Value to apply (same type as state entries)
+ * @param method Event method (Replace, Add, Multiply)
+ *
+ * @details
+ *  - Replace  : overwrites x[idx] with value
+ *  - Add      : increments x[idx] by value
+ *  - Multiply : scales x[idx] by value
  */
 template<class state_type>
 inline void apply_event(
@@ -100,16 +105,22 @@ inline void apply_event(
 }
 
 /**
- * @brief Check and apply fixed-time events at the current time.
+ * @brief Check and apply all fixed-time events at the current time.
  *
- * @tparam state_type State vector type
- * @tparam Time       Time type (double, AD)
- * @param x Current state (modified if events trigger)
- * @param t Current time
+ * @tparam state_type State vector type (ublas::vector<T>)
+ * @tparam Time       Scalar time type (double, AD)
+ *
+ * @param x            Current state (modified if events trigger)
+ * @param t            Current integration time
  * @param fixed_events Vector of fixed-time events
- * @param tol Absolute tolerance for time matching
+ * @param tol          Absolute tolerance for time matching
  *
  * @return true if at least one event triggered, false otherwise
+ *
+ * @details
+ *  - Each event triggers if |t - event.time| < tol
+ *  - Multiple events may fire at the same time
+ *  - After triggering, the state vector is updated in-place
  */
 template<class state_type , class Time>
 inline bool check_and_apply_fixed_events(
@@ -117,7 +128,7 @@ inline bool check_and_apply_fixed_events(
     const std::vector< FixedEvent<typename state_type::value_type> > &fixed_events ,
     double tol )
 {
-  double t_val = static_cast<double>(t); // cast AD or double -> double
+  double t_val = static_cast<double>(t);
   bool triggered = false;
   for(const auto& ev : fixed_events) {
     double ev_t = static_cast<double>(ev.time);
@@ -132,16 +143,21 @@ inline bool check_and_apply_fixed_events(
 /**
  * @brief Merge user-specified times with fixed-event times.
  *
- * @tparam Time        Time type (double, AD)
- * @tparam TimeIterator Iterator type over user times
- * @tparam value_type   Scalar type of event values
+ * @tparam Time         Scalar time type (double, AD)
+ * @tparam TimeIterator Iterator over user-specified times
+ * @tparam value_type   Value type of event payloads
  *
- * @param user_begin Iterator to first user time
- * @param user_end   Iterator past last user time
- * @param fixed_events List of fixed events
- * @param tol Absolute tolerance for duplicate detection
+ * @param user_begin  Iterator to beginning of user times
+ * @param user_end    Iterator past end of user times
+ * @param fixed_events List of fixed events (their times are added)
+ * @param tol          Absolute tolerance for duplicate detection
  *
- * @return Sorted vector of unique times containing both user and event times
+ * @return Sorted vector of unique times including both user and event times
+ *
+ * @details
+ *  - All event times are appended to the user times
+ *  - Resulting vector is sorted ascending
+ *  - Times within `tol` are collapsed into a single entry
  */
 template<class Time , class TimeIterator , class value_type>
 std::vector<Time> merge_user_and_event_times(
@@ -172,32 +188,34 @@ std::vector<Time> merge_user_and_event_times(
  * @brief Integrate an ODE system with controlled stepper and events.
  *
  * @tparam Stepper      Controlled stepper type (e.g. rosenbrock4_controller_ad)
- * @tparam System       System functor or pair<system,jacobian>
+ * @tparam System       ODE system functor, or pair<system,jacobian>
  * @tparam state_type   State vector type (ublas::vector<T>)
- * @tparam TimeIterator Iterator over observation times
+ * @tparam TimeIterator Iterator type over observation times
  * @tparam Time         Scalar time type (double, AD)
  * @tparam Observer     Observer functor
  *
- * @param stepper Controlled stepper instance
- * @param system ODE system (sys or pair<sys,jac>)
- * @param start_state Initial state vector (modified in place)
- * @param start_time Iterator to first observation time
- * @param end_time   Iterator past last observation time
- * @param dt Initial step size
- * @param observer Observer called at output times
- * @param fixed_events List of fixed-time events
- * @param root_events  List of root events
- * @param checker StepChecker for step-count/progress checks
- * @param root_tol Tolerance for root/fixed event detection
+ * @param stepper       Controlled stepper instance
+ * @param system        System dynamics (sys or pair<sys,jac>)
+ * @param start_state   Initial state (modified in place)
+ * @param start_time    Iterator to first output time
+ * @param end_time      Iterator past last output time
+ * @param dt            Initial step size
+ * @param observer      Observer called at output times
+ * @param fixed_events  Vector of fixed-time events
+ * @param root_events   Vector of root events
+ * @param checker       StepChecker for step limits
+ * @param root_tol      Tolerance for time and root detection
+ * @param max_trigger_root Maximum times each root event may fire (default = 1, use std::numeric_limits<size_t>::max() for unlimited)
  * @param controlled_stepper_tag Dispatch tag
  *
  * @return Number of accepted steps
  *
  * @details
- *  - Observes state at all user-specified times and event times.
- *  - Applies fixed events at exact times before observation.
- *  - Applies root events when zero-crossings are detected.
- *  - Stepper is reinitialized whenever events modify the state.
+ *  - Observes state at all user-specified times and fixed-event times
+ *  - Applies fixed events exactly at their trigger times before observation
+ *  - Detects zero-crossings for root events and applies corresponding actions
+ *  - Root events are limited to at most `max_trigger_root` firings per event
+ *  - Stepper is reinitialized after each event modifies the state
  */
 template< class Stepper , class System , class state_type ,
           class TimeIterator , class Time , class Observer >
@@ -209,6 +227,7 @@ size_t integrate_times(
     const std::vector< RootEvent<state_type, Time> > &root_events ,
     StepChecker &checker ,
     double root_tol = 1e-8 ,
+    size_t max_trigger_root = 1 ,
     controlled_stepper_tag = controlled_stepper_tag()
 )
 {
@@ -226,6 +245,7 @@ size_t integrate_times(
 
   std::vector<double> last_vals(root_events.size(),
                                 std::numeric_limits<double>::quiet_NaN());
+  std::vector<size_t> root_trigger_count(root_events.size(), 0);
 
   while (true)
   {
@@ -244,14 +264,15 @@ size_t integrate_times(
         ++steps; fail_checker.reset(); checker();
         dt = max_abs(dt, current_dt);
 
-        // Root detection
         for (size_t i = 0; i < root_events.size(); ++i) {
           auto f_val = root_events[i].func(start_state, current_time);
           double f_now = static_cast<double>(f_val);
-          if (!std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0) {
+          if (root_trigger_count[i] < max_trigger_root &&
+              !std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0) {
             apply_event(start_state, root_events[i].state_index,
                         root_events[i].value, root_events[i].method);
             st.initialize(start_state, current_time, dt);
+            root_trigger_count[i]++;
           }
           last_vals[i] = f_now;
         }
@@ -270,32 +291,34 @@ size_t integrate_times(
  * @brief Integrate an ODE system with dense-output stepper and events.
  *
  * @tparam Stepper      Dense-output stepper type
- * @tparam System       System functor or pair<system,jacobian>
+ * @tparam System       ODE system functor, or pair<system,jacobian>
  * @tparam state_type   State vector type (ublas::vector<T>)
- * @tparam TimeIterator Iterator over observation times
+ * @tparam TimeIterator Iterator type over observation times
  * @tparam Time         Scalar time type (double, AD)
  * @tparam Observer     Observer functor
  *
- * @param stepper Dense-output stepper instance
- * @param system ODE system (sys or pair<sys,jac>)
- * @param start_state Initial state vector (modified in place)
- * @param start_time Iterator to first observation time
- * @param end_time   Iterator past last observation time
- * @param dt Initial step size
- * @param observer Observer called at output times
- * @param fixed_events List of fixed-time events
- * @param root_events  List of root events
- * @param checker StepChecker for step-count/progress checks
- * @param root_tol Tolerance for root/fixed event detection
+ * @param stepper       Dense-output stepper instance
+ * @param system        System dynamics (sys or pair<sys,jac>)
+ * @param start_state   Initial state (modified in place)
+ * @param start_time    Iterator to first output time
+ * @param end_time      Iterator past last output time
+ * @param dt            Initial step size
+ * @param observer      Observer called at output times
+ * @param fixed_events  Vector of fixed-time events
+ * @param root_events   Vector of root events
+ * @param checker       StepChecker for step limits
+ * @param root_tol      Tolerance for time and root detection
+ * @param max_trigger_root Maximum times each root event may fire (default = 1, use std::numeric_limits<size_t>::max() for unlimited)
  * @param dense_output_stepper_tag Dispatch tag
  *
  * @return Number of real steps performed by the dense stepper
  *
  * @details
- *  - Produces dense output at all user times and fixed-event times.
- *  - Applies fixed events exactly at their trigger times before observation.
- *  - Applies root events at zero crossings of user-defined functions.
- *  - Stepper is reinitialized after any event changes the state.
+ *  - Produces dense output at all user times and fixed-event times
+ *  - Applies fixed events exactly at their trigger times before observation
+ *  - Detects zero-crossings for root events and applies corresponding actions
+ *  - Root events are limited to at most `max_trigger_root` firings per event
+ *  - Stepper is reinitialized after each event modifies the state
  */
 template< class Stepper , class System , class state_type ,
           class TimeIterator , class Time , class Observer >
@@ -307,6 +330,7 @@ size_t integrate_times_dense(
     const std::vector< RootEvent<state_type, Time> > &root_events ,
     StepChecker &checker ,
     double root_tol = 1e-8 ,
+    size_t max_trigger_root = 1 ,
     dense_output_stepper_tag = dense_output_stepper_tag()
 )
 {
@@ -329,6 +353,7 @@ size_t integrate_times_dense(
 
   std::vector<double> last_vals(root_events.size(),
                                 std::numeric_limits<double>::quiet_NaN());
+  std::vector<size_t> root_trigger_count(root_events.size(), 0);
 
   size_t count = 0;
   while (iter != end)
@@ -345,10 +370,12 @@ size_t integrate_times_dense(
       for (size_t i = 0; i < root_events.size(); ++i) {
         auto f_val = root_events[i].func(start_state, *iter);
         double f_now = static_cast<double>(f_val);
-        if (!std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0) {
+        if (root_trigger_count[i] < max_trigger_root &&
+            !std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0) {
           apply_event(start_state, root_events[i].state_index,
                       root_events[i].value, root_events[i].method);
           st.initialize(start_state, *iter, dt);
+          root_trigger_count[i]++;
         }
         last_vals[i] = f_now;
       }
@@ -382,3 +409,4 @@ using detail::integrate_times_dense;
 } // namespace boost
 
 #endif
+

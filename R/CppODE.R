@@ -124,6 +124,19 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   fixed_state_idx  <- state_idx0[fixed_states]
   fixed_param_idx  <- param_idx0[fixed_params]
 
+  # --- Calculate dimensions R-side ---
+  n_states <- length(states)
+  n_params <- length(params)
+  n_sens_initials <- length(sens_states)
+  n_sens_params <- length(sens_params)
+  n_total_sens <- n_sens_initials + n_sens_params
+
+  if (deriv) {
+    ncol_total <- 1 + n_states + n_states * n_total_sens
+  } else {
+    ncol_total <- 1 + n_states
+  }
+
   # --- Generate unique model name if not provided ---
   if (is.null(modelname)) {
     modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
@@ -203,17 +216,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   jac <- ComputeJacobianSymb(odes, states = states, params = params, AD = deriv)
   jac_lines <- attr(jac, "CppCode")
 
-  # --- Calculate matrix dimensions in R (robust) ---
-  n_states <- length(states)
-  n_params <- length(params)
-  if (deriv) {
-    n_nonfixed <- length(sens_states) + length(sens_params)
-    ncol_total <- 1 + n_states + n_states * n_nonfixed
-  } else {
-    ncol_total <- 1 + n_states
-  }
-
-  # --- Observer (unchanged except for using n_states/n_params) ---
+  # --- Observer with direct matrix filling ---
   if (deriv) {
     observer_lines <- c(
       "// Observer: fills R matrix directly",
@@ -222,52 +225,101 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       "  int current_row;",
       "  int n_rows;",
       "  int n_cols;",
-      "  std::vector<int> fixed_state_idx;",
-      "  std::vector<int> fixed_param_idx;",
       sprintf("  int x_N = %d;", n_states),
       sprintf("  int p_N = %d;", n_params),
       "  int dom_N;",
       "",
-      "  observer(double* data, int rows, int cols, ",
-      "           const std::vector<int>& fixed_states, const std::vector<int>& fixed_params)",
-      "    : matrix_data(data), current_row(0), n_rows(rows), n_cols(cols),",
-      "      fixed_state_idx(fixed_states), fixed_param_idx(fixed_params) {",
+      "  explicit observer(double* data, int rows, int cols)",
+      "    : matrix_data(data), current_row(0), n_rows(rows), n_cols(cols) {",
+      sprintf("    x_N = %d;", n_states),
+      sprintf("    p_N = %d;", n_params),
       "    dom_N = x_N + p_N;",
       "  }",
       "",
       sprintf("  void operator()(const ublas::vector<%s>& x, const %s& t) {", numType, numType),
       "    if (current_row >= n_rows) return;",
       "    auto IDX = [this](int r, int c) { return r + c * n_rows; };",
+      "    ",
+      "    // Time column",
       "    matrix_data[IDX(current_row, 0)] = const_cast<AD&>(t).x();",
-      "    for (int s = 0; s < x_N; ++s) matrix_data[IDX(current_row, 1 + s)] = const_cast<AD&>(x[s]).x();",
+      "    ",
+      "    // State columns",
+      "    for (int s = 0; s < x_N; ++s) {",
+      "      matrix_data[IDX(current_row, 1 + s)] = const_cast<AD&>(x[s]).x();",
+      "    }",
+      "    ",
+      "    // Sensitivity columns",
       "    int col_offset = 1 + x_N;",
       "    for (int s = 0; s < x_N; ++s) {",
-      "      for (int v = 0; v < dom_N; ++v) {",
-      "        bool is_fixed_state  = (v < x_N) && (std::find(fixed_state_idx.begin(), fixed_state_idx.end(), v) != fixed_state_idx.end());",
-      "        bool is_fixed_param  = (v >= x_N) && (std::find(fixed_param_idx.begin(), fixed_param_idx.end(), v - x_N) != fixed_param_idx.end());",
-      "        if (!(is_fixed_state || is_fixed_param)) {",
-      "          if (col_offset < n_cols) matrix_data[IDX(current_row, col_offset++)] = const_cast<AD&>(x[s]).d(v);",
-      "        }",
-      "      }",
-      "    }",
-      "    ++current_row;",
-      "  }",
-      "};"
+      "      // For each state, add sensitivities w.r.t. non-fixed variables",
+      "      for (int v = 0; v < dom_N; ++v) {"
     )
+
+    # Add fixed checks only if there are fixed variables
+    if (length(fixed_state_idx) > 0 || length(fixed_param_idx) > 0) {
+      fixed_state_check <- if (length(fixed_state_idx) > 0) {
+        sprintf("        bool is_fixed_state = (v < x_N) && (%s);",
+                paste(sprintf("v == %d", fixed_state_idx), collapse = " || "))
+      } else {
+        "        bool is_fixed_state = false;"
+      }
+
+      fixed_param_check <- if (length(fixed_param_idx) > 0) {
+        sprintf("        bool is_fixed_param = (v >= x_N) && (%s);",
+                paste(sprintf("(v - x_N) == %d", fixed_param_idx), collapse = " || "))
+      } else {
+        "        bool is_fixed_param = false;"
+      }
+
+      observer_lines <- c(observer_lines,
+                          fixed_state_check,
+                          fixed_param_check,
+                          "        ",
+                          "        if (!(is_fixed_state || is_fixed_param)) {",
+                          "          if (col_offset < n_cols) {",
+                          "            matrix_data[IDX(current_row, col_offset)] = const_cast<AD&>(x[s]).d(v);",
+                          "            col_offset++;",
+                          "          }",
+                          "        }")
+    } else {
+      observer_lines <- c(observer_lines,
+                          "        if (col_offset < n_cols) {",
+                          "          matrix_data[IDX(current_row, col_offset)] = const_cast<AD&>(x[s]).d(v);",
+                          "          col_offset++;",
+                          "        }")
+    }
+
+    observer_lines <- c(observer_lines,
+                        "      }",
+                        "    }",
+                        "    current_row++;",
+                        "  }",
+                        "};")
   } else {
     observer_lines <- c(
       "// Observer: fills R matrix directly (no sensitivities)",
       "struct observer {",
-      "  double* matrix_data; int current_row; int n_rows; int n_cols;",
+      "  double* matrix_data;",
+      "  int current_row;",
+      "  int n_rows;",
+      "  int n_cols;",
       sprintf("  int x_N = %d;", n_states),
-      "  observer(double* data, int rows, int cols)",
+      "",
+      "  explicit observer(double* data, int rows, int cols)",
       "    : matrix_data(data), current_row(0), n_rows(rows), n_cols(cols) {}",
+      "",
       sprintf("  void operator()(const ublas::vector<%s>& x, const %s& t) {", numType, numType),
       "    if (current_row >= n_rows) return;",
       "    auto IDX = [this](int r, int c) { return r + c * n_rows; };",
+      "    ",
+      "    // Time column",
       "    matrix_data[IDX(current_row, 0)] = t;",
-      "    for (int s = 0; s < x_N; ++s) matrix_data[IDX(current_row, 1 + s)] = x[s];",
-      "    ++current_row;",
+      "    ",
+      "    // State columns",
+      "    for (int s = 0; s < x_N; ++s) {",
+      "      matrix_data[IDX(current_row, 1 + s)] = x[s];",
+      "    }",
+      "    current_row++;",
       "  }",
       "};"
     )
@@ -280,65 +332,63 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     "try {",
     sprintf('  const int x_N = %d;', n_states),
     sprintf('  const int p_N = %d;', n_params),
-    "  const int dom_N = x_N + p_N;",
+    sprintf('  const int dom_N = %d;', n_states + n_params),
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
     "",
     sprintf("  ublas::vector<%s> x(x_N);", numType),
     sprintf("  ublas::vector<%s> full_params(dom_N);", numType),
-    "",
-    "  // ---- Input validation ----",
-    "  if (TYPEOF(paramsSEXP) != REALSXP) Rf_error(\"params must be a numeric (double) vector.\");",
-    "  if (Rf_length(paramsSEXP) != x_N + p_N) Rf_error(\"Expected params length %d, got %d.\", x_N + p_N, Rf_length(paramsSEXP));",
-    "  if (TYPEOF(timesSEXP) != REALSXP) Rf_error(\"times must be a numeric (double) vector.\");",
-    "  if (Rf_length(timesSEXP) < 1) Rf_error(\"times must have length >= 1.\");",
-    "  for (int i=0; i<Rf_length(paramsSEXP); ++i) if (!R_finite(REAL(paramsSEXP)[i])) Rf_error(\"params contain NA/NaN/Inf at index %d.\", i+1);",
     ""
   )
-
-  # declare fixed indices only if deriv=TRUE (harmlos, aber spart Code)
-  if (deriv) {
-    if (length(fixed_state_idx) > 0) {
-      externC <- c(externC, sprintf("  std::vector<int> fixed_state_idx = {%s};", paste(fixed_state_idx, collapse=",")))
-    } else {
-      externC <- c(externC, "  std::vector<int> fixed_state_idx;")
-    }
-    if (length(fixed_param_idx) > 0) {
-      externC <- c(externC, sprintf("  std::vector<int> fixed_param_idx = {%s};", paste(fixed_param_idx, collapse=",")))
-    } else {
-      externC <- c(externC, "  std::vector<int> fixed_param_idx;")
-    }
-  }
 
   # initialization of states and parameters
   externC <- c(externC,
                "  // initialize states",
                "  for (int i = 0; i < x_N; ++i) {",
-               "    x[i] = REAL(paramsSEXP)[i];",
-               if (deriv) paste0(
-                 "    if (std::find(fixed_state_idx.begin(), fixed_state_idx.end(), i) == fixed_state_idx.end()) x[i].diff(i, dom_N);"
-               ) else "",
+               "    x[i] = REAL(paramsSEXP)[i];")
+
+  if (deriv) {
+    if (length(fixed_state_idx) > 0) {
+      externC <- c(externC,
+                   sprintf("    if (!(%s)) x[i].diff(i, dom_N);",
+                           paste(sprintf("i == %d", fixed_state_idx), collapse = " || ")))
+    } else {
+      externC <- c(externC, "    x[i].diff(i, dom_N);")
+    }
+  }
+
+  externC <- c(externC,
                "    full_params[i] = x[i];",
                "  }",
                "",
                "  // initialize parameters",
                "  for (int i = 0; i < p_N; ++i) {",
-               "    full_params[x_N + i] = REAL(paramsSEXP)[x_N + i];",
-               if (deriv) paste0(
-                 "    if (std::find(fixed_param_idx.begin(), fixed_param_idx.end(), i) == fixed_param_idx.end()) full_params[x_N + i].diff(x_N + i, dom_N);"
-               ) else "",
+               "    full_params[x_N + i] = REAL(paramsSEXP)[x_N + i];")
+
+  if (deriv) {
+    if (length(fixed_param_idx) > 0) {
+      externC <- c(externC,
+                   sprintf("    if (!(%s)) full_params[x_N + i].diff(x_N + i, dom_N);",
+                           paste(sprintf("i == %d", fixed_param_idx), collapse = " || ")))
+    } else {
+      externC <- c(externC, "    full_params[x_N + i].diff(x_N + i, dom_N);")
+    }
+  }
+
+  externC <- c(externC,
                "  }",
                "",
                "  // --- Copy integration times ---",
                "  std::vector<double> times_dbl(REAL(timesSEXP), REAL(timesSEXP) + Rf_length(timesSEXP));",
-               "  for (size_t i=0; i<times_dbl.size(); ++i) if (!R_finite(times_dbl[i])) Rf_error(\"times contain NA/NaN/Inf at index %d.\", (int)i+1);",
                ""
   )
 
   if (includeTimeZero) {
     externC <- c(externC,
                  "  // ensure time zero is included",
-                 "  if (std::find(times_dbl.begin(), times_dbl.end(), 0.0) == times_dbl.end()) times_dbl.push_back(0.0);",
+                 "  if (std::find(times_dbl.begin(), times_dbl.end(), 0.0) == times_dbl.end()) {",
+                 "    times_dbl.push_back(0.0);",
+                 "  }",
                  ""
     )
   }
@@ -348,12 +398,15 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  std::sort(times_dbl.begin(), times_dbl.end());",
                "  times_dbl.erase(std::unique(times_dbl.begin(), times_dbl.end()), times_dbl.end());",
                "",
+               "  // convert to AD vector",
                sprintf("  std::vector<%s> times;", numType),
                "  times.reserve(times_dbl.size());",
-               "  for (double tval : times_dbl) times.emplace_back(tval);",
+               "  for (double tval : times_dbl) {",
+               "    times.emplace_back(tval);",
+               "  }",
                "",
                "  const int n_times = static_cast<int>(times.size());",
-               sprintf("  const int ncol = %d;", ncol_total),  # fix eingebettet
+               sprintf("  const int ncol = %d;", ncol_total),
                "",
                "  // Pre-allocate result matrix",
                "  SEXP ans = PROTECT(Rf_allocMatrix(REALSXP, n_times, ncol));",
@@ -364,41 +417,54 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
   )
 
-  # --- Events ---
+  # --- Event parsing helper ---
   parse_or_literal <- function(expr, expr_name) {
     if (is.na(expr)) return(NULL)
     if (is.numeric(expr)) {
       return(as.character(expr))
     } else {
-      e <- parser$parse_expr(expr, local_dict = local_dict,
-                             transformations = transformations, evaluate = TRUE)
+      e <- parser$parse_expr(
+        expr,
+        local_dict      = local_dict,
+        transformations = transformations,
+        evaluate        = TRUE
+      )
       code <- Sympy2CppCode(e, states, params, length(states),
-                            expr_name = expr_name, AD = (numType == "AD"))
+                            expr_name = expr_name,
+                            AD = (numType == "AD"))
       code <- gsub("\\bparams\\[", "full_params[", code)
       return(code)
     }
   }
 
+  # --- Events ---
   if (!is.null(events)) {
     for (i in seq_len(nrow(events))) {
       var_idx <- state_idx0[events$var[i]]
       val_code  <- parse_or_literal(events$value[i],  paste0("event_val_", i))
       time_code <- parse_or_literal(events$time[i],   paste0("event_time_", i))
       root_code <- parse_or_literal(events$root[i],   paste0("event_root_", i))
+
       method <- switch(tolower(events$method[i]),
-                       "replace"="EventMethod::Replace",
-                       "add"="EventMethod::Add",
-                       "multiply"="EventMethod::Multiply",
+                       "replace"  = "EventMethod::Replace",
+                       "add"      = "EventMethod::Add",
+                       "multiply" = "EventMethod::Multiply",
                        stop("Unknown method"))
+
       if (!is.null(time_code)) {
-        externC <- c(externC, sprintf("  fixed_events.emplace_back(FixedEvent<%s>{%s, %d, %s, %s});",
-                                      numType, time_code, var_idx, val_code, method))
+        externC <- c(externC,
+                     sprintf("  fixed_events.emplace_back(FixedEvent<%s>{%s, %d, %s, %s});",
+                             numType, time_code, var_idx, val_code, method))
       } else if (!is.null(root_code)) {
         externC <- c(externC,
-                     sprintf("  root_events.push_back(RootEvent<ublas::vector<%s>, %s>{", numType, numType),
-                     sprintf("    [](const ublas::vector<%s>& x, const %s& t){ return %s; },", numType, numType, root_code),
+                     sprintf("  root_events.push_back(RootEvent<ublas::vector<%s>, %s>{",
+                             numType, numType),
+                     sprintf("    [](const ublas::vector<%s>& x, const %s& t){ return %s; },",
+                             numType, numType, root_code),
                      sprintf("    %d, %s, %s});", var_idx, val_code, method))
-      } else stop("Event row ", i, " has neither time nor root defined")
+      } else {
+        stop("Event row ", i, " has neither time nor root defined")
+      }
     }
   }
 
@@ -409,7 +475,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
       sep = "\n"
     )
-    observer_init <- "  observer obs(matrix_data, n_times, ncol, fixed_state_idx, fixed_param_idx);"
+    observer_init <- "  observer obs(matrix_data, n_times, ncol);"
   } else {
     stepper_line <- paste(
       "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);",
@@ -419,36 +485,41 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     observer_init <- "  observer obs(matrix_data, n_times, ncol);"
   }
 
-  externC <- c(externC, '\n',
-               "  // --- Solver setup ---",
-               "  double abstol = REAL(abstolSEXP)[0];",
-               "  double reltol = REAL(reltolSEXP)[0];",
-               "  ode_system sys(full_params);",
-               "  jacobian jac(full_params);",
+  externC <- c(externC,'\n',
+               '  // --- Solver setup ---',
+               '  double abstol = REAL(abstolSEXP)[0];',
+               '  double reltol = REAL(reltolSEXP)[0];',
+               '  ode_system sys(full_params);',
+               '  jacobian jac(full_params);',
                stepper_line, '\n',
-               observer_init, "",
-               "  // --- Determine dt ---",
-               sprintf("  %s dt0 = odeint_utils::estimate_initial_dt(sys, jac, x, times.front(), times.back(), abstol, reltol);", numType),
-               "  auto t_test = times.front(); auto x_test = x; auto dt = dt0; int attempts = 0;",
-               "  while (controlledStepper.try_step(std::make_pair(sys, jac), x_test, t_test, dt) == fail) {",
-               "    if (++attempts >= 10000) throw std::runtime_error(\"Unable to find valid initial stepsize after 10000 attempts\");",
-               "  }",
-               "",
-               "  // --- Integration ---",
-               "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker);",
-               "",
-               "  UNPROTECT(1);",
-               "  return ans;"
+               observer_init,
+               '',
+               '  // --- Determine dt ---',
+               sprintf('  %s dt0 = odeint_utils::estimate_initial_dt(sys, jac, x, times.front(), times.back(), abstol, reltol);', numType),
+               '  auto t_test = times.front();',
+               '  auto x_test = x;',
+               '  auto dt = dt0;',
+               '  int attempts = 0;',
+               '  while (controlledStepper.try_step(std::make_pair(sys, jac), x_test, t_test, dt) == fail) {',
+               '    if (++attempts >= 10000) throw std::runtime_error("Unable to find valid initial stepsize after 10000 attempts");',
+               '  }\n',
+               '  // --- Integration ---',
+               '  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker);',
+               '',
+               '  // No column names set here - done R-side',
+               '  UNPROTECT(1);',
+               '  return ans;'
   )
 
   # --- End try/catch ---
   externC <- c(externC,
-               "  } catch (const std::exception& e) {",
-               "    Rf_error(\"ODE solver failed: %s\", e.what());",
-               "  } catch (...) {",
-               "    Rf_error(\"ODE solver failed: unknown C++ exception. Good Luck!\");",
-               "  }",
-               "}")
+               '  } catch (const std::exception& e) {',
+               '    Rf_error("ODE solver failed: %s", e.what());',
+               '  } catch (...) {',
+               '    Rf_error("ODE solver failed: unknown C++ exception. Good Luck!");',
+               '  }',
+               '}')
+
   externC <- paste(externC, collapse = "\n")
 
   # --- Write C++ file ---
@@ -467,7 +538,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   if (verbose) message("Wrote: ", normalizePath(filename))
   if (compile) compileAndLoad(modelname, verbose)
 
-  # --- Attach attributes (colnames nur als R-Attribute, nicht im C++) ---
+  # --- Attach attributes ---
   attr(modelname, "equations")     <- odes
   attr(modelname, "variables")     <- states
   attr(modelname, "parameters")    <- params
@@ -475,6 +546,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   attr(modelname, "solver")        <- "boost::odeint::rosenbrock4"
   attr(modelname, "fixed")         <- c(fixed_states, fixed_params)
   attr(modelname, "jacobian")      <- list(f.x = jac$f.x, f.time = jac$f.time)
+  attr(modelname, "ncol")          <- ncol_total
   if (deriv) {
     deriv_colnames <- character(0)
     for (s in states) for (v in c(sens_states, sens_params))
