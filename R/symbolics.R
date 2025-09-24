@@ -48,6 +48,7 @@ ComputeJacobianSymb <- function(odes, states = NULL, params = NULL, AD = TRUE) {
   if (AD) numType <- "AD" else numType <- "double"
 
   # --- Import SymPy via reticulate ---
+  ensurePythonEnv()
   sympy  <- reticulate::import("sympy")
   parser <- reticulate::import("sympy.parsing.sympy_parser")
 
@@ -156,6 +157,7 @@ ComputeJacobianSymb <- function(odes, states = NULL, params = NULL, AD = TRUE) {
 #' @importFrom reticulate import
 #' @keywords internal
 Sympy2CppCode <- function(expr, states, params, n, expr_name = NULL, AD = TRUE) {
+  ensurePythonEnv()
   sympy <- reticulate::import("sympy")
   code <- sympy$cxxcode(expr, standard = "c++17", strict = FALSE)
 

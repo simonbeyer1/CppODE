@@ -41,21 +41,27 @@ events <- data.frame(
   root = NA
 )
 
-f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s")
+# Generate and compile
+f <- CppODE::CppFun(eqns, events = events, modelname = "ABmodel")
 
-solve <- function(times, params, abstol = 1e-8, reltol = 1e-6, maxattemps = 5000, maxsteps = 1e6) {
-  paramnames <- c(attr(f,"variables"), attr(f,"parameters"))
-  # check for missing parameters
+# Wrap in an R function
+solve <- function(times, params,
+                  abstol = 1e-8, reltol = 1e-6,
+                  maxattemps = 5000, maxsteps = 1e6,
+                  roottol = 1e-8, maxroot = 1) {
+  paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
-  if (length(missing) > 0) stop(sprintf("Missing parameters: %s", paste(missing, collapse = ", ")))
+  if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
   params <- params[paramnames]
-  .Call(paste0("solve_",as.character(f)),
+  .Call(paste0("solve_", as.character(f)),
         as.numeric(times),
         as.numeric(params),
         as.numeric(abstol),
         as.numeric(reltol),
         as.integer(maxattemps),
-        as.integer(maxsteps))
+        as.integer(maxsteps),
+        as.numeric(roottol),
+        as.integer(maxroot))
 }
 
 params <- c(A = 1, B=0, k1 = 0.1, k2= 0.2, t_e = 3)
