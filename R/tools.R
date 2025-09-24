@@ -10,21 +10,19 @@
 #' `reticulate::import("sympy")` work reliably, independent of the user's
 #' global Python installation.
 #'
-#' ## Typical usage
-#' Call this function at the beginning of any code that requires SymPy,
-#' e.g. inside your solver generator:
+#' ## Requirements
+#' - A working `python3` executable on your system.
+#'   On Linux, install via your package manager, e.g.:
+#'   \preformatted{
+#'   sudo apt-get install python3 python3-venv python3-pip
+#'   }
+#'
+#' ## Usage
 #' \preformatted{
 #' ensurePythonEnv("CppODE")
 #' sympy  <- reticulate::import("sympy")
 #' parser <- reticulate::import("sympy.parsing.sympy_parser")
 #' }
-#'
-#' ## Notes
-#' - Requires the R package **reticulate**.
-#' - Uses Python 3 if available on the system.
-#' - If you prefer Conda environments instead of virtualenvs, you can
-#'   adapt this function to use `reticulate::conda_create()` and
-#'   `reticulate::use_condaenv()`.
 #'
 #' @param envname Character scalar. Name of the Python virtual environment
 #'   to check or create. Default is `"CppODE"`.
@@ -37,14 +35,26 @@ ensurePythonEnv <- function(envname = "CppODE") {
     stop("The package 'reticulate' is required but not installed.")
   }
 
-  # check if virtualenv exists
+  # Try to locate python3
+  py <- Sys.which("python3")
+  if (py == "") {
+    stop(
+      "No 'python3' found on your system. Please install Python 3.\n",
+      "On Debian/Ubuntu: sudo apt-get install python3 python3-venv python3-pip\n",
+      "On Windows: please install Python from https://www.python.org/downloads/ and ensure 'python3' is on PATH\n",
+      "On macOS: you can install via Homebrew: brew install python3\n",
+      "Or use reticulate::install_python() to get a managed Python."
+    )
+  }
+
+  # Check if virtualenv already exists
   venvs <- reticulate::virtualenv_list()
   if (!(envname %in% venvs)) {
     message("Creating Python virtualenv '", envname, "' with SymPy ...")
-    reticulate::virtualenv_create(envname = envname, python = "python3")
+    reticulate::virtualenv_create(envname = envname, python = py)
     reticulate::virtualenv_install(envname, packages = c("sympy"))
   } else {
-    # ensure sympy is available
+    # Ensure sympy is available
     mods <- reticulate::py_list_packages(envname = envname)
     if (!"sympy" %in% mods$package) {
       message("Installing 'sympy' into '", envname, "' ...")
@@ -52,7 +62,7 @@ ensurePythonEnv <- function(envname = "CppODE") {
     }
   }
 
-  # activate the environment for reticulate
+  # Activate environment
   reticulate::use_virtualenv(envname, required = TRUE)
 
   invisible(envname)

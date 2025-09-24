@@ -25,24 +25,22 @@ After ensuring availability, the environment is activated via
 \code{reticulate::use_virtualenv()}, so that subsequent calls to
 \code{reticulate::import("sympy")} work reliably, independent of the user's
 global Python installation.
-\subsection{Typical usage}{
+\subsection{Requirements}{
+\itemize{
+\item A working \code{python3} executable on your system.
+On Linux, install via your package manager, e.g.:
+\preformatted{
+  sudo apt-get install python3 python3-venv python3-pip
+  }
+}
+}
 
-Call this function at the beginning of any code that requires SymPy,
-e.g. inside your solver generator:
+\subsection{Usage}{
+
 \preformatted{
 ensurePythonEnv("CppODE")
 sympy  <- reticulate::import("sympy")
 parser <- reticulate::import("sympy.parsing.sympy_parser")
-}
-}
-
-\subsection{Notes}{
-\itemize{
-\item Requires the R package \strong{reticulate}.
-\item Uses Python 3 if available on the system.
-\item If you prefer Conda environments instead of virtualenvs, you can
-adapt this function to use \code{reticulate::conda_create()} and
-\code{reticulate::use_condaenv()}.
 }
 }
 }
