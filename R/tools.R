@@ -30,7 +30,7 @@
 #' @return Invisibly returns the name of the environment that was ensured
 #'   and activated.
 #' @keywords internal
-ensurePythonEnv <- function(envname = "CppODE") {
+ensurePythonEnv <- function(envname = "CppODE", verbose = F) {
   if (!requireNamespace("reticulate", quietly = TRUE)) {
     stop("The package 'reticulate' is required but not installed.")
   }
@@ -50,20 +50,20 @@ ensurePythonEnv <- function(envname = "CppODE") {
   # Check if virtualenv already exists
   venvs <- reticulate::virtualenv_list()
   if (!(envname %in% venvs)) {
-    message("Creating Python virtualenv '", envname, "' with SymPy ...")
+    if (verbose) message("Creating Python virtualenv '", envname, "' with SymPy ...")
     reticulate::virtualenv_create(envname = envname, python = py)
     reticulate::virtualenv_install(envname, packages = c("sympy"))
   } else {
     # Ensure sympy is available
     mods <- reticulate::py_list_packages(envname = envname)
     if (!"sympy" %in% mods$package) {
-      message("Installing 'sympy' into '", envname, "' ...")
+      if (verbose) message("Installing 'sympy' into '", envname, "' ...")
       reticulate::virtualenv_install(envname, packages = c("sympy"))
     }
   }
 
   # Activate environment
-  reticulate::use_virtualenv(envname, required = TRUE)
+  reticulate::use_virtualenv(envname)
 
   invisible(envname)
 }

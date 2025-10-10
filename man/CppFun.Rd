@@ -53,7 +53,7 @@ The model name (character). The object has attributes:
 }
 \description{
 This function generates and compiles a C++ solver for systems of ODEs using
-Boost.Odeint’s stiff Rosenbrock 4(3) method with dense output and error control.
+Boost.Odeint's stiff Rosenbrock 4(3) method with dense output and error control.
 The solver can handle fixed-time and root-triggered events, and (optionally)
 compute state and parameter sensitivities via forward-mode automatic
 differentiation (AD) using FADBAD++.
@@ -124,15 +124,18 @@ numeric matrix with columns:
     missing <- setdiff(paramnames, names(params))
     if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
     params <- params[paramnames]
-    .Call(paste0("solve_", as.character(f)),
-          as.numeric(times),
-          as.numeric(params),
-          as.numeric(abstol),
-          as.numeric(reltol),
-          as.integer(maxattemps),
-          as.integer(maxsteps),
-          as.numeric(roottol),
-          as.integer(maxroot))
+    out <- .Call(paste0("solve_", as.character(f)),
+                 as.numeric(times),
+                 as.numeric(params),
+                 as.numeric(abstol),
+                 as.numeric(reltol),
+                 as.integer(maxattemps),
+                 as.integer(maxsteps),
+                 as.numeric(roottol),
+                 as.integer(maxroot))
+    colnames(out) <- c("time", attr(f, "variables"), attr(f, "sensvariables"))
+
+    return(out)
   }
 
   # Example run

@@ -26,15 +26,18 @@
     missing <- setdiff(paramnames, names(params))
     if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
     params <- params[paramnames]
-    .Call(paste0("solve_", as.character(f)),
-          as.numeric(times),
-          as.numeric(params),
-          as.numeric(abstol),
-          as.numeric(reltol),
-          as.integer(maxattemps),
-          as.integer(maxsteps),
-          as.numeric(roottol),
-          as.integer(maxroot))
+    out <- .Call(paste0("solve_", as.character(f)),
+                 as.numeric(times),
+                 as.numeric(params),
+                 as.numeric(abstol),
+                 as.numeric(reltol),
+                 as.integer(maxattemps),
+                 as.integer(maxsteps),
+                 as.numeric(roottol),
+                 as.integer(maxroot))
+    colnames(out) <- c("time", attr(f, "variables"), attr(f, "sensvariables"))
+
+    return(out)
   }
 
   # Example run

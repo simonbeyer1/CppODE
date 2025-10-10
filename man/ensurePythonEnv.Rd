@@ -4,7 +4,7 @@
 \alias{ensurePythonEnv}
 \title{Ensure availability of a dedicated Python environment with SymPy}
 \usage{
-ensurePythonEnv(envname = "CppODE")
+ensurePythonEnv(envname = "CppODE", verbose = F)
 }
 \arguments{
 \item{envname}{Character scalar. Name of the Python virtual environment
