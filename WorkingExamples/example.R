@@ -63,10 +63,15 @@ solve <- function(times, params,
 }
 
 # Example run
-params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 3)
-times  <- seq(0, 10, length.out = 300)
+params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e=3)
+times  <- seq(0, 10, length.out = 3000)
 
 res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
+
+outtime_deriv <- system.time({
+  solve(times, params, abstol = 1e-6, reltol = 1e-6)
+})
+outtime_deriv
 
 # Access results
 head(res$time)
@@ -134,8 +139,68 @@ solve2 <- function(times, params,
 
 res2 <- solve2(times, params, abstol = 1e-6, reltol = 1e-6)
 
+outtime_deriv2 <- system.time({
+  solve2(times, params, abstol = 1e-6, reltol = 1e-6)
+})
+outtime_deriv2
 # Access second-order sensitivities
 # Hessian for state A at time index 10
-res2$sens2[1, "A", , ]
+res2$sens2[10, "A", , ]
 
 res2$sens1[1, "A", ]
+
+plotderiv2 <- function(res, state) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("Package 'ggplot2' is required for plotderiv2()")
+  }
+  if (!requireNamespace("tidyr", quietly = TRUE)) {
+    stop("Package 'tidyr' is required for plotderiv2()")
+  }
+  # Check if res has sens2
+  if (is.null(res$sens2)) {
+    stop("Result object does not contain second-order sensitivities (sens2)")
+  }
+  # Check if state exists
+  state_names <- dimnames(res$state)[[2]]
+  if (!state %in% state_names) {
+    stop("State '", state, "' not found. Available states: ",
+         paste(state_names, collapse = ", "))
+  }
+  # Get dimension names for sensitivity parameters
+  sens_names <- dimnames(res$sens2)[[3]]
+  # Extract data: res$sens2[time_idx, state, sens_param1, sens_param2]
+  sens2_data <- res$sens2[, state, , ]
+  n_times <- dim(sens2_data)[1]
+  n_sens <- dim(sens2_data)[2]
+  # Create long-format data frame
+  df_list <- list()
+  idx <- 1
+  # Nur oberes Dreieck (inkl. Diagonale)
+  for (i in 1:n_sens) {
+    for (j in i:n_sens) {  # ← Nur j >= i
+      df_list[[idx]] <- data.frame(
+        time = res$time,
+        value = sens2_data[, i, j],
+        deriv_label = paste0("∂²", state, "/∂", sens_names[i], "∂", sens_names[j])
+      )
+      idx <- idx + 1
+    }
+  }
+
+  df <- do.call(rbind, df_list)
+  df$deriv_label <- factor(df$deriv_label, levels = unique(df$deriv_label))
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = time, y = value)) +
+    ggplot2::geom_line() +
+    ggplot2::facet_wrap(~ deriv_label, scales = "free", ncol = 3) +
+    ggplot2::labs(
+      title = paste0("Second-Order Sensitivities of State '", state, "'"),
+      subtitle = "Unique Hessian matrix elements over time"
+    ) +
+    dMod::theme_dMod()
+
+  return(p)
+}
+
+
+plotderiv2(res2, "A")

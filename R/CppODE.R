@@ -265,25 +265,18 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                sprintf("  for (int i = 0; i < %d; ++i) {", n_states))
 
   if (deriv2) {
-    externC <- c(externC, "    x[i].x() = REAL(paramsSEXP)[i];")
+    externC <- c(externC, "    x[i].x().x() = REAL(paramsSEXP)[i];")
     if (length(fixed_state_idx) > 0) {
       externC <- c(externC,
                    sprintf("    if (!(%s)) {",
                            paste(sprintf("i == %d", fixed_state_idx), collapse = " || ")),
                    sprintf("      x[i].diff(i, %d);", n_states + n_params),
-                   sprintf("      for (int j = 0; j < %d; ++j) {", n_states + n_params),
-                   sprintf("        if (!(%s)) x[i].d(j).diff(j, %d);",
-                           paste(c(sprintf("j == %d", fixed_state_idx),
-                                   sprintf("j == %d", n_states + fixed_param_idx)), collapse = " || "),
-                           n_states + n_params),
-                   "      }",
+                   sprintf("      x[i].x().diff(i, %d);", n_states + n_params),
                    "    }")
     } else {
       externC <- c(externC,
                    sprintf("    x[i].diff(i, %d);", n_states + n_params),
-                   sprintf("    for (int j = 0; j < %d; ++j) {", n_states + n_params),
-                   sprintf("      x[i].d(j).diff(j, %d);", n_states + n_params),
-                   "    }")
+                   sprintf("    x[i].x().diff(i, %d);", n_states + n_params))
     }
   } else if (deriv) {
     externC <- c(externC, "    x[i] = REAL(paramsSEXP)[i];")
@@ -308,25 +301,18 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   if (deriv2) {
     externC <- c(externC,
-                 sprintf("    full_params[%d + i].x() = REAL(paramsSEXP)[%d + i];", n_states, n_states))
+                 sprintf("    full_params[%d + i].x().x() = REAL(paramsSEXP)[%d + i];", n_states, n_states))
     if (length(fixed_param_idx) > 0) {
       externC <- c(externC,
                    sprintf("    if (!(%s)) {",
                            paste(sprintf("i == %d", fixed_param_idx), collapse = " || ")),
                    sprintf("      full_params[%d + i].diff(%d + i, %d);", n_states, n_states, n_states + n_params),
-                   sprintf("      for (int j = 0; j < %d; ++j) {", n_states + n_params),
-                   sprintf("        if (!(%s)) full_params[%d + i].d(j).diff(j, %d);",
-                           paste(c(sprintf("j == %d", fixed_state_idx),
-                                   sprintf("j == %d", n_states + fixed_param_idx)), collapse = " || "),
-                           n_states, n_states + n_params),
-                   "      }",
+                   sprintf("      full_params[%d + i].x().diff(%d + i, %d);", n_states, n_states, n_states + n_params),
                    "    }")
     } else {
       externC <- c(externC,
                    sprintf("    full_params[%d + i].diff(%d + i, %d);", n_states, n_states, n_states + n_params),
-                   sprintf("    for (int j = 0; j < %d; ++j) {", n_states + n_params),
-                   sprintf("      full_params[%d + i].d(j).diff(j, %d);", n_states, n_states + n_params),
-                   "    }")
+                   sprintf("    full_params[%d + i].x().diff(%d + i, %d);", n_states, n_states, n_states + n_params))
     }
   } else if (deriv) {
     externC <- c(externC,
