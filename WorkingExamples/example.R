@@ -23,7 +23,7 @@ events <- data.frame(
 
 # Generate and compile solver
 f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s",
-                    deriv = T, deriv2 = F, verbose = T)
+                    deriv = T, deriv2 = F, verbose = F)
 
 # Wrap in an R solver function
 solve <- function(times, params,
@@ -136,4 +136,6 @@ res2 <- solve2(times, params, abstol = 1e-6, reltol = 1e-6)
 
 # Access second-order sensitivities
 # Hessian for state A at time index 10
-res2$sens2[10, "A", , ]
+res2$sens2[1, "A", , ]
+
+res2$sens1[1, "A", ]
