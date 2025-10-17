@@ -378,13 +378,13 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   if (deriv2) {
     stepper_line <- paste(
       "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);",
-      "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+      "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
       sep = "\n"
     )
   } else if (deriv) {
     stepper_line <- paste(
       "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);",
-      "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+      "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
       sep = "\n"
     )
   } else {

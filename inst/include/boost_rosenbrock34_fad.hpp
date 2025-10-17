@@ -9,10 +9,11 @@
 #include <boost/numeric/odeint.hpp>
 #include <boost/numeric/ublas/vector.hpp>
 #include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/odeint/stepper/rosenbrock4.hpp>
 #include <boost/numeric/odeint/stepper/rosenbrock4_controller_fad.hpp>
+#include <boost/numeric/odeint/stepper/rosenbrock4_dense_output_fad.hpp>
 #include <boost/numeric/odeint/integrate/detail/integrate_times_with_events.hpp>
 #include <boost/numeric/odeint/integrate/step_checker.hpp>
-
 /**
  * @file boost_rosenbrock34_fad.hpp
  * @brief Extended utilities enabling Rosenbrock-type ODE integration

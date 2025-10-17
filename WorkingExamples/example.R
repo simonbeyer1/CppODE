@@ -23,7 +23,7 @@ events <- data.frame(
 
 # Generate and compile solver
 f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s",
-                    deriv = T, deriv2 = F, verbose = F)
+                    deriv = T, deriv2 = F, verbose = T)
 
 # Wrap in an R solver function
 solve <- function(times, params,
