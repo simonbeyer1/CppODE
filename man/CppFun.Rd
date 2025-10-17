@@ -12,6 +12,7 @@ CppFun(
   compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
+  deriv2 = FALSE,
   verbose = FALSE
 )
 }
@@ -33,8 +34,11 @@ included among integration times. Default: \code{TRUE}.}
 \item{modelname}{Optional base name for the generated C++ file. If \code{NULL},
 a random identifier is used.}
 
-\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD.
+\item{deriv}{Logical. If \code{TRUE}, compute first-order sensitivities using AD.
 If \code{FALSE}, use plain doubles.}
+
+\item{deriv2}{Logical. If \code{TRUE}, compute second-order sensitivities using
+nested AD. Requires \code{deriv = TRUE}. Default: \code{FALSE}.}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
@@ -48,7 +52,9 @@ The model name (character). The object has attributes:
 \item \code{solver}: Solver description
 \item \code{fixed}: Fixed states/parameters
 \item \code{jacobian}: Symbolic Jacobian expressions
-\item \code{sensvariables}: Sensitivity variable names (if any)
+\item \code{deriv}: Logical indicating first-order derivatives
+\item \code{deriv2}: Logical indicating second-order derivatives
+\item \code{dim_names}: List with dimension names (time, state, sens)
 }
 }
 \description{
@@ -58,8 +64,7 @@ The solver can handle fixed-time and root-triggered events, and (optionally)
 compute state and parameter sensitivities via forward-mode automatic
 differentiation (AD) using FADBAD++.
 }
-\details{
-\subsection{Events}{
+\section{Events}{
 
 Events are specified in a \code{data.frame} with columns:
 \describe{
@@ -73,28 +78,57 @@ Each event must define either \code{time} or \code{root}. Events with roots
 are triggered whenever the expression crosses zero.
 }
 
-\subsection{Sensitivities}{
+\section{Sensitivities}{
 
 If \code{deriv = TRUE}, the solver augments the system with automatic
 differentiation and returns forward sensitivities with respect to initial
-conditions and parameters. Fixed states or parameters (specified in
-\code{fixed}) are excluded from the sensitivity system.
+conditions and parameters. If \code{deriv2 = TRUE} (requires \code{deriv = TRUE}),
+second-order sensitivities are also computed using nested AD types.
+Fixed states or parameters (specified in \code{fixed}) are excluded from
+the sensitivity system.
 
 If \code{deriv = FALSE}, the solver uses plain doubles (faster) and does not
 compute sensitivities.
 }
 
-\subsection{Output}{
+\section{Output}{
 
-The generated solver function (accessible via \code{.Call}) returns an R
-numeric matrix with columns:
+The generated solver function (accessible via \code{.Call}) returns a named list
+with the following structure:
+\describe{
+\item{deriv = FALSE}{
+Returns \code{list(time, state)} where:
 \itemize{
-\item Time
-\item State variables
-\item (if \code{deriv = TRUE}) Sensitivities in the form \code{state.parameter}
+\item \code{time}: Numeric vector of length n_out
+\item \code{state}: Numeric matrix with dimensions (n_out, n_states)
+}
+}
+\item{deriv = TRUE, deriv2 = FALSE}{
+Returns \code{list(time, state, sens1)} where:
+\itemize{
+\item \code{time}: Numeric vector of length n_out
+\item \code{state}: Numeric matrix with dimensions (n_out, n_states)
+\item \code{sens1}: Numeric array with dimensions (n_out, n_states, n_sens)
+containing first-order sensitivities
+}
+}
+\item{deriv = TRUE, deriv2 = TRUE}{
+Returns \code{list(time, state, sens1, sens2)} where:
+\itemize{
+\item \code{time}: Numeric vector of length n_out
+\item \code{state}: Numeric matrix with dimensions (n_out, n_states)
+\item \code{sens1}: Numeric array with dimensions (n_out, n_states, n_sens)
+containing first-order sensitivities
+\item \code{sens2}: Numeric array with dimensions (n_out, n_states, n_sens, n_sens)
+containing second-order sensitivities (Hessian matrix)
 }
 }
 }
+Here \code{n_out} is the number of output time points, \code{n_states} is the number
+of state variables, and \code{n_sens} is the number of sensitivity parameters
+(non-fixed states and parameters).
+}
+
 \examples{
 \dontrun{
   # Define ODE system
