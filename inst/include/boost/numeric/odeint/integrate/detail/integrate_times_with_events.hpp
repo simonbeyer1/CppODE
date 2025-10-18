@@ -275,7 +275,7 @@ std::vector<Time> merge_user_and_event_times(
  *  - Observes state at user-specified times and event times
  *  - Applies fixed events exactly at their trigger times
  *  - Detects sign changes for root events and applies corresponding actions
- *  - Reinitializes the stepper whenever state changes due to an event
+ *  - Controlled steppers do not require reinitialization after events
  */
 template <class Stepper, class System, class state_type,
           class TimeIterator, class Time, class Observer>
@@ -309,9 +309,7 @@ size_t integrate_times(
   while (true)
   {
     Time current_time = *iter++;
-    if (check_and_apply_fixed_events(start_state, current_time, fixed_events, root_tol)) {
-      st.initialize(start_state, current_time, dt);
-    }
+    check_and_apply_fixed_events(start_state, current_time, fixed_events, root_tol);
     obs(start_state, current_time);
     if (iter == end) break;
 
@@ -333,7 +331,6 @@ size_t integrate_times(
           {
             apply_event(start_state, root_events[i].state_index,
                         root_events[i].value, root_events[i].method);
-            st.initialize(start_state, current_time, dt);
             root_trigger_count[i]++;
           }
           last_vals[i] = f_now;

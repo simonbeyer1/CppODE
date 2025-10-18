@@ -13,6 +13,7 @@ CppFun(
   modelname = NULL,
   deriv = TRUE,
   deriv2 = FALSE,
+  useDenseOutput = TRUE,
   verbose = FALSE
 )
 }

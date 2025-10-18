@@ -102,7 +102,9 @@
 #' @export
 CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    compile = TRUE, modelname = NULL,
-                   deriv = TRUE, deriv2 = FALSE, verbose = FALSE) {
+                   deriv = TRUE, deriv2 = FALSE,
+                   useDenseOutput = TRUE,
+                   verbose = FALSE) {
 
   # --- Validate arguments ---
   if (deriv2 && !deriv) {
@@ -265,33 +267,48 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                sprintf("  for (int i = 0; i < %d; ++i) {", n_states))
 
   if (deriv2) {
-    externC <- c(externC, "    x[i].x().x() = REAL(paramsSEXP)[i];")
+    # --- Second-order AD (AD2 = fadbad::F<fadbad::F<double>>) ---
+    externC <- c(externC,
+                 "    x[i].x().x() = REAL(paramsSEXP)[i];",
+                 "    // Outer layer seeding (second derivative)",
+                 sprintf("    x[i].diff(i, %d);", n_states + n_params))
+
     if (length(fixed_state_idx) > 0) {
       externC <- c(externC,
-                   sprintf("    if (!(%s)) {",
-                           paste(sprintf("i == %d", fixed_state_idx), collapse = " || ")),
-                   sprintf("      x[i].diff(i, %d);", n_states + n_params),
-                   sprintf("      x[i].x().diff(i, %d);", n_states + n_params),
-                   "    }")
+                   sprintf("    // Skip fixed states when seeding inner layer"),
+                   sprintf("    if (!(%s)) x[i].x().diff(i, %d);",
+                           paste(sprintf("i == %d", fixed_state_idx), collapse = " || "),
+                           n_states + n_params))
     } else {
       externC <- c(externC,
-                   sprintf("    x[i].diff(i, %d);", n_states + n_params),
+                   "    // Inner layer seeding (first derivative)",
                    sprintf("    x[i].x().diff(i, %d);", n_states + n_params))
     }
+
   } else if (deriv) {
-    externC <- c(externC, "    x[i] = REAL(paramsSEXP)[i];")
+    # --- First-order AD only (AD = fadbad::F<double>) ---
+    externC <- c(externC,
+                 "    x[i] = REAL(paramsSEXP)[i];")
+
     if (length(fixed_state_idx) > 0) {
       externC <- c(externC,
+                   sprintf("    // Skip fixed states when seeding",
+                           n_states + n_params),
                    sprintf("    if (!(%s)) x[i].diff(i, %d);",
                            paste(sprintf("i == %d", fixed_state_idx), collapse = " || "),
                            n_states + n_params))
     } else {
-      externC <- c(externC, sprintf("    x[i].diff(i, %d);", n_states + n_params))
+      externC <- c(externC,
+                   sprintf("    x[i].diff(i, %d);", n_states + n_params))
     }
+
   } else {
-    externC <- c(externC, "    x[i] = REAL(paramsSEXP)[i];")
+    # --- Plain double case (no AD) ---
+    externC <- c(externC,
+                 "    x[i] = REAL(paramsSEXP)[i];")
   }
 
+  # assign to parameter vector
   externC <- c(externC,
                "    full_params[i] = x[i];",
                "  }",
@@ -301,34 +318,46 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   if (deriv2) {
     externC <- c(externC,
-                 sprintf("    full_params[%d + i].x().x() = REAL(paramsSEXP)[%d + i];", n_states, n_states))
+                 sprintf("    int param_index = %d + i;", n_states),
+                 "    full_params[param_index].x().x() = REAL(paramsSEXP)[param_index];",
+                 "    // Outer layer seeding (second derivative)",
+                 sprintf("    full_params[param_index].diff(param_index, %d);", n_states + n_params))
+
     if (length(fixed_param_idx) > 0) {
       externC <- c(externC,
-                   sprintf("    if (!(%s)) {",
-                           paste(sprintf("i == %d", fixed_param_idx), collapse = " || ")),
-                   sprintf("      full_params[%d + i].diff(%d + i, %d);", n_states, n_states, n_states + n_params),
-                   sprintf("      full_params[%d + i].x().diff(%d + i, %d);", n_states, n_states, n_states + n_params),
-                   "    }")
+                   "    // Skip fixed parameters when seeding inner layer",
+                   sprintf("    if (!(%s)) full_params[param_index].x().diff(param_index, %d);",
+                           paste(sprintf("i == %d", fixed_param_idx), collapse = " || "),
+                           n_states + n_params))
     } else {
       externC <- c(externC,
-                   sprintf("    full_params[%d + i].diff(%d + i, %d);", n_states, n_states, n_states + n_params),
-                   sprintf("    full_params[%d + i].x().diff(%d + i, %d);", n_states, n_states, n_states + n_params))
+                   "    // Inner layer seeding (first derivative)",
+                   sprintf("    full_params[param_index].x().diff(param_index, %d);",
+                           n_states + n_params))
     }
+
   } else if (deriv) {
     externC <- c(externC,
-                 sprintf("    full_params[%d + i] = REAL(paramsSEXP)[%d + i];", n_states, n_states))
+                 sprintf("    int param_index = %d + i;", n_states),
+                 "    full_params[param_index] = REAL(paramsSEXP)[param_index];")
+
     if (length(fixed_param_idx) > 0) {
       externC <- c(externC,
-                   sprintf("    if (!(%s)) full_params[%d + i].diff(%d + i, %d);",
+                   "    // Skip fixed parameters when seeding",
+                   sprintf("    if (!(%s)) full_params[param_index].diff(param_index, %d);",
                            paste(sprintf("i == %d", fixed_param_idx), collapse = " || "),
-                           n_states, n_states, n_states + n_params))
+                           n_states + n_params))
     } else {
-      externC <- c(externC, sprintf("    full_params[%d + i].diff(%d + i, %d);", n_states, n_states, n_states + n_params))
+      externC <- c(externC,
+                   sprintf("    full_params[param_index].diff(param_index, %d);",
+                           n_states + n_params))
     }
+
   } else {
     externC <- c(externC,
                  sprintf("    full_params[%d + i] = REAL(paramsSEXP)[%d + i];", n_states, n_states))
   }
+
 
   externC <- c(externC,
                "  }",
@@ -375,24 +404,42 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   }
 
   # --- Integration setup ---
-  if (deriv2) {
-    stepper_line <- paste(
-      "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);",
-      "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
-      sep = "\n"
-    )
-  } else if (deriv) {
-    stepper_line <- paste(
-      "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);",
-      "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
-      sep = "\n"
-    )
+  if (useDenseOutput) {
+    # Dense output version (mit Interpolation)
+    if (deriv2) {
+      stepper_line <- paste(
+        "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);",
+        "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+        sep = "\n"
+      )
+      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    } else if (deriv) {
+      stepper_line <- paste(
+        "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);",
+        "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+        sep = "\n"
+      )
+      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    } else {
+      stepper_line <- paste(
+        "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);",
+        "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+        sep = "\n"
+      )
+      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    }
   } else {
-    stepper_line <- paste(
-      "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);",
-      "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
-      sep = "\n"
-    )
+    # Controlled stepper version (OHNE Interpolation)
+    if (deriv2) {
+      stepper_line <- "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);"
+      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    } else if (deriv) {
+      stepper_line <- "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);"
+      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    } else {
+      stepper_line <- "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);"
+      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    }
   }
 
   externC <- c(externC, "",
@@ -415,7 +462,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "    if (++attempts >= 10000) throw std::runtime_error(\"Unable to find valid initial stepsize after 10000 attempts\");",
                "  }", "",
                "  // --- Integration ---",
-               "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);",
+               integrate_line,
                "",
                "  const int n_out = static_cast<int>(result_times.size());",
                "  if (n_out <= 0) Rf_error(\"Integration produced no output\");",
