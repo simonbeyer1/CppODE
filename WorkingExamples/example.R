@@ -5,6 +5,7 @@ if (!dir.exists(.workingDir)) dir.create(.workingDir)
 setwd(.workingDir)
 
 library(CppODE)
+library(ggplot2)
 
 # Define ODE system
 eqns <- c(
@@ -64,7 +65,7 @@ solve <- function(times, params,
 
 # Example run
 params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e=3)
-times  <- seq(0, 10, length.out = 3000)
+times  <- seq(0, 10, length.out = 1000)
 
 res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
 
@@ -80,6 +81,12 @@ head(res$state)
 # If you want a matrix like before (for plotting etc):
 out_matrix <- cbind(time = res$time, res$state)
 head(out_matrix)
+
+out_long <- dMod::wide2long(out_matrix)
+
+ggplot(out_long, aes(x=time, y = value)) +
+  geom_line() +
+  facet_wrap(~name)
 
 # Access sensitivities
 if (!is.null(res$sens1)) {
@@ -102,6 +109,14 @@ if (!is.null(res$sens1)) {
   out_full <- cbind(time = res$time, res$state, sens_matrix)
   head(out_full)
 }
+
+out_long <- dMod::wide2long(out_full)
+
+ggplot(out_long, aes(x=time, y = value)) +
+  geom_line() +
+  facet_wrap(~name, scale = "free") +
+  dMod::theme_dMod()
+
 
 # For deriv2 = TRUE example:
 f2 <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s2",
