@@ -1173,43 +1173,7 @@ template <typename U, unsigned int N> struct Op< FTypeName<U,N> >
 	static bool myGe(const T& x, const T& y) { return x>=y; }
 };
 
-template<class T>
-inline F<T> abs(const F<T>& x) {
-  return (x < T(0)) ? -x : x;
-}
-
 } // namespace fadbad
-
-namespace std {
-
-// Import FADBAD math overloads so std::sin, std::sqrt, ... work
-using fadbad::abs;
-using fadbad::sin;
-using fadbad::cos;
-using fadbad::tan;
-using fadbad::asin;
-using fadbad::acos;
-using fadbad::atan;
-using fadbad::exp;
-using fadbad::log;
-using fadbad::sqrt;
-using fadbad::pow;
-using fadbad::sqr;
-using fadbad::abs;
-
-
-// Provide min/max because STL expects them in std::
-template<class T>
-inline fadbad::F<T> min(const fadbad::F<T>& a, const fadbad::F<T>& b) {
-  return (a < b) ? a : b;
-}
-
-template<class T>
-inline fadbad::F<T> max(const fadbad::F<T>& a, const fadbad::F<T>& b) {
-  return (a > b) ? a : b;
-}
-
-} // namespace std
 
 
 #endif

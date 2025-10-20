@@ -5,12 +5,49 @@
 #include <vector>
 #include <cmath>
 #include <fadbad++/fadiff.h>
+
+namespace fadbad {
+template<class T>
+inline F<T> abs(const F<T>& x) { return (x < Op<T>::myZero()) ? -x : x; }
+
+template<class T>
+inline F<T> min(const F<T>& a, const F<T>& b) { return (a < b) ? a : b; }
+
+template<class T>
+inline F<T> max(const F<T>& a, const F<T>& b) { return (a > b) ? a : b; }
+}
+
+
+
+namespace std {
+
+  // Import FADBAD math overloads so std::sin, std::sqrt, ... work
+  using fadbad::abs;
+  using fadbad::sin;
+  using fadbad::cos;
+  using fadbad::tan;
+  using fadbad::asin;
+  using fadbad::acos;
+  using fadbad::atan;
+  using fadbad::exp;
+  using fadbad::log;
+  using fadbad::sqrt;
+  using fadbad::pow;
+  using fadbad::sqr;
+  using fadbad::abs;
+  using fadbad::min;
+  using fadbad::max;
+
+} // namespace std
+
+
 #include <boost/numeric/odeint.hpp>
 #include <boost/numeric/ublas/vector.hpp>
 #include <boost/numeric/ublas/matrix.hpp>
 #include <boost/numeric/odeint/stepper/rosenbrock4_controller_fad.hpp>
 #include <boost/numeric/odeint/integrate/detail/integrate_times_with_events.hpp>
 #include <boost/numeric/odeint/integrate/step_checker.hpp>
+
 
 namespace boost { namespace numeric { namespace ublas {
 
