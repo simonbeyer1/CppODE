@@ -12,50 +12,38 @@ CppFun(
   compile = TRUE,
   modelname = NULL,
   deriv = TRUE,
+  deriv2 = FALSE,
   verbose = FALSE
 )
 }
 \arguments{
-\item{odes}{Named character vector of ODE right-hand sides.
-Names must correspond to state variables.}
+\item{odes}{Named character vector of ODE right-hand sides.}
 
-\item{events}{Optional \code{data.frame} describing events (see Details).
-Default: \code{NULL} (no events).}
+\item{events}{Optional \code{data.frame} describing events. Default: \code{NULL}.}
 
-\item{fixed}{Character vector of fixed states or parameters (excluded from
-sensitivity system). Only relevant if \code{deriv = TRUE}.}
+\item{fixed}{Character vector of fixed states or parameters. Default: \code{NULL}.}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is
-included among integration times. Default: \code{TRUE}.}
+\item{includeTimeZero}{Logical. Include time 0 in integration times. Default: \code{TRUE}.}
 
-\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
+\item{compile}{Logical. Compile and load generated C++ code. Default: \code{TRUE}.}
 
-\item{modelname}{Optional base name for the generated C++ file. If \code{NULL},
-a random identifier is used.}
+\item{modelname}{Optional base name for C++ file. Default: random identifier.}
 
-\item{deriv}{Logical. If \code{TRUE}, compute sensitivities using AD.
-If \code{FALSE}, use plain doubles.}
+\item{deriv}{Logical. Compute first-order sensitivities. Default: \code{TRUE}.}
 
-\item{verbose}{Logical. If \code{TRUE}, print progress messages.}
+\item{deriv2}{Logical. Compute second-order sensitivities. Default: \code{FALSE}.}
+
+\item{verbose}{Logical. Print progress messages. Default: \code{FALSE}.}
 }
 \value{
-The model name (character). The object has attributes:
-\itemize{
-\item \code{equations}: ODE definitions
-\item \code{variables}: State variable names
-\item \code{parameters}: Parameter names
-\item \code{events}: Events \code{data.frame} (if any)
-\item \code{solver}: Solver description
-\item \code{fixed}: Fixed states/parameters
-\item \code{jacobian}: Symbolic Jacobian expressions
-\item \code{sensvariables}: Sensitivity variable names (if any)
-}
+The model name (character) with attributes: equations, variables, parameters,
+events, solver, fixed, jacobian, n_sens.
 }
 \description{
 This function generates and compiles a C++ solver for systems of ODEs using
 Boost.Odeint's stiff Rosenbrock 4(3) method with dense output and error control.
 The solver can handle fixed-time and root-triggered events, and (optionally)
-compute state and parameter sensitivities via forward-mode automatic
+compute first/second-order sensitivities via forward-mode automatic
 differentiation (AD) using FADBAD++.
 }
 \details{
@@ -75,74 +63,94 @@ are triggered whenever the expression crosses zero.
 
 \subsection{Sensitivities}{
 
-If \code{deriv = TRUE}, the solver augments the system with automatic
-differentiation and returns forward sensitivities with respect to initial
-conditions and parameters. Fixed states or parameters (specified in
-\code{fixed}) are excluded from the sensitivity system.
-
-If \code{deriv = FALSE}, the solver uses plain doubles (faster) and does not
-compute sensitivities.
+The function supports three sensitivity modes:
+\describe{
+\item{\code{deriv = FALSE, deriv2 = FALSE}}{No sensitivities. Uses plain doubles.
+Returns: \code{list(time = numeric[n_out], states = matrix[n_out, n_states])}}
+\item{\code{deriv = TRUE, deriv2 = FALSE}}{First-order sensitivities using \code{F<double>}.
+Returns: \code{list(time, states, sens1 = array[n_out, n_states, n_sens])}}
+\item{\code{deriv = TRUE, deriv2 = TRUE}}{Second-order sensitivities using \code{F<F<double>>}.
+Returns: \code{list(time, states, sens1, sens2 = array[n_out, n_states, n_sens, n_sens])}}
 }
 
-\subsection{Output}{
-
-The generated solver function (accessible via \code{.Call}) returns an R
-numeric matrix with columns:
-\itemize{
-\item Time
-\item State variables
-\item (if \code{deriv = TRUE}) Sensitivities in the form \code{state.parameter}
-}
+Fixed states or parameters (specified in \code{fixed}) are excluded from the
+sensitivity system. Setting \code{deriv2 = TRUE} requires \code{deriv = TRUE}.
 }
 }
 \examples{
 \dontrun{
   # Define ODE system
   eqns <- c(
-    A = "-k1*A^2 * time",
-    B = "k1*A^2 * time - k2*B"
+    A = "-k1 * A^2 * time",
+    B = "k1 * A^2 * time - k2 * B"
   )
 
   # Define an event
   events <- data.frame(
-    var   = "A",
-    time  = "t_e",
-    value = 1,
-    method= "add",
-    root  = NA
+    var    = "A",
+    time   = "t_e",
+    value  = 1,
+    method = "add",
+    root   = NA
   )
 
-  # Generate and compile solver
-  f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s")
+  # Generate and compile solver (first-order sensitivities)
+  f1 <- CppODE::CppFun(
+    eqns,
+    events = events,
+    modelname = "Amodel_s",
+    deriv = TRUE,
+    deriv2 = FALSE
+  )
 
-  # Wrap in an R solver function
-  solve <- function(times, params,
-                    abstol = 1e-8, reltol = 1e-6,
-                    maxattemps = 5000, maxsteps = 1e6,
-                    roottol = 1e-8, maxroot = 1) {
-    paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
+  # R wrapper for the compiled C++ solver
+  solve1 <- function(times, params,
+                     abstol = 1e-6, reltol = 1e-6,
+                     maxattempts = 5000L, maxsteps = 1e6L,
+                     roottol = 1e-8, maxroot = 1L) {
+
+    # Determine parameter order
+    paramnames <- c(attr(f1, "variables"), attr(f1, "parameters"))
     missing <- setdiff(paramnames, names(params))
-    if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
-    params <- params[paramnames]
-    out <- .Call(paste0("solve_", as.character(f)),
-                 as.numeric(times),
-                 as.numeric(params),
-                 as.numeric(abstol),
-                 as.numeric(reltol),
-                 as.integer(maxattemps),
-                 as.integer(maxsteps),
-                 as.numeric(roottol),
-                 as.integer(maxroot))
-    colnames(out) <- c("time", attr(f, "variables"), attr(f, "sensvariables"))
+    if (length(missing) > 0)
+      stop("Missing parameters: ", paste(missing, collapse = ", "))
 
-    return(out)
+    params <- params[paramnames]
+
+    # Call compiled solver
+    result <- .Call(
+      paste0("solve_", f1),
+      as.numeric(times),
+      as.numeric(params),
+      as.numeric(abstol),
+      as.numeric(reltol),
+      as.integer(maxattempts),
+      as.integer(maxsteps),
+      as.numeric(roottol),
+      as.integer(maxroot)
+    )
+
+    # Extract output components
+    states <- attr(f1, "variables")
+    sens_vars <- setdiff(c(states, attr(f1, "parameters")), attr(f1, "fixed"))
+
+    # Add dimnames for clarity
+    colnames(result$states) <- states
+    dimnames(result$sens1) <- list(NULL, states, sens_vars)
+
+    return(result)
   }
 
-  # Example run
+  # Define parameters and time grid
   params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 3)
-  times  <- seq(0, 10, length.out = 300)
-  res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
-  head(res)
+  times <- seq(0, 10, length.out = 300)
+
+  # Run solver
+  res <- solve1(times, params)
+
+  # Inspect output
+  str(res)
+
 }
 }
 \author{
