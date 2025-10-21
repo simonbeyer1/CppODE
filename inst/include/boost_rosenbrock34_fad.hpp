@@ -100,20 +100,24 @@ using boost::numeric::ublas::vector;
 using boost::numeric::ublas::matrix;
 using fadbad::F;
 
+// ============================================================================
+//  Weighted infinity norms
+// ============================================================================
+
 /**
- * @brief Weighted infinity-norm (supremum norm) for vectors.
+ * @brief Computes the weighted infinity norm (supremum norm) for a vector of plain types.
  *
- * Computes the weighted sup norm of vector v with respect to x0:
- *     max_i |v_i| / (atol + rtol * |x0_i|)
+ * The norm is defined as:
+ * \f[
+ *   \|v\|_{\infty,w} = \max_i \frac{|v_i|}{a_{\text{tol}} + r_{\text{tol}} |x_{0,i}|}
+ * \f]
  *
- * Supports both plain double and FADBAD types (F<double>, F<F<double>>, ...).
- *
- * @tparam T scalar or FADBAD type
- * @param v vector of values
- * @param x0 reference state vector (for scaling)
- * @param atol absolute tolerance
- * @param rtol relative tolerance
- * @return double weighted supremum norm
+ * @tparam T Scalar type (e.g., double)
+ * @param v    Input vector
+ * @param x0   Reference state (used for relative scaling)
+ * @param atol Absolute tolerance
+ * @param rtol Relative tolerance
+ * @return Weighted supremum norm as a double
  */
 template<typename T>
 inline double weighted_sup_norm(
@@ -124,7 +128,6 @@ inline double weighted_sup_norm(
 ) {
   double nrm = 0.0;
   for (std::size_t i = 0; i < v.size(); ++i) {
-    // convert to plain double using .x() or operator double()
     double scale = atol + rtol * std::abs(static_cast<double>(x0[i]));
     double comp  = std::abs(static_cast<double>(v[i]));
     nrm = std::max(nrm, comp / scale);
@@ -133,15 +136,20 @@ inline double weighted_sup_norm(
 }
 
 /**
- * @brief Weighted infinity-norm with sensitivities (first or higher-order AD).
+ * @brief Computes the weighted infinity norm for FADBAD++ variables,
+ *        including all derivative components recursively.
  *
- * For FADBAD F<T> values, this function includes all derivatives in the norm:
- *     max( |x|, |dx/dp_i| ) for all i.
+ * The computation includes the base value and all sensitivities stored in F<T>:
+ * \f[
+ *   \|v\|_{\infty,w} = \max_i \frac{\max\big(|v_i|, |dv_i/dp_j|\big)}{a_{\text{tol}} + r_{\text{tol}} |x_{0,i}|}
+ * \f]
  *
- * It works recursively: if T itself is F<U>, the derivatives d(j) may also
- * contain nested AD values (F<F<U>>).
- *
- * @tparam T inner scalar type (e.g. double or F<double>)
+ * @tparam T Inner scalar type (e.g., double or F<double>)
+ * @param v    Input vector of FADBAD variables
+ * @param x0   Reference state (for relative scaling)
+ * @param atol Absolute tolerance
+ * @param rtol Relative tolerance
+ * @return Weighted supremum norm including derivatives
  */
 template<typename T>
 inline double weighted_sup_norm(
@@ -155,141 +163,255 @@ inline double weighted_sup_norm(
     F<T> &vi = v[i];
     F<T> &xi = x0[i];
 
-    // scaling uses the base value (cast works recursively)
     double scale = atol + rtol * std::abs(static_cast<double>(xi));
-
-    // start with function value
     double comp_max = std::abs(static_cast<double>(vi));
 
-    // include all sensitivities
-    for (int j = 0; j < vi.size(); ++j) {
-      comp_max = std::max(comp_max,
-                          std::abs(static_cast<double>(vi.d(j))));
-    }
+    // Include sensitivities recursively
+    for (int j = 0; j < vi.size(); ++j)
+      comp_max = std::max(comp_max, std::abs(static_cast<double>(vi.d(j))));
 
     nrm = std::max(nrm, comp_max / scale);
   }
   return nrm;
 }
 
+// ============================================================================
+//  Matrix infinity norm
+// ============================================================================
+
 /**
- * @brief Estimate an initial time step for ODE integration (AD version).
+ * @brief Computes the infinity norm (max row sum) of a dense matrix.
  *
- * This template operates on FADBAD types (e.g. F<double>, F<F<double>>) and
- * includes sensitivities in the curvature-based step size estimation.
- * It works for first- and higher-order automatic differentiation.
+ * \f[
+ *   \|A\|_{\infty} = \max_i \sum_j |A_{ij}|
+ * \f]
  *
- * @tparam T         Inner scalar type (e.g. double or F<double>)
- * @tparam System    Callable type for the ODE system: void(x, dxdt, t)
- * @tparam Jacobian  Callable type for the Jacobian: void(x, J, t, dfdt)
+ * @tparam T Scalar type (e.g., double)
+ * @param J Input matrix
+ * @return Matrix infinity norm as a double
+ */
+template<typename T>
+inline double matrix_norm_inf(const matrix<T> &J) {
+  double max_row_sum = 0.0;
+  for (std::size_t i = 0; i < J.size1(); ++i) {
+    double sum = 0.0;
+    for (std::size_t j = 0; j < J.size2(); ++j)
+      sum += std::abs(static_cast<double>(J(i, j)));
+    max_row_sum = std::max(max_row_sum, sum);
+  }
+  return max_row_sum;
+}
+
+/**
+ * @brief Computes the infinity norm for a matrix of FADBAD++ values.
  *
- * @param system   Callable object or lambda computing the ODE RHS f(x, dxdt, t)
- * @param jacobian Callable object or lambda computing the Jacobian and df/dt
+ * The inner values are cast to double recursively via static_cast<double>(),
+ * extracting the base value of each F<T> entry.
+ *
+ * @tparam T Inner scalar type (e.g., double or F<double>)
+ * @param J Input matrix with FADBAD entries
+ * @return Matrix infinity norm as a double
+ */
+template<typename T>
+inline double matrix_norm_inf(const matrix<F<T>> &J) {
+  double max_row_sum = 0.0;
+  for (std::size_t i = 0; i < J.size1(); ++i) {
+    double sum = 0.0;
+    for (std::size_t j = 0; j < J.size2(); ++j)
+      sum += std::abs(static_cast<double>(J(i, j)));
+    max_row_sum = std::max(max_row_sum, sum);
+  }
+  return max_row_sum;
+}
+
+// ============================================================================
+//  Initial time step estimation (curvature- and stiffness-based)
+// ============================================================================
+
+/**
+ * @brief Estimates an initial time step for stiff ODE integration using curvature and stiffness.
+ *
+ * This function combines two physically motivated criteria to determine a stable and
+ * conservative initial step size for Rosenbrock-type (stiff) solvers.
+ *
+ * 1. **Curvature-based time scale**:
+ *    \f[
+ *      h_\text{curv} = \sqrt{ \eta \frac{ \|x_0\|_\infty }{ \|x''(t_0)\|_\infty } }
+ *    \f]
+ *    where \( x''(t_0) = \frac{df}{dt} + J f \) approximates the local curvature.
+ *
+ * 2. **Stiffness-based time scale**:
+ *    \f[
+ *      h_J = \frac{c_J}{ \|J(t_0)\|_\infty }
+ *    \f]
+ *    which limits the step size based on the Jacobian magnitude.
+ *
+ * The final step size is the smaller of both estimates, scaled by a safety margin.
+ * The computed value is independent of user-specified tolerances.
+ *
+ * @tparam T         Inner scalar type (e.g., double or F<double>)
+ * @tparam System    Callable object implementing f(x, dxdt, t)
+ * @tparam Jacobian  Callable object implementing jacobian(x, J, t, dfdt)
+ *
+ * @param system   ODE right-hand side function
+ * @param jacobian Jacobian and df/dt evaluator
  * @param x0       Initial state vector
  * @param t0       Start time
- * @param te       End time
- * @param atol     Absolute tolerance
- * @param rtol     Relative tolerance
- * @param eta      Safety scaling factor (default 1e-3)
- *
- * @return F<T> — estimated initial time step (same nesting level as x0 elements)
+ * @param eta      Curvature scaling factor (default 1e-2)
+ * @param c_J      Safety factor for stiffness-based limit (default 0.1)
+ * @return F<T> Estimated initial step size (same AD nesting level as x0 elements)
  */
 template<typename T, typename System, typename Jacobian>
 inline F<T> estimate_initial_dt(
     System&& system,
     Jacobian&& jacobian,
-    vector<F<T>> &x0,
+    vector<F<T>>& x0,
     const F<T> t0,
-    const F<T> te,
-    double atol,
-    double rtol,
-    double eta = 1e-3
+    double eta = 1e-2,
+    double c_J = 0.1
 ) {
-  // Evaluate RHS f(t0, x0)
+  // Evaluate f(x0, t0)
   vector<F<T>> dxdt(x0.size());
   system(x0, dxdt, t0);
 
-  // Jacobian and df/dt
+  // Compute Jacobian and df/dt
   matrix<F<T>> J(x0.size(), x0.size());
   vector<F<T>> dfdt(x0.size());
   jacobian(x0, J, t0, dfdt);
 
-  // compute x'' = dfdt + J * f
+  // Approximate curvature term: x'' = df/dt + J * f
   vector<F<T>> xdd(x0.size());
   for (std::size_t i = 0; i < x0.size(); ++i) {
     F<T> sum = dfdt[i];
-    for (std::size_t j = 0; j < x0.size(); ++j) {
+    for (std::size_t j = 0; j < x0.size(); ++j)
       sum += J(i, j) * dxdt[j];
-    }
     xdd[i] = sum;
   }
 
-  double norm_x   = weighted_sup_norm(x0,  x0, atol, rtol);
-  double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
+  // Unweighted infinity norms (physically scaled)
+  auto norm_inf = [](const auto& v) {
+    double n = 0.0;
+    for (const auto& vi : v)
+      n = std::max(n, std::abs(static_cast<double>(vi)));
+    return n;
+  };
 
-  double dt_curv = (norm_xdd > 0.0)
-    ? std::sqrt(eta * norm_x / norm_xdd)
-      : atol * static_cast<double>(te - t0);
+  double norm_x   = norm_inf(x0);
+  double norm_xdd = norm_inf(xdd);
+  double normJ    = matrix_norm_inf(J);
 
-  return F<T>(dt_curv);
+  // Curvature-based step
+  double dt_curv = (norm_xdd > 1e-15)
+    ? std::sqrt(std::max(1e-16, eta * norm_x / norm_xdd))
+      : 0.0;
+
+  // Stiffness-based limit
+  double dt_J = (normJ > 1e-15)
+    ? c_J / normJ
+  : 1.0;
+
+  // Combine conservatively
+  double dt_final = (dt_curv > 0.0)
+    ? std::min(dt_curv, dt_J)
+      : dt_J;
+
+  // Safety margin
+  dt_final *= 0.9;
+
+  // Lower limit to avoid underflow
+  dt_final = std::max(dt_final, 1e-14);
+
+  return F<T>(dt_final);
 }
 
-
 /**
- * @brief Estimate an initial time step for ODE integration (plain double version).
+ * @brief Estimates an initial time step for stiff ODE integration (plain double version).
  *
- * Computes the curvature-based step size using:
- *   dt = sqrt(eta * norm(x) / norm(xdd))
+ * Combines curvature-based and stiffness-based estimates to choose a stable initial
+ * step size for Rosenbrock or other implicit methods.
  *
- * @param system   ODE RHS function
- * @param jacobian Jacobian and df/dt function
- * @param x0       initial state
- * @param t0       start time
- * @param te       end time
- * @param atol     absolute tolerance
- * @param rtol     relative tolerance
- * @param eta      safety scaling (default 1e-3)
- * @return double suggested initial step size
+ * 1. **Curvature-based time scale**:
+ *    \f[
+ *      h_\text{curv} = \sqrt{ \eta \frac{ \|x_0\|_\infty }{ \|x''(t_0)\|_\infty } }
+ *    \f]
+ *
+ * 2. **Stiffness-based time scale**:
+ *    \f[
+ *      h_J = \frac{c_J}{ \|J(t_0)\|_\infty }
+ *    \f]
+ *
+ * The smaller of both values is chosen, multiplied by a safety factor (0.9).
+ * This estimation is independent of user-specified tolerances and aims to capture
+ * the natural dynamical and stiffness scales of the system.
+ *
+ * @param system   ODE right-hand side function: f(x, dxdt, t)
+ * @param jacobian Jacobian function: jacobian(x, J, t, dfdt)
+ * @param x0       Initial state vector
+ * @param t0       Start time
+ * @param eta      Curvature scaling factor (default 1e-2)
+ * @param c_J      Safety factor for 1/||J|| (default 0.1)
+ * @return double  Estimated initial time step
  */
 inline double estimate_initial_dt(
     const std::function<void(vector<double>&, vector<double>&, double)>& system,
-    const std::function<void(vector<double>&, matrix<double>&, double, vector<double>&)> &jacobian,
-    vector<double> &x0,
+    const std::function<void(vector<double>&, matrix<double>&, double, vector<double>&)>& jacobian,
+    vector<double>& x0,
     double t0,
-    double te,
-    double atol,
-    double rtol,
-    double eta = 1e-3
+    double eta = 1e-2,
+    double c_J = 0.1
 ) {
-  // Evaluate RHS f(t0, x0)
+  // Evaluate f(x0, t0)
   vector<double> dxdt(x0.size());
   system(x0, dxdt, t0);
 
-  // Jacobian and df/dt
+  // Compute Jacobian and df/dt
   matrix<double> J(x0.size(), x0.size());
   vector<double> dfdt(x0.size());
   jacobian(x0, J, t0, dfdt);
 
-  // compute x'' = dfdt + J * f
+  // Approximate curvature term: x'' = df/dt + J * f
   vector<double> xdd(x0.size());
   for (std::size_t i = 0; i < x0.size(); ++i) {
     double sum = dfdt[i];
-    for (std::size_t j = 0; j < x0.size(); ++j) {
+    for (std::size_t j = 0; j < x0.size(); ++j)
       sum += J(i, j) * dxdt[j];
-    }
     xdd[i] = sum;
   }
 
-  // norms
-  double norm_x   = weighted_sup_norm(x0,  x0, atol, rtol);
-  double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
+  // Unweighted infinity norms
+  auto norm_inf = [](const auto& v) {
+    double n = 0.0;
+    for (const auto& vi : v)
+      n = std::max(n, std::abs(vi));
+    return n;
+  };
 
-  double dt_curv = (norm_xdd > 0.0)
-    ? std::sqrt(eta * norm_x / norm_xdd)
-      : atol * (te - t0);
+  double norm_x   = norm_inf(x0);
+  double norm_xdd = norm_inf(xdd);
+  double normJ    = matrix_norm_inf(J);
 
-  return dt_curv;
+  // Curvature-based estimate
+  double dt_curv = (norm_xdd > 1e-15)
+    ? std::sqrt(std::max(1e-16, eta * norm_x / norm_xdd))
+      : 0.0;
+
+  // Stiffness-based limit
+  double dt_J = (normJ > 1e-15)
+    ? c_J / normJ
+  : 1.0;
+
+  // Combine
+  double dt_final = (dt_curv > 0.0)
+    ? std::min(dt_curv, dt_J)
+      : dt_J;
+
+  // Safety scaling
+  dt_final *= 0.9;
+  dt_final = std::max(dt_final, 1e-14);
+
+  return dt_final;
 }
+
 
 } // namespace odeint_utils
 

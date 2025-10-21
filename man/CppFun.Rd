@@ -95,7 +95,7 @@ sensitivity system. Setting \code{deriv2 = TRUE} requires \code{deriv = TRUE}.
   )
 
   # Generate and compile solver (first-order sensitivities)
-  f1 <- CppODE::CppFun(
+  f <- CppODE::CppFun(
     eqns,
     events = events,
     modelname = "Amodel_s",
@@ -104,13 +104,13 @@ sensitivity system. Setting \code{deriv2 = TRUE} requires \code{deriv = TRUE}.
   )
 
   # R wrapper for the compiled C++ solver
-  solve1 <- function(times, params,
+  solve <- function(times, params,
                      abstol = 1e-6, reltol = 1e-6,
                      maxattempts = 5000L, maxsteps = 1e6L,
                      roottol = 1e-8, maxroot = 1L) {
 
     # Determine parameter order
-    paramnames <- c(attr(f1, "variables"), attr(f1, "parameters"))
+    paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
     missing <- setdiff(paramnames, names(params))
     if (length(missing) > 0)
       stop("Missing parameters: ", paste(missing, collapse = ", "))
@@ -119,7 +119,7 @@ sensitivity system. Setting \code{deriv2 = TRUE} requires \code{deriv = TRUE}.
 
     # Call compiled solver
     result <- .Call(
-      paste0("solve_", f1),
+      paste0("solve_", f),
       as.numeric(times),
       as.numeric(params),
       as.numeric(abstol),
@@ -131,8 +131,8 @@ sensitivity system. Setting \code{deriv2 = TRUE} requires \code{deriv = TRUE}.
     )
 
     # Extract output components
-    states <- attr(f1, "variables")
-    sens_vars <- setdiff(c(states, attr(f1, "parameters")), attr(f1, "fixed"))
+    states <- attr(f, "variables")
+    sens_vars <- setdiff(c(states, attr(f, "parameters")), attr(f, "fixed"))
 
     # Add dimnames for clarity
     colnames(result$states) <- states
@@ -146,7 +146,7 @@ sensitivity system. Setting \code{deriv2 = TRUE} requires \code{deriv = TRUE}.
   times <- seq(0, 10, length.out = 300)
 
   # Run solver
-  res <- solve1(times, params)
+  res <- solve(times, params)
 
   # Inspect output
   str(res)
