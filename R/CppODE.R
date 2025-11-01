@@ -3,7 +3,7 @@
 #' This function generates and compiles a C++ solver for systems of ODEs using
 #' Boost.Odeint's stiff Rosenbrock 4(3) method with dense output and error control.
 #' The solver can handle fixed-time and root-triggered events, and (optionally)
-#' compute state and parameter sensitivities via forward-mode automatic
+#' compute parameter sensitivities via forward-mode automatic
 #' differentiation (AD) using FADBAD++.
 #'
 #' @section Events:
@@ -249,7 +249,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   )
   observer_code <- paste(observer_lines, collapse = "\n")
 
-  # --- Solver function (externC) - ALL IN ONE PLACE ---
+  # --- Solver function (externC) ---
   externC <- c(
     sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP) {', modelname),
     "try {",
@@ -405,7 +405,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Integration setup ---
   if (useDenseOutput) {
-    # Dense output version (mit Interpolation)
+    # Dense output version (WITH Interpolation)
     if (deriv2) {
       stepper_line <- paste(
         "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);",
@@ -429,7 +429,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     }
   } else {
-    # Controlled stepper version (OHNE Interpolation)
+    # Controlled stepper version (WITHOUT Interpolation)
     if (deriv2) {
       stepper_line <- "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);"
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
@@ -741,13 +741,13 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   sink()
 
   if (verbose) message("Wrote: ", normalizePath(filename))
-  if (compile) compileAndLoad(modelname, verbose)
 
   # --- Attach attributes ---
   jac_matrix_R <- matrix(unlist(jac_matrix_str), nrow = n_states, ncol = n_states, byrow = TRUE)
   dimnames(jac_matrix_R) <- list(states, states)
 
   attr(modelname, "equations")     <- odes
+  attr(modelname, "modelname")     <- modelname
   attr(modelname, "variables")     <- states
   attr(modelname, "parameters")    <- params
   attr(modelname, "events")        <- events
@@ -778,53 +778,483 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     )
   }
 
+  if (compile) compile(modelname, verbose = verbose)
   return(modelname)
 }
 
 
-
-#' Compile and load a C++ source file in R (platform-aware)
+#' Generate and optionally compile C++ code for algebraic expressions
 #'
-#' This function compiles a C++ source file into a shared library (`.so`, `.dll`, or `.dylib`)
-#' using `R CMD SHLIB`, applies platform-appropriate compiler flags, and dynamically loads
-#' the resulting shared object into the current R session.
+#' `funCpp0()` turns a named character vector of algebraic expressions into
+#' (i) a plain R evaluator and (optionally) (ii) a C++ evaluator that can be
+#' compiled and called via `.C()`. No Rcpp is used – the generated C++ has a
+#' simple signature
 #'
-#' @param filename Character string. The base name of the C++ file (without `.cpp` extension).
-#' @param verbose Logical. If `TRUE`, compiler output is printed. Default is `FALSE`.
+#' \preformatted{
+#'   void <modelname>_eval(double *x, double *y, double *p,
+#'                         int *n, int *k, int *l)
+#' }
 #'
-#' @return Invisibly returns the name of the loaded shared object file.
+#' If `deriv = TRUE` and/or `deriv2 = TRUE`, symbolic first and second
+#' derivatives are obtained from `derivSymb()` **with respect to all symbols**
+#' in `c(variables, parameters)`. Those symbolic objects are
+#'
+#' - stored on the returned function as attributes
+#'   `"jacobian.symb"` / `"hessian.symb"`, and
+#' - evaluated on every call and attached to the **result** as numeric
+#'   arrays `"jacobian"` (3D) and `"hessian"` (4D).
+#'
+#' @param x named character vector of expressions, e.g. `c(f1 = "a*x", f2 = "x*y")`
+#' @param variables character, names of variables (columns of `vars`)
+#' @param parameters character, names of parameters (elements of `params`)
+#' @param compile logical, if `TRUE` write, compile and load the C++ file
+#' @param modelname character, base name for the generated C++ file
+#' @param verbose logical, print progress information
+#' @param warnings logical, warn about missing variables/parameters (filled with 0)
+#' @param deriv logical, compute symbolic Jacobian (w.r.t. vars + params)
+#' @param deriv2 logical, compute symbolic Hessian (w.r.t. vars + params)
+#'
+#' @return
+#' A function
+#' \preformatted{
+#'   f <- funCpp0(...)
+#'   out <- f(vars, params)
+#' }
+#' where
+#' - `vars` is a **numeric matrix** with columns named by `variables`
+#' - `params` is a **named numeric vector** with names `parameters`
+#'
+#' The return value `out` is a numeric matrix of size
+#' `[n_obs × n_out]` (observations in rows, expressions in columns).
+#'
+#' If `deriv = TRUE`, `out` has attribute
+#' \preformatted{
+#'   attr(out, "jacobian")  # [n_out × n_sym × n_obs]
+#' }
+#' If `deriv2 = TRUE`, `out` has attribute
+#' \preformatted{
+#'   attr(out, "hessian")   # [n_out × n_sym × n_sym × n_obs]
+#' }
+#'
+#' In addition, the returned *function* carries the symbolic objects:
+#' \preformatted{
+#'   attr(f, "jacobian.symb")  # character matrix  (if deriv = TRUE)
+#'   attr(f, "hessian.symb")   # character array   (if deriv2 = TRUE)
+#' }
+#'
+#' @importFrom reticulate import_from_path
 #' @export
-compileAndLoad <- function(filename, verbose = FALSE) {
-  filename_cpp <- paste0(filename, ".cpp")
-  is_windows <- .Platform$OS.type == "windows"
+funCpp0 <- function(x,
+                    variables  = getSymbols(x, exclude = parameters),
+                    parameters = NULL,
+                    compile    = FALSE,
+                    modelname  = NULL,
+                    verbose    = FALSE,
+                    warnings   = TRUE,
+                    deriv      = FALSE,
+                    deriv2     = FALSE) {
 
-  cxxflags <- if (is_windows) "-std=c++20 -O2 -DNDEBUG" else "-std=c++20 -O2 -DNDEBUG -fPIC"
+  # ---------------------------------------------------------------------------
+  # basic names
+  # ---------------------------------------------------------------------------
+  outnames <- names(x)
+  if (is.null(outnames))
+    outnames <- paste0("f", seq_along(x))
+
+  innames  <- variables
+  if (is.null(modelname))
+    modelname <- paste0("funCpp0_", paste(sample(c(letters, 0:9), 8), collapse = ""))
+
+  all_syms <- c(variables, parameters)
+
+  # ---------------------------------------------------------------------------
+  # helper: check and align vars/params
+  # ---------------------------------------------------------------------------
+  checkArguments <- function(M, p) {
+    if (is.null(innames) || length(innames) == 0) {
+      M <- matrix(0, nrow = if (is.matrix(M)) nrow(M) else 1, ncol = 0)
+    } else {
+      if (is.null(colnames(M))) {
+        if (ncol(M) != length(innames))
+          stop("vars has no column names and does not match length(variables).")
+        colnames(M) <- innames
+      }
+      if (!all(innames %in% colnames(M))) {
+        if (warnings) warning("Missing variable columns -> filled with 0.")
+        missing <- setdiff(innames, colnames(M))
+        add <- matrix(0, nrow = nrow(M), ncol = length(missing),
+                      dimnames = list(NULL, missing))
+        M <- cbind(M, add)
+      }
+      M <- t(M[, innames, drop = FALSE])   # rows = vars, cols = obs
+    }
+
+    if (is.null(parameters) || length(parameters) == 0) {
+      p <- numeric(0)
+    } else {
+      if (is.null(names(p))) {
+        stop("params must be a *named* numeric vector.")
+      }
+      if (!all(parameters %in% names(p))) {
+        if (warnings) warning("Missing parameters -> filled with 0.")
+        missing <- setdiff(parameters, names(p))
+        add <- structure(rep(0, length(missing)), names = missing)
+        p <- c(p, add)
+      }
+      p <- p[parameters]
+    }
+
+    list(M = M, p = p)
+  }
+
+  # ---------------------------------------------------------------------------
+  # 1) symbolic derivatives (R-side) using derivSymb()
+  # ---------------------------------------------------------------------------
+  sym_jac  <- NULL
+  sym_hess <- NULL
+
+  if (deriv || deriv2) {
+    if (verbose) message("Computing symbolic derivatives via derivSymb() ...")
+
+    ds <- derivSymb(
+      f         = x,
+      variables = all_syms,
+      deriv2    = deriv2,
+      verbose   = verbose
+    )
+
+    if (deriv2) {
+      sym_jac  <- ds$jacobian
+      sym_hess <- ds$hessian
+    } else {
+      sym_jac  <- ds
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # 2) generate C++ code via Python
+  # ---------------------------------------------------------------------------
+  cppfile <- NULL
+  if (!is.null(modelname)) {
+    ensurePythonEnv(envname = "CppODE", verbose = verbose)
+
+    pytools <- tryCatch(
+      reticulate::import_from_path(
+        "generatefunCppCode",
+        path = system.file("python", package = "CppODE")
+      ),
+      error = function(e) {
+        stop("Failed to load Python module 'generatefunCppCode': ", e$message)
+      }
+    )
+
+    if (verbose) message("Generating C++ source code ...")
+
+    # Convert symbolic derivatives to Python-friendly format
+    py_jac  <- NULL
+    py_hess <- NULL
+
+    if (!is.null(sym_jac)) {
+      # Convert matrix to nested list: list(f1 = list(...), f2 = list(...))
+      py_jac <- lapply(seq_len(nrow(sym_jac)), function(i) {
+        as.list(as.character(sym_jac[i, ]))
+      })
+      names(py_jac) <- rownames(sym_jac)
+    }
+
+    if (!is.null(sym_hess)) {
+      # Convert 3D array to nested list
+      py_hess <- lapply(seq_len(dim(sym_hess)[1]), function(i) {
+        lapply(seq_len(dim(sym_hess)[2]), function(j) {
+          as.list(as.character(sym_hess[i, j, ]))
+        })
+      })
+      names(py_hess) <- dimnames(sym_hess)[[1]]
+    }
+
+    # Convert expressions to named list
+    exprs_list <- as.list(x)
+    names(exprs_list) <- outnames
+
+    pyres <- tryCatch(
+      pytools$generate_fun_cpp(
+        exprs      = exprs_list,
+        variables  = if (length(variables) > 0) variables else list(),
+        parameters = if (length(parameters) > 0) parameters else list(),
+        jacobian   = py_jac,
+        hessian    = py_hess,
+        modelname  = modelname
+      ),
+      error = function(e) {
+        stop("Python code generation failed: ", e$message)
+      }
+    )
+
+    cppfile <- pyres$filename
+    if (verbose) message("C++ file written: ", cppfile)
+  }
+
+  # ---------------------------------------------------------------------------
+  # 3) prepare R fallback (parse expressions)
+  # ---------------------------------------------------------------------------
+  parsed_exprs <- lapply(x, function(e) {
+    if (e == "0") return(expression(0))
+    parse(text = e)
+  })
+
+  parsed_jac <- NULL
+  if (!is.null(sym_jac)) {
+    parsed_jac <- matrix(vector("list", nrow(sym_jac) * ncol(sym_jac)),
+                         nrow = nrow(sym_jac), ncol = ncol(sym_jac))
+    dimnames(parsed_jac) <- dimnames(sym_jac)
+    for (i in seq_len(nrow(sym_jac))) {
+      for (j in seq_len(ncol(sym_jac))) {
+        e <- sym_jac[i, j]
+        parsed_jac[[i, j]] <- if (e == "0") list(NULL) else list(parse(text = e))
+      }
+    }
+  }
+
+  parsed_hess <- NULL
+  if (!is.null(sym_hess)) {
+    parsed_hess <- array(vector("list", prod(dim(sym_hess))),
+                         dim = dim(sym_hess), dimnames = dimnames(sym_hess))
+    for (i in seq_len(dim(sym_hess)[1])) {
+      for (j in seq_len(dim(sym_hess)[2])) {
+        for (k in seq_len(dim(sym_hess)[3])) {
+          e <- sym_hess[i, j, k]
+          parsed_hess[[i, j, k]] <- if (e == "0") list(NULL) else list(parse(text = e))
+        }
+      }
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # 4) main evaluation function (now called outfn)
+  # ---------------------------------------------------------------------------
+  outfn <- function(vars, params = numeric(0), attach.input = FALSE) {
+    if (is.vector(vars) && length(innames) > 0) {
+      vars <- matrix(vars, ncol = length(innames))
+      colnames(vars) <- innames[seq_len(ncol(vars))]
+    }
+
+    checked <- checkArguments(vars, params)
+    M <- checked$M
+    p <- checked$p
+    n_obs <- ncol(M)
+
+    funsym <- paste0(modelname, "_eval")
+    sofile <- paste0(modelname, .Platform$dynlib.ext)
+
+    # --- compiled evaluation -------------------------------------------------
+    if (file.exists(sofile) && is.loaded(funsym)) {
+      if (verbose) message("Using compiled C++ function")
+
+      xvec <- as.double(as.vector(M))
+      yvec <- double(length(outnames) * n_obs)
+
+      n <- as.integer(n_obs)
+      k <- as.integer(length(innames))
+      l <- as.integer(length(outnames))
+
+      out <- .C(funsym,
+                x = xvec,
+                y = yvec,
+                p = as.double(p),
+                n = n, k = k, l = l)
+
+      res <- matrix(out$y, nrow = n_obs, ncol = length(outnames), byrow = FALSE)
+      colnames(res) <- outnames
+    } else {
+      # --- pure R fallback ----------------------------------------------------
+      if (verbose) message("Using R fallback (compiled version not available)")
+
+      res <- matrix(NA_real_, nrow = n_obs, ncol = length(outnames))
+      colnames(res) <- outnames
+
+      for (i in seq_len(n_obs)) {
+        env <- as.list(c(as.numeric(M[, i]), p))
+        names(env) <- c(innames, parameters)
+        vals <- vapply(parsed_exprs,
+                       function(expr) eval(expr, envir = env),
+                       numeric(1))
+        res[i, ] <- vals
+      }
+    }
+
+    # --- symbolic Jacobian evaluation ----------------------------------------
+    if (deriv && !is.null(parsed_jac)) {
+      n_out <- length(outnames)
+      n_sym <- length(all_syms)
+      jac_arr <- array(0,
+                       dim = c(n_out, n_sym, n_obs),
+                       dimnames = list(outnames, all_syms, NULL))
+
+      for (obs_i in seq_len(n_obs)) {
+        env <- as.list(c(as.numeric(M[, obs_i]), p))
+        names(env) <- c(innames, parameters)
+
+        for (out_i in seq_len(n_out)) {
+          for (sym_i in seq_len(n_sym)) {
+            expr <- parsed_jac[[out_i, sym_i]][[1]]
+            jac_arr[out_i, sym_i, obs_i] <-
+              if (is.null(expr)) 0 else eval(expr, envir = env)
+          }
+        }
+      }
+      attr(res, "jacobian") <- jac_arr
+    }
+
+    # --- symbolic Hessian evaluation -----------------------------------------
+    if (deriv2 && !is.null(parsed_hess)) {
+      n_out <- length(outnames)
+      n_sym <- length(all_syms)
+      hes_arr <- array(0,
+                       dim = c(n_out, n_sym, n_sym, n_obs),
+                       dimnames = list(outnames, all_syms, all_syms, NULL))
+
+      for (obs_i in seq_len(n_obs)) {
+        env <- as.list(c(as.numeric(M[, obs_i]), p))
+        names(env) <- c(innames, parameters)
+
+        for (out_i in seq_len(n_out)) {
+          for (sym_i in seq_len(n_sym)) {
+            for (sym_j in seq_len(n_sym)) {
+              expr <- parsed_hess[[out_i, sym_i, sym_j]][[1]]
+              hes_arr[out_i, sym_i, sym_j, obs_i] <-
+                if (is.null(expr)) 0 else eval(expr, envir = env)
+            }
+          }
+        }
+      }
+      attr(res, "hessian") <- hes_arr
+    }
+
+    if (attach.input && ncol(M) > 0)
+      res <- cbind(t(M), res)
+
+    res
+  }
+
+  # ---------------------------------------------------------------------------
+  # attach symbolic stuff to outfn
+  # ---------------------------------------------------------------------------
+  attr(outfn, "equations")     <- x
+  attr(outfn, "variables")     <- variables
+  attr(outfn, "parameters")    <- parameters
+  attr(outfn, "modelname")     <- modelname
+  if (deriv && !is.null(sym_jac))
+    attr(outfn, "jacobian.symb") <- sym_jac
+  if (deriv2 && !is.null(sym_hess))
+    attr(outfn, "hessian.symb")  <- sym_hess
+
+  # ---------------------------------------------------------------------------
+  # optional compile (at the very end)
+  # ---------------------------------------------------------------------------
+  if (compile) {
+    if (verbose) message("Compiling generated C++ code ...")
+    compile(outfn, verbose = verbose)
+  }
+
+  outfn
+}
+
+
+#' @title Internal C++ model compiler
+#' @description
+#' Compiles one or more generated C++ source files (from \code{funCpp0()} or \code{CppFun()})
+#' into shared libraries (*.so / *.dll) using \code{R CMD SHLIB}.
+#' This is an internal helper and not intended for direct user calls.
+#'
+#' @param ... One or more model functions that have a \code{"modelname"} attribute
+#'   corresponding to a C++ source file (e.g. \code{"funCpp0_ab12cd"}).
+#' @param output Optional base name for the combined shared object.
+#'   If provided, all source files are compiled and linked into a single library.
+#' @param args Optional compiler/linker arguments (e.g. \code{"-lm"}).
+#' @param verbose Logical; if \code{TRUE}, show compiler output.
+#' @param cores Number of parallel compilation jobs (ignored on Windows).
+#'
+#' @details
+#' The function automatically sets platform-appropriate compiler flags
+#' (\code{-std=c++20 -O2 -DNDEBUG -fPIC}) and includes the CppODE headers.
+#' Each object must have a valid \code{modelname} attribute referring
+#' to an existing \code{.cpp} or \code{.c} file.
+#'
+#' @importFrom parallel mclapply
+#' @keywords internal
+compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE) {
+  objects <- list(...)
+  obj.names <- as.character(substitute(list(...)))[-1]
+
+  # --- collect all source files ---
+  files <- character()
+  for (i in seq_along(objects)) {
+    obj <- objects[[i]]
+    mdl <- attr(obj, "modelname")
+    if (!is.null(mdl)) {
+      candidates <- c(paste0(mdl, ".cpp"), paste0(mdl, ".c"))
+      candidates <- candidates[file.exists(candidates)]
+      if (length(candidates))
+        files <- union(files, candidates)
+      else if (verbose)
+        message("⚠ No source file found for model: ", mdl)
+    }
+  }
+
+  if (length(files) == 0)
+    stop("No valid .cpp or .c source files found for provided objects.")
+
+  roots <- vapply(files, function(f) sub("\\.[^.]+$", "", f), character(1))
+  .so <- .Platform$dynlib.ext
+
+  # --- Compiler flags ---
+  if (Sys.info()[["sysname"]] == "Windows") cores <- 1
 
   include_flags <- paste0("-I", shQuote(system.file("include", package = "CppODE")))
+  cxxflags <- if (Sys.info()[["sysname"]] == "Windows") {
+    "-std=c++20 -O2 -DNDEBUG"
+  } else {
+    "-std=c++20 -O2 -DNDEBUG -fPIC -fno-var-tracking-assignments"
+  }
 
   Sys.setenv(
-    PKG_CPPFLAGS = paste(include_flags, collapse = " "),
+    PKG_CPPFLAGS = include_flags,
     PKG_CXXFLAGS = cxxflags
   )
 
-  shlibOut <- system2(
-    file.path(R.home("bin"), "R"),
-    args = c("CMD", "SHLIB", "--preclean", shQuote(filename_cpp)),
-    stdout = TRUE, stderr = TRUE
-  )
+  # --- Compilation ---
+  if (is.null(output)) {
+    if (verbose) message("Compiling ", length(files), " model(s)...")
+    parallel::mclapply(seq_along(files), function(i) {
+      root <- roots[i]
+      try(dyn.unload(paste0(root, .so)), silent = TRUE)
+      cmd <- paste0(R.home("bin"), "/R CMD SHLIB ", shQuote(files[i]), " ", args)
+      system(cmd, intern = !verbose)
+      dyn.load(paste0(root, .so))
+      if (verbose) message("✔ Loaded ", root, .so)
+      invisible(root)
+    }, mc.cores = cores, mc.silent = !verbose)
 
-  if (verbose) {
-    cat(paste(shlibOut, collapse = "\n"), "\n")
-  } else if (length(shlibOut)) {
-    cat(paste(shlibOut[1], "\n"))
-  }
-
-  soFile <- paste0(filename, .Platform$dynlib.ext)
-  if (file.exists(soFile)) {
-    try(dyn.unload(soFile), silent = TRUE)
-    dyn.load(soFile)
-    invisible(soFile)
   } else {
-    stop("Compiled shared library not found: ", soFile)
+    # --- Combine all into one shared object ---
+    output <- sub("\\.so$", "", output)
+    for (r in roots) try(dyn.unload(paste0(r, .so)), silent = TRUE)
+    try(dyn.unload(paste0(output, .so)), silent = TRUE)
+
+    cmd <- paste0(
+      R.home("bin"), "/R CMD SHLIB ",
+      paste(shQuote(files), collapse = " "),
+      " -o ", shQuote(paste0(output, .so)), " ", args
+    )
+    if (verbose)
+      message("Linking into shared library: ", output, .so)
+
+    system(cmd, intern = !verbose)
+    dyn.load(paste0(output, .so))
+    if (verbose)
+      message("✔ Loaded ", output, .so)
   }
+
+  invisible(TRUE)
 }
+

@@ -62,7 +62,7 @@ The model name (character). The object has attributes:
 This function generates and compiles a C++ solver for systems of ODEs using
 Boost.Odeint's stiff Rosenbrock 4(3) method with dense output and error control.
 The solver can handle fixed-time and root-triggered events, and (optionally)
-compute state and parameter sensitivities via forward-mode automatic
+compute parameter sensitivities via forward-mode automatic
 differentiation (AD) using FADBAD++.
 }
 \section{Events}{
