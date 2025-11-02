@@ -57,11 +57,12 @@ solve <- function(times, params,
   dims <- attr(f, "dim_names")
 
   # Add column names to state matrix
-  colnames(result$state) <- dims$state
+  names(result$time) <- dims$time
+  colnames(result$variable) <- dims$variable
 
   # Add dimension names to sens1 array if present
   if (!is.null(result$sens1)) {
-    dimnames(result$sens1) <- list(NULL, dims$state, dims$sens)
+    dimnames(result$sens1) <- list(NULL, dims$variable, dims$sens)
   }
 
   return(result)

@@ -21,7 +21,7 @@ CppODE(
 \item{rhs}{Named character vector of ODE right-hand sides.
 Names must correspond to variables.}
 
-\item{events}{Optional \code{data.frame} describing events (see Details).
+\item{events}{Optional \code{data.frame} describing events (see Events section below).
 Default: \code{NULL} (no events).}
 
 \item{fixed}{Character vector of fixed initial conditions or parameters (excluded from
@@ -41,7 +41,7 @@ If \code{FALSE}, use plain doubles.}
 \item{deriv2}{Logical. If \code{TRUE}, compute second-order sensitivities using
 nested AD. Requires \code{deriv = TRUE}. Default: \code{FALSE}.}
 
-\item{useDenseOutput}{Logical. If \code{TRUE}, use dense output for interpolation.}
+\item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (interpolation with hermite polynomials).}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }

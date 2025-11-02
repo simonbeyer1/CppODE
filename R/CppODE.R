@@ -67,7 +67,7 @@
 #'
 #' @param rhs Named character vector of ODE right-hand sides.
 #'   Names must correspond to variables.
-#' @param events Optional \code{data.frame} describing events (see Details).
+#' @param events Optional \code{data.frame} describing events (see Events section below).
 #'   Default: \code{NULL} (no events).
 #' @param fixed Character vector of fixed initial conditions or parameters (excluded from
 #'   sensitivity system). Only relevant if \code{deriv = TRUE}.
@@ -80,7 +80,7 @@
 #'   If \code{FALSE}, use plain doubles.
 #' @param deriv2 Logical. If \code{TRUE}, compute second-order sensitivities using
 #'   nested AD. Requires \code{deriv = TRUE}. Default: \code{FALSE}.
-#' @param useDenseOutput Logical. If \code{TRUE}, use dense output for interpolation.
+#' @param useDenseOutput Logical. If \code{TRUE}, use dense output (interpolation with hermite polynomials).
 #' @param verbose Logical. If \code{TRUE}, print progress messages.
 #'
 #' @return The model name (character). The object has attributes:
@@ -109,7 +109,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Validate arguments ---
   if (deriv2 && !deriv) {
-    stop("deriv2 = TRUE requires deriv = TRUE")
+    warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
+    deriv <- TRUE
   }
 
   # --- Clean up ODE definitions ---
