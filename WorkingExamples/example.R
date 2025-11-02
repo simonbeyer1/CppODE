@@ -24,12 +24,11 @@ events <- data.frame(
 )
 
 # # Generate and compile solver
-# f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s_dense",
-#                     deriv = T, deriv2 = F, useDenseOutput=TRUE, verbose = T)
+# f <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s",
+#                     deriv = T, deriv2 = F, useDenseOutput=F, verbose = T, compile = F)
 
 # Generate and compile solver
-f <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s", deriv = T, deriv2 = F, useDenseOutput=T, verbose = F, compile = F)
-CppODE:::compile(f)
+f <- CppODE::CppODE(rhs, modelname = "Amodel_s_dense", deriv = T, deriv2 = F, useDenseOutput=T, verbose = F, compile = T)
 # Wrap in an R solver function
 solve <- function(times, params,
                   abstol = 1e-6, reltol = 1e-6,
@@ -69,7 +68,7 @@ solve <- function(times, params,
 }
 
 # Example run
-params <- c(A = 1, B = 0, k = 1, t_e = 2)
+params <- c(A = 1, B = 0, k = 1)
 times  <- seq(0, 2*pi, length.out = 300)
 
 res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
@@ -118,7 +117,7 @@ out_long <- dMod::wide2long(out_full) %>%
 
 library(dMod)
 
-x <- odemodel(rhs, events = events) %>% Xs()
+x <- odemodel(rhs) %>% Xs()
 
 out_dMod <- x(times, params)
 out_dMod_derivs <- getDerivs(out_dMod)[[1]] %>% wide2long()
@@ -145,29 +144,30 @@ ggplot(out_all, aes(x = time, y = value, color = solver, linetype = solver)) +
   geom_line(linewidth = 1) +
   facet_wrap(~name, scales = "free") +
   dMod::theme_dMod() +
+  dMod::scale_color_dMod() +
   theme(legend.position = "bottom")
 
 
-# # For deriv2 = TRUE example:
-# f2 <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s2",
-#                      deriv = TRUE, deriv2 = TRUE, useDenseOutput=F, verbose = T)
+# For deriv2 = TRUE example:
+f2 <- CppODE::CppODE(rhs, modelname = "Amodel_s2",
+                     deriv = TRUE, deriv2 = TRUE, useDenseOutput=F, verbose = T, compile = T)
 
 # For deriv2 = TRUE example:
-f2 <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s2_dense",
-                     deriv = TRUE, deriv2 = TRUE, useDenseOutput=T, verbose = T)
+f2_dense <- CppODE::CppODE(rhs, modelname = "Amodel_s2_dense",
+                     deriv = TRUE, deriv2 = TRUE, useDenseOutput=T, verbose = T, compile = T)
 
 solve2 <- function(times, params,
                    abstol = 1e-6, reltol = 1e-6,
                    maxattemps = 5000, maxsteps = 1e6,
-                   roottol = 1e-8, maxroot = 1) {
+                   roottol = 1e-8, maxroot = 1, precision = 1e-5) {
 
-  paramnames <- c(attr(f2, "variables"), attr(f2, "parameters"))
+  paramnames <- c(attr(f2_dense, "variables"), attr(f2_dense, "parameters"))
   missing <- setdiff(paramnames, names(params))
   if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
 
   params <- params[paramnames]
 
-  result <- .Call(paste0("solve_", as.character(f2)),
+  result <- .Call(paste0("solve_", as.character(f2_dense)),
                   as.numeric(times),
                   as.numeric(params),
                   as.numeric(abstol),
@@ -175,17 +175,18 @@ solve2 <- function(times, params,
                   as.integer(maxattemps),
                   as.integer(maxsteps),
                   as.numeric(roottol),
-                  as.integer(maxroot))
+                  as.integer(maxroot),
+                  as.numeric(precision))
 
   # Add dimension names
-  dims <- attr(f2, "dim_names")
+  dims <- attr(f2_dense, "dim_names")
   colnames(result$state) <- dims$state
   dimnames(result$sens1) <- list(NULL, dims$state, dims$sens)
   dimnames(result$sens2) <- list(NULL, dims$state, dims$sens, dims$sens)
 
   return(result)
 }
-
+times <- seq(0,2*pi, len = 3000)
 res2 <- solve2(times, params)
 
 outtime_deriv2 <- system.time({
@@ -317,6 +318,7 @@ plotderiv2 <- function(res, state, analytical_df = NULL, add_first_deriv = FALSE
       color = "Solver", linetype = "Solver"
     ) +
     dMod::theme_dMod() +
+    dMod::scale_color_dMod() +
     ggplot2::theme(legend.position = "bottom")
 
   p

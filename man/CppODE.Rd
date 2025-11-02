@@ -19,12 +19,12 @@ CppODE(
 }
 \arguments{
 \item{rhs}{Named character vector of ODE right-hand sides.
-Names must correspond to state variables.}
+Names must correspond to variables.}
 
 \item{events}{Optional \code{data.frame} describing events (see Details).
 Default: \code{NULL} (no events).}
 
-\item{fixed}{Character vector of fixed states or parameters (excluded from
+\item{fixed}{Character vector of fixed initial conditions or parameters (excluded from
 sensitivity system). Only relevant if \code{deriv = TRUE}.}
 
 \item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is
@@ -49,15 +49,15 @@ nested AD. Requires \code{deriv = TRUE}. Default: \code{FALSE}.}
 The model name (character). The object has attributes:
 \itemize{
 \item \code{equations}: ODE definitions
-\item \code{variables}: State variable names
+\item \code{variables}: Variable names
 \item \code{parameters}: Parameter names
 \item \code{events}: Events \code{data.frame} (if any)
 \item \code{solver}: Solver description
-\item \code{fixed}: Fixed states/parameters
+\item \code{fixed}: Fixed initial conditions/parameters
 \item \code{jacobian}: Symbolic Jacobian expressions
 \item \code{deriv}: Logical indicating first-order derivatives
 \item \code{deriv2}: Logical indicating second-order derivatives
-\item \code{dim_names}: List with dimension names (time, state, sens)
+\item \code{dim_names}: List with dimension names (time, variable, sens)
 }
 }
 \description{
@@ -71,11 +71,11 @@ differentiation (AD) using FADBAD++.
 
 Events are specified in a \code{data.frame} with columns:
 \describe{
-\item{var}{Name of the affected state variable.}
+\item{var}{Name of the affected variable.}
 \item{value}{Numeric value to apply at the event.}
 \item{method}{How the value is applied: "replace", "add", or "multiply".}
 \item{time}{(optional) Time point at which the event occurs.}
-\item{root}{(optional) Root expression in terms of states and \code{time}.}
+\item{root}{(optional) Root expression in terms of variables and \code{time}.}
 }
 Each event must define either \code{time} or \code{root}. Events with roots
 are triggered whenever the expression crosses zero.
@@ -87,7 +87,7 @@ If \code{deriv = TRUE}, the solver augments the system with automatic
 differentiation and returns forward sensitivities with respect to initial
 conditions and parameters. If \code{deriv2 = TRUE} (requires \code{deriv = TRUE}),
 second-order sensitivities are also computed using nested AD types.
-Fixed states or parameters (specified in \code{fixed}) are excluded from
+Fixed initial conditions or parameters (specified in \code{fixed}) are excluded from
 the sensitivity system.
 
 If \code{deriv = FALSE}, the solver uses plain doubles (faster) and does not
@@ -100,36 +100,36 @@ The generated solver function (accessible via \code{.Call}) returns a named list
 with the following structure:
 \describe{
 \item{deriv = FALSE}{
-Returns \code{list(time, state)} where:
+Returns \code{list(time, variable)} where:
 \itemize{
 \item \code{time}: Numeric vector of length n_out
-\item \code{state}: Numeric matrix with dimensions (n_out, n_states)
+\item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
 }
 }
 \item{deriv = TRUE, deriv2 = FALSE}{
-Returns \code{list(time, state, sens1)} where:
+Returns \code{list(time, variable, sens1)} where:
 \itemize{
 \item \code{time}: Numeric vector of length n_out
-\item \code{state}: Numeric matrix with dimensions (n_out, n_states)
-\item \code{sens1}: Numeric array with dimensions (n_out, n_states, n_sens)
+\item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
+\item \code{sens1}: Numeric array with dimensions (n_out, n_variables, n_sens)
 containing first-order sensitivities
 }
 }
 \item{deriv = TRUE, deriv2 = TRUE}{
-Returns \code{list(time, state, sens1, sens2)} where:
+Returns \code{list(time, variable, sens1, sens2)} where:
 \itemize{
 \item \code{time}: Numeric vector of length n_out
-\item \code{state}: Numeric matrix with dimensions (n_out, n_states)
-\item \code{sens1}: Numeric array with dimensions (n_out, n_states, n_sens)
+\item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
+\item \code{sens1}: Numeric array with dimensions (n_out, n_variables, n_sens)
 containing first-order sensitivities
-\item \code{sens2}: Numeric array with dimensions (n_out, n_states, n_sens, n_sens)
+\item \code{sens2}: Numeric array with dimensions (n_out, n_variables, n_sens, n_sens)
 containing second-order sensitivities (Hessian matrix)
 }
 }
 }
-Here \code{n_out} is the number of output time points, \code{n_states} is the number
-of state variables, and \code{n_sens} is the number of sensitivity parameters
-(non-fixed states and parameters).
+Here \code{n_out} is the number of output time points, \code{n_variables} is the number
+of variables, and \code{n_sens} is the number of sensitivity parameters
+(non-fixed initial conditions and parameters).
 }
 
 \examples{

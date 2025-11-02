@@ -9,11 +9,11 @@
 #' @section Events:
 #' Events are specified in a \code{data.frame} with columns:
 #' \describe{
-#'   \item{var}{Name of the affected state variable.}
+#'   \item{var}{Name of the affected variable.}
 #'   \item{value}{Numeric value to apply at the event.}
 #'   \item{method}{How the value is applied: "replace", "add", or "multiply".}
 #'   \item{time}{(optional) Time point at which the event occurs.}
-#'   \item{root}{(optional) Root expression in terms of states and \code{time}.}
+#'   \item{root}{(optional) Root expression in terms of variables and \code{time}.}
 #' }
 #' Each event must define either \code{time} or \code{root}. Events with roots
 #' are triggered whenever the expression crosses zero.
@@ -23,7 +23,7 @@
 #' differentiation and returns forward sensitivities with respect to initial
 #' conditions and parameters. If \code{deriv2 = TRUE} (requires \code{deriv = TRUE}),
 #' second-order sensitivities are also computed using nested AD types.
-#' Fixed states or parameters (specified in \code{fixed}) are excluded from
+#' Fixed initial conditions or parameters (specified in \code{fixed}) are excluded from
 #' the sensitivity system.
 #'
 #' If \code{deriv = FALSE}, the solver uses plain doubles (faster) and does not
@@ -34,42 +34,42 @@
 #' with the following structure:
 #' \describe{
 #'   \item{deriv = FALSE}{
-#'     Returns \code{list(time, state)} where:
+#'     Returns \code{list(time, variable)} where:
 #'     \itemize{
 #'       \item \code{time}: Numeric vector of length n_out
-#'       \item \code{state}: Numeric matrix with dimensions (n_out, n_states)
+#'       \item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
 #'     }
 #'   }
 #'   \item{deriv = TRUE, deriv2 = FALSE}{
-#'     Returns \code{list(time, state, sens1)} where:
+#'     Returns \code{list(time, variable, sens1)} where:
 #'     \itemize{
 #'       \item \code{time}: Numeric vector of length n_out
-#'       \item \code{state}: Numeric matrix with dimensions (n_out, n_states)
-#'       \item \code{sens1}: Numeric array with dimensions (n_out, n_states, n_sens)
+#'       \item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
+#'       \item \code{sens1}: Numeric array with dimensions (n_out, n_variables, n_sens)
 #'         containing first-order sensitivities
 #'     }
 #'   }
 #'   \item{deriv = TRUE, deriv2 = TRUE}{
-#'     Returns \code{list(time, state, sens1, sens2)} where:
+#'     Returns \code{list(time, variable, sens1, sens2)} where:
 #'     \itemize{
 #'       \item \code{time}: Numeric vector of length n_out
-#'       \item \code{state}: Numeric matrix with dimensions (n_out, n_states)
-#'       \item \code{sens1}: Numeric array with dimensions (n_out, n_states, n_sens)
+#'       \item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
+#'       \item \code{sens1}: Numeric array with dimensions (n_out, n_variables, n_sens)
 #'         containing first-order sensitivities
-#'       \item \code{sens2}: Numeric array with dimensions (n_out, n_states, n_sens, n_sens)
+#'       \item \code{sens2}: Numeric array with dimensions (n_out, n_variables, n_sens, n_sens)
 #'         containing second-order sensitivities (Hessian matrix)
 #'     }
 #'   }
 #' }
-#' Here \code{n_out} is the number of output time points, \code{n_states} is the number
-#' of state variables, and \code{n_sens} is the number of sensitivity parameters
-#' (non-fixed states and parameters).
+#' Here \code{n_out} is the number of output time points, \code{n_variables} is the number
+#' of variables, and \code{n_sens} is the number of sensitivity parameters
+#' (non-fixed initial conditions and parameters).
 #'
 #' @param rhs Named character vector of ODE right-hand sides.
-#'   Names must correspond to state variables.
+#'   Names must correspond to variables.
 #' @param events Optional \code{data.frame} describing events (see Details).
 #'   Default: \code{NULL} (no events).
-#' @param fixed Character vector of fixed states or parameters (excluded from
+#' @param fixed Character vector of fixed initial conditions or parameters (excluded from
 #'   sensitivity system). Only relevant if \code{deriv = TRUE}.
 #' @param includeTimeZero Logical. If \code{TRUE}, ensure that time \code{0} is
 #'   included among integration times. Default: \code{TRUE}.
@@ -86,15 +86,15 @@
 #' @return The model name (character). The object has attributes:
 #'   \itemize{
 #'     \item \code{equations}: ODE definitions
-#'     \item \code{variables}: State variable names
+#'     \item \code{variables}: Variable names
 #'     \item \code{parameters}: Parameter names
 #'     \item \code{events}: Events \code{data.frame} (if any)
 #'     \item \code{solver}: Solver description
-#'     \item \code{fixed}: Fixed states/parameters
+#'     \item \code{fixed}: Fixed initial conditions/parameters
 #'     \item \code{jacobian}: Symbolic Jacobian expressions
 #'     \item \code{deriv}: Logical indicating first-order derivatives
 #'     \item \code{deriv2}: Logical indicating second-order derivatives
-#'     \item \code{dim_names}: List with dimension names (time, state, sens)
+#'     \item \code{dim_names}: List with dimension names (time, variable, sens)
 #'   }
 #'
 #' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
@@ -117,32 +117,32 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   rhs <- gsub("\n", "", rhs)
   rhs <- sanitizeExprs(rhs)
 
-  # --- Extract state and parameter names ---
-  states  <- names(rhs)
+  # --- Extract variable and parameter names ---
+  variables <- names(rhs)
   symbols <- getSymbols(c(rhs, if (!is.null(events)) {
     c(events$value,
       if ("time" %in% names(events)) events$time,
       if ("root" %in% names(events)) events$root)
   }))
-  params  <- setdiff(symbols, c(states, "time"))
+  params  <- setdiff(symbols, c(variables, "time"))
 
-  # --- Handle fixed states/parameters ---
+  # --- Handle fixed initial conditions and parameters ---
   if (is.null(fixed)) fixed <- character(0)
-  fixed_states <- if (deriv) intersect(fixed, states) else character(0)
+  fixed_initials <- if (deriv) intersect(fixed, variables) else character(0)
   fixed_params <- if (deriv) intersect(fixed, params) else character(0)
-  sens_states  <- if (deriv) setdiff(states, fixed_states) else character(0)
+  sens_initials  <- if (deriv) setdiff(variables, fixed_initials) else character(0)
   sens_params  <- if (deriv) setdiff(params, fixed_params) else character(0)
 
   # Index maps
-  state_idx0 <- setNames(seq_along(states) - 1L, states)
+  variable_idx0 <- setNames(seq_along(variables) - 1L, variables)
   param_idx0 <- setNames(seq_along(params) - 1L, params)
-  fixed_state_idx  <- state_idx0[fixed_states]
+  fixed_initial_idx  <- variable_idx0[fixed_initials]
   fixed_param_idx  <- param_idx0[fixed_params]
 
   # --- Calculate dimensions ---
-  n_states <- length(states)
+  n_variables <- length(variables)
   n_params <- length(params)
-  n_sens_initials <- length(sens_states)
+  n_sens_initials <- length(sens_initials)
   n_sens_params <- length(sens_params)
   n_total_sens <- n_sens_initials + n_sens_params
 
@@ -170,10 +170,10 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   }
 
   codegen_result <- reticulate::py$generate_ode_cpp(
-    rhs_dict = as.list(setNames(rhs, states)),
+    rhs_dict = as.list(setNames(rhs, variables)),
     params_list = params,
     num_type = numType,
-    fixed_states = fixed_states,
+    fixed_states = fixed_initials,
     fixed_params = fixed_params
   )
 
@@ -191,9 +191,9 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
     event_lines <- reticulate::py$generate_event_code(
       events_df = events,
-      states_list = states,
+      states_list = variables,
       params_list = params,
-      n_states = n_states,
+      n_states = n_variables,
       num_type = numType
     )
 
@@ -257,33 +257,33 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
     "",
-    sprintf("  ublas::vector<%s> x(%d);", numType, n_states),
-    sprintf("  ublas::vector<%s> full_params(%d);", numType, n_states + n_params),
+    sprintf("  ublas::vector<%s> x(%d);", numType, n_variables),
+    sprintf("  ublas::vector<%s> full_params(%d);", numType, n_variables + n_params),
     ""
   )
 
-  # initialization of states and parameters
+  # initialization of variables and parameters
   externC <- c(externC,
-               "  // initialize states",
-               sprintf("  for (int i = 0; i < %d; ++i) {", n_states))
+               "  // initialize variables",
+               sprintf("  for (int i = 0; i < %d; ++i) {", n_variables))
 
   if (deriv2) {
     # --- Second-order AD (AD2 = fadbad::F<fadbad::F<double>>) ---
     externC <- c(externC,
                  "    x[i].x().x() = REAL(paramsSEXP)[i];",
                  "    // Outer layer seeding (second derivative)",
-                 sprintf("    x[i].diff(i, %d);", n_states + n_params))
+                 sprintf("    x[i].diff(i, %d);", n_variables + n_params))
 
-    if (length(fixed_state_idx) > 0) {
+    if (length(fixed_initial_idx) > 0) {
       externC <- c(externC,
-                   sprintf("    // Skip fixed states when seeding inner layer"),
+                   sprintf("    // Skip fixed initial conditions when seeding inner layer"),
                    sprintf("    if (!(%s)) x[i].x().diff(i, %d);",
-                           paste(sprintf("i == %d", fixed_state_idx), collapse = " || "),
-                           n_states + n_params))
+                           paste(sprintf("i == %d", fixed_initial_idx), collapse = " || "),
+                           n_variables + n_params))
     } else {
       externC <- c(externC,
                    "    // Inner layer seeding (first derivative)",
-                   sprintf("    x[i].x().diff(i, %d);", n_states + n_params))
+                   sprintf("    x[i].x().diff(i, %d);", n_variables + n_params))
     }
 
   } else if (deriv) {
@@ -291,15 +291,15 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     externC <- c(externC,
                  "    x[i] = REAL(paramsSEXP)[i];")
 
-    if (length(fixed_state_idx) > 0) {
+    if (length(fixed_initial_idx) > 0) {
       externC <- c(externC,
-                   sprintf("    // Skip fixed states when seeding"),
+                   sprintf("    // Skip fixed initial conditions when seeding"),
                    sprintf("    if (!(%s)) x[i].diff(i, %d);",
-                           paste(sprintf("i == %d", fixed_state_idx), collapse = " || "),
-                           n_states + n_params))
+                           paste(sprintf("i == %d", fixed_initial_idx), collapse = " || "),
+                           n_variables + n_params))
     } else {
       externC <- c(externC,
-                   sprintf("    x[i].diff(i, %d);", n_states + n_params))
+                   sprintf("    x[i].diff(i, %d);", n_variables + n_params))
     }
 
   } else {
@@ -318,27 +318,27 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   if (deriv2) {
     externC <- c(externC,
-                 sprintf("    int param_index = %d + i;", n_states),
+                 sprintf("    int param_index = %d + i;", n_variables),
                  "    full_params[param_index].x().x() = REAL(paramsSEXP)[param_index];",
                  "    // Outer layer seeding (second derivative)",
-                 sprintf("    full_params[param_index].diff(param_index, %d);", n_states + n_params))
+                 sprintf("    full_params[param_index].diff(param_index, %d);", n_variables + n_params))
 
     if (length(fixed_param_idx) > 0) {
       externC <- c(externC,
                    "    // Skip fixed parameters when seeding inner layer",
                    sprintf("    if (!(%s)) full_params[param_index].x().diff(param_index, %d);",
                            paste(sprintf("i == %d", fixed_param_idx), collapse = " || "),
-                           n_states + n_params))
+                           n_variables + n_params))
     } else {
       externC <- c(externC,
                    "    // Inner layer seeding (first derivative)",
                    sprintf("    full_params[param_index].x().diff(param_index, %d);",
-                           n_states + n_params))
+                           n_variables + n_params))
     }
 
   } else if (deriv) {
     externC <- c(externC,
-                 sprintf("    int param_index = %d + i;", n_states),
+                 sprintf("    int param_index = %d + i;", n_variables),
                  "    full_params[param_index] = REAL(paramsSEXP)[param_index];")
 
     if (length(fixed_param_idx) > 0) {
@@ -346,16 +346,16 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    // Skip fixed parameters when seeding",
                    sprintf("    if (!(%s)) full_params[param_index].diff(param_index, %d);",
                            paste(sprintf("i == %d", fixed_param_idx), collapse = " || "),
-                           n_states + n_params))
+                           n_variables + n_params))
     } else {
       externC <- c(externC,
                    sprintf("    full_params[param_index].diff(param_index, %d);",
-                           n_states + n_params))
+                           n_variables + n_params))
     }
 
   } else {
     externC <- c(externC,
-                 sprintf("    full_params[%d + i] = REAL(paramsSEXP)[%d + i];", n_states, n_states))
+                 sprintf("    full_params[%d + i] = REAL(paramsSEXP)[%d + i];", n_variables, n_variables))
   }
 
 
@@ -472,19 +472,19 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Copy back results - CONSISTENT LIST OUTPUT ---
   if (!deriv) {
-    # deriv = FALSE: list(time, state)
+    # deriv = FALSE: list(time, variable)
     externC <- c(externC,
-                 "  // --- Return list(time, state) ---",
+                 "  // --- Return list(time, variable) ---",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 2));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 2));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
-                 "  SET_STRING_ELT(names, 1, Rf_mkChar(\"state\"));",
+                 "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP state_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_states),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
                  "  double* time_out = REAL(time_vec);",
-                 "  double* state_out = REAL(state_mat);",
+                 "  double* variable_out = REAL(variable_mat);",
                  "  auto IDX = [n_out](int r, int c){ return r + c * n_out; };",
                  "",
                  "  // Rounding helper",
@@ -495,41 +495,41 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i];",
-                 sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
-                 sprintf("      state_out[IDX(i, s)] = round_to_prec(y[i * %d + s]);", n_states),
+                 sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                 sprintf("      variable_out[IDX(i, s)] = round_to_prec(y[i * %d + s]);", n_variables),
                  "    }",
                  "  }",
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
-                 "  SET_VECTOR_ELT(ans, 1, state_mat);",
+                 "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  UNPROTECT(4);",
                  "  return ans;")
 
   } else if (!deriv2) {
-    # deriv = TRUE, deriv2 = FALSE: list(time, state, sens1)
+    # deriv = TRUE, deriv2 = FALSE: list(time, variable, sens1)
     externC <- c(externC,
-                 "  // --- Return list(time, state, sens1) ---",
+                 "  // --- Return list(time, variable, sens1) ---",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 3));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 3));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
-                 "  SET_STRING_ELT(names, 1, Rf_mkChar(\"state\"));",
+                 "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"sens1\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP state_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_states),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
                  "  INTEGER(sens1_dim)[0] = n_out;",
-                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_states),
+                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
                  sprintf("  INTEGER(sens1_dim)[2] = %d;", n_total_sens),
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
-                 "  double* state_out = REAL(state_mat);",
+                 "  double* variable_out = REAL(variable_mat);",
                  "  double* sens1_out = REAL(sens1_arr);",
                  "",
-                 "  auto IDX_state = [n_out](int r, int c){ return r + c * n_out; };",
-                 sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_states),
+                 "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
+                 sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
                  "",
                  "  // Rounding helper",
                  "  auto round_to_prec = [precision](double x) {",
@@ -540,22 +540,22 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     )
 
     # Extract with fixed parameter handling
-    if (length(fixed_state_idx) > 0 || length(fixed_param_idx) > 0) {
+    if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
       externC <- c(externC,
                    "  for (int i = 0; i < n_out; ++i) {",
                    "    time_out[i] = result_times[i].x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x());",
+                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
+                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x());",
                    "      int v_sens = 0;",
-                   sprintf("      for (int v = 0; v < %d; ++v) {", n_states + n_params))
+                   sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params))
 
       fixed_checks <- character(0)
-      if (length(fixed_state_idx) > 0) {
+      if (length(fixed_initial_idx) > 0) {
         fixed_checks <- c(fixed_checks,
                           sprintf("        bool is_fixed_init = (v < %d) && (%s);",
-                                  n_states,
-                                  paste(sprintf("v == %d", fixed_state_idx), collapse = " || ")))
+                                  n_variables,
+                                  paste(sprintf("v == %d", fixed_initial_idx), collapse = " || ")))
       } else {
         fixed_checks <- c(fixed_checks, "        bool is_fixed_init = false;")
       }
@@ -563,8 +563,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       if (length(fixed_param_idx) > 0) {
         fixed_checks <- c(fixed_checks,
                           sprintf("        bool is_fixed_param = (v >= %d) && (%s);",
-                                  n_states,
-                                  paste(sprintf("(v - %d) == %d", n_states, fixed_param_idx), collapse = " || ")))
+                                  n_variables,
+                                  paste(sprintf("(v - %d) == %d", n_variables, fixed_param_idx), collapse = " || ")))
       } else {
         fixed_checks <- c(fixed_checks, "        bool is_fixed_param = false;")
       }
@@ -581,9 +581,9 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       externC <- c(externC,
                    "  for (int i = 0; i < n_out; ++i) {",
                    "    time_out[i] = result_times[i].x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x());",
+                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
+                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x());",
                    sprintf("      for (int v = 0; v < %d; ++v) {", n_total_sens),
                    "        sens1_out[IDX_sens1(i, s, v)] = round_to_prec(xi.d(v));",
                    "      }",
@@ -594,45 +594,45 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     externC <- c(externC,
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
-                 "  SET_VECTOR_ELT(ans, 1, state_mat);",
+                 "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  SET_VECTOR_ELT(ans, 2, sens1_arr);",
                  "  UNPROTECT(6);",
                  "  return ans;")
 
   } else {
-    # deriv2 = TRUE: list(time, state, sens1, sens2)
+    # deriv2 = TRUE: list(time, variable, sens1, sens2)
     externC <- c(externC,
                  "  // --- Copy results to R list for deriv2 ---",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
-                 "  SET_STRING_ELT(names, 1, Rf_mkChar(\"state\"));",
+                 "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"sens1\"));",
                  "  SET_STRING_ELT(names, 3, Rf_mkChar(\"sens2\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP state_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_states),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
                  "  INTEGER(sens1_dim)[0] = n_out;",
-                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_states),
+                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
                  sprintf("  INTEGER(sens1_dim)[2] = %d;", n_total_sens),
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "  SEXP sens2_dim = PROTECT(Rf_allocVector(INTSXP, 4));",
                  "  INTEGER(sens2_dim)[0] = n_out;",
-                 sprintf("  INTEGER(sens2_dim)[1] = %d;", n_states),
+                 sprintf("  INTEGER(sens2_dim)[1] = %d;", n_variables),
                  sprintf("  INTEGER(sens2_dim)[2] = %d;", n_total_sens),
                  sprintf("  INTEGER(sens2_dim)[3] = %d;", n_total_sens),
                  "  SEXP sens2_arr = PROTECT(Rf_allocArray(REALSXP, sens2_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
-                 "  double* state_out = REAL(state_mat);",
+                 "  double* variable_out = REAL(variable_mat);",
                  "  double* sens1_out = REAL(sens1_arr);",
                  "  double* sens2_out = REAL(sens2_arr);",
                  "",
-                 "  auto IDX_state = [n_out](int r, int c){ return r + c * n_out; };",
-                 sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_states),
-                 sprintf("  auto IDX_sens2 = [n_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + %d * v2)); };", n_states, n_total_sens),
+                 "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
+                 sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
+                 sprintf("  auto IDX_sens2 = [n_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + %d * v2)); };", n_variables, n_total_sens),
                  "",
                  "  // Rounding helper",
                  "  auto round_to_prec = [precision](double x) {",
@@ -643,22 +643,22 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     )
 
     # Extract with fixed parameter handling
-    if (length(fixed_state_idx) > 0 || length(fixed_param_idx) > 0) {
+    if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
       externC <- c(externC,
                    "  for (int i = 0; i < n_out; ++i) {",
                    "    time_out[i] = result_times[i].x().x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x().x());",
+                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
+                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x().x());",
                    "      int v1_sens = 0;",
-                   sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_states + n_params))
+                   sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params))
 
       fixed_checks_outer <- character(0)
-      if (length(fixed_state_idx) > 0) {
+      if (length(fixed_initial_idx) > 0) {
         fixed_checks_outer <- c(fixed_checks_outer,
                                 sprintf("        bool is_fixed_init1 = (v1 < %d) && (%s);",
-                                        n_states,
-                                        paste(sprintf("v1 == %d", fixed_state_idx), collapse = " || ")))
+                                        n_variables,
+                                        paste(sprintf("v1 == %d", fixed_initial_idx), collapse = " || ")))
       } else {
         fixed_checks_outer <- c(fixed_checks_outer, "        bool is_fixed_init1 = false;")
       }
@@ -666,8 +666,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       if (length(fixed_param_idx) > 0) {
         fixed_checks_outer <- c(fixed_checks_outer,
                                 sprintf("        bool is_fixed_param1 = (v1 >= %d) && (%s);",
-                                        n_states,
-                                        paste(sprintf("(v1 - %d) == %d", n_states, fixed_param_idx), collapse = " || ")))
+                                        n_variables,
+                                        paste(sprintf("(v1 - %d) == %d", n_variables, fixed_param_idx), collapse = " || ")))
       } else {
         fixed_checks_outer <- c(fixed_checks_outer, "        bool is_fixed_param1 = false;")
       }
@@ -676,14 +676,14 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "        if (!(is_fixed_init1 || is_fixed_param1)) {",
                    "          sens1_out[IDX_sens1(i, s, v1_sens)] = round_to_prec(xi.d(v1).x());",
                    "          int v2_sens = 0;",
-                   sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_states + n_params))
+                   sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params))
 
       fixed_checks_inner <- character(0)
-      if (length(fixed_state_idx) > 0) {
+      if (length(fixed_initial_idx) > 0) {
         fixed_checks_inner <- c(fixed_checks_inner,
                                 sprintf("            bool is_fixed_init2 = (v2 < %d) && (%s);",
-                                        n_states,
-                                        paste(sprintf("v2 == %d", fixed_state_idx), collapse = " || ")))
+                                        n_variables,
+                                        paste(sprintf("v2 == %d", fixed_initial_idx), collapse = " || ")))
       } else {
         fixed_checks_inner <- c(fixed_checks_inner, "            bool is_fixed_init2 = false;")
       }
@@ -691,8 +691,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       if (length(fixed_param_idx) > 0) {
         fixed_checks_inner <- c(fixed_checks_inner,
                                 sprintf("            bool is_fixed_param2 = (v2 >= %d) && (%s);",
-                                        n_states,
-                                        paste(sprintf("(v2 - %d) == %d", n_states, fixed_param_idx), collapse = " || ")))
+                                        n_variables,
+                                        paste(sprintf("(v2 - %d) == %d", n_variables, fixed_param_idx), collapse = " || ")))
       } else {
         fixed_checks_inner <- c(fixed_checks_inner, "            bool is_fixed_param2 = false;")
       }
@@ -712,9 +712,9 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       externC <- c(externC,
                    "  for (int i = 0; i < n_out; ++i) {",
                    "    time_out[i] = result_times[i].x().x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x().x());",
+                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
+                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x().x());",
                    sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_total_sens),
                    "        sens1_out[IDX_sens1(i, s, v1)] = round_to_prec(xi.d(v1).x());",
                    sprintf("        for (int v2 = 0; v2 < %d; ++v2) {", n_total_sens),
@@ -728,7 +728,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     externC <- c(externC,
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
-                 "  SET_VECTOR_ELT(ans, 1, state_mat);",
+                 "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  SET_VECTOR_ELT(ans, 2, sens1_arr);",
                  "  SET_VECTOR_ELT(ans, 3, sens2_arr);",
                  "  UNPROTECT(8);",
@@ -770,16 +770,16 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   if (verbose) message("Wrote: ", normalizePath(filename))
 
   # --- Attach attributes ---
-  jac_matrix_R <- matrix(unlist(jac_matrix_str), nrow = n_states, ncol = n_states, byrow = TRUE)
-  dimnames(jac_matrix_R) <- list(states, states)
+  jac_matrix_R <- matrix(unlist(jac_matrix_str), nrow = n_variables, ncol = n_variables, byrow = TRUE)
+  dimnames(jac_matrix_R) <- list(variables, variables)
 
   attr(modelname, "equations")     <- rhs
   attr(modelname, "modelname")     <- modelname
-  attr(modelname, "variables")     <- states
+  attr(modelname, "variables")     <- variables
   attr(modelname, "parameters")    <- params
   attr(modelname, "events")        <- events
   attr(modelname, "solver")        <- "boost::odeint::rosenbrock4"
-  attr(modelname, "fixed")         <- c(fixed_states, fixed_params)
+  attr(modelname, "fixed")         <- c(fixed_initials, fixed_params)
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
@@ -788,19 +788,19 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   if (deriv2) {
     attr(modelname, "dim_names") <- list(
       time = "time",
-      state = states,
-      sens = c(sens_states, sens_params)
+      variable = variables,
+      sens = c(sens_initials, sens_params)
     )
   } else if (deriv) {
     attr(modelname, "dim_names") <- list(
       time = "time",
-      state = states,
-      sens = c(sens_states, sens_params)
+      variable = variables,
+      sens = c(sens_initials, sens_params)
     )
   } else {
     attr(modelname, "dim_names") <- list(
       time = "time",
-      state = states
+      variable = variables
     )
   }
 
