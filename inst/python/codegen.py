@@ -13,14 +13,14 @@ from sympy.parsing.sympy_parser import (
 import re
 
 
-def generate_ode_cpp(odes_dict, params_list, num_type="AD", 
+def generate_ode_cpp(rhs_dict, params_list, num_type="AD", 
                      fixed_states=None, fixed_params=None):
     """
     Generate complete ODE system and Jacobian C++ code.
     
     Parameters
     ----------
-    odes_dict : dict
+    rhs_dict : dict
         Dictionary mapping state variable names to their RHS expressions (strings)
         Example: {"x": "v", "v": "mu*(1 - x**2)*v - x"}
     params_list : list of str
@@ -46,8 +46,8 @@ def generate_ode_cpp(odes_dict, params_list, num_type="AD",
     if fixed_params is None:
         fixed_params = []
     
-    states_list = list(odes_dict.keys())
-    odes_list = list(odes_dict.values())
+    states_list = list(rhs_dict.keys())
+    odes_list = list(rhs_dict.values())
     
     n_states = len(states_list)
     n_params = len(params_list)

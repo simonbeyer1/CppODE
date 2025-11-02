@@ -6,7 +6,7 @@ setwd(.workingDir)
 
 library(CppODE)
 
-eqs <- c(f1 = "a*x + b*y^2",
+eqs <- c(f1 = "a*x^2 + b*y^2",
          f2 = "x*y + exp(2*c)")
 
 f <- funCpp0(eqs,
@@ -26,7 +26,7 @@ params <- c(a = 1, b = 2, c = 0)
 res <- f(vars, params)
 res
 attributes(res)$jacobian["f1", , 1]
-attributes(res)$hessian["f1", , ,2]
+attributes(res)$hessian["f1", , , 2]
 attributes(f)$jacobian.symb
 
 symbolic_hessian <- attributes(f)$hessian.symb

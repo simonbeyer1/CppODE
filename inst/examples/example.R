@@ -15,7 +15,7 @@
   )
 
   # Generate and compile solver
-  f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s")
+  f <- CppODE(eqns, events = events, modelname = "Amodel_s")
 
   # Wrap in an R solver function
   solve <- function(times, params,

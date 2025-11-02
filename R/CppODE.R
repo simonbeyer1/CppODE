@@ -65,7 +65,7 @@
 #' of state variables, and \code{n_sens} is the number of sensitivity parameters
 #' (non-fixed states and parameters).
 #'
-#' @param odes Named character vector of ODE right-hand sides.
+#' @param rhs Named character vector of ODE right-hand sides.
 #'   Names must correspond to state variables.
 #' @param events Optional \code{data.frame} describing events (see Details).
 #'   Default: \code{NULL} (no events).
@@ -80,6 +80,7 @@
 #'   If \code{FALSE}, use plain doubles.
 #' @param deriv2 Logical. If \code{TRUE}, compute second-order sensitivities using
 #'   nested AD. Requires \code{deriv = TRUE}. Default: \code{FALSE}.
+#' @param useDenseOutput Logical. If \code{TRUE}, use dense output for interpolation.
 #' @param verbose Logical. If \code{TRUE}, print progress messages.
 #'
 #' @return The model name (character). The object has attributes:
@@ -100,7 +101,7 @@
 #' @example inst/examples/example.R
 #' @importFrom reticulate import source_python
 #' @export
-CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
+CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    compile = TRUE, modelname = NULL,
                    deriv = TRUE, deriv2 = FALSE,
                    useDenseOutput = TRUE,
@@ -112,13 +113,13 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   }
 
   # --- Clean up ODE definitions ---
-  odes <- unclass(odes)
-  odes <- gsub("\n", "", odes)
-  odes <- sanitizeExprs(odes)
+  rhs <- unclass(rhs)
+  rhs <- gsub("\n", "", rhs)
+  rhs <- sanitizeExprs(rhs)
 
   # --- Extract state and parameter names ---
-  states  <- names(odes)
-  symbols <- getSymbols(c(odes, if (!is.null(events)) {
+  states  <- names(rhs)
+  symbols <- getSymbols(c(rhs, if (!is.null(events)) {
     c(events$value,
       if ("time" %in% names(events)) events$time,
       if ("root" %in% names(events)) events$root)
@@ -147,7 +148,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Generate unique model name ---
   if (is.null(modelname)) {
-    modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
+    modelname <- paste(c("x", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
   }
 
   # --- CALL PYTHON CODE GENERATOR (single call!) ---
@@ -169,7 +170,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   }
 
   codegen_result <- reticulate::py$generate_ode_cpp(
-    odes_dict = as.list(setNames(odes, states)),
+    rhs_dict = as.list(setNames(rhs, states)),
     params_list = params,
     num_type = numType,
     fixed_states = fixed_states,
@@ -251,7 +252,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Solver function (externC) ---
   externC <- c(
-    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP) {', modelname),
+    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP precisionSEXP) {', modelname),
     "try {",
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
@@ -292,8 +293,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
     if (length(fixed_state_idx) > 0) {
       externC <- c(externC,
-                   sprintf("    // Skip fixed states when seeding",
-                           n_states + n_params),
+                   sprintf("    // Skip fixed states when seeding"),
                    sprintf("    if (!(%s)) x[i].diff(i, %d);",
                            paste(sprintf("i == %d", fixed_state_idx), collapse = " || "),
                            n_states + n_params))
@@ -448,6 +448,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  double reltol = REAL(reltolSEXP)[0];",
                "  double root_tol = REAL(root_tolSEXP)[0];",
                "  int maxroot = INTEGER(maxrootSEXP)[0];",
+               "  double precision = REAL(precisionSEXP)[0];",
                "  ode_system sys(full_params);",
                "  jacobian jac(full_params);",
                "  observer obs(result_times, y);",
@@ -486,10 +487,16 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "  double* state_out = REAL(state_mat);",
                  "  auto IDX = [n_out](int r, int c){ return r + c * n_out; };",
                  "",
+                 "  // Rounding helper",
+                 "  auto round_to_prec = [precision](double x) {",
+                 "    if (precision > 0.0) return std::round(x / precision) * precision;",
+                 "    return x;",
+                 "  };",
+                 "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i];",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
-                 sprintf("      state_out[IDX(i, s)] = y[i * %d + s];", n_states),
+                 sprintf("      state_out[IDX(i, s)] = round_to_prec(y[i * %d + s]);", n_states),
                  "    }",
                  "  }",
                  "",
@@ -523,6 +530,12 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "",
                  "  auto IDX_state = [n_out](int r, int c){ return r + c * n_out; };",
                  sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_states),
+                 "",
+                 "  // Rounding helper",
+                 "  auto round_to_prec = [precision](double x) {",
+                 "    if (precision > 0.0) return std::round(x / precision) * precision;",
+                 "    return x;",
+                 "  };",
                  ""
     )
 
@@ -533,7 +546,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = xi.x();",
+                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x());",
                    "      int v_sens = 0;",
                    sprintf("      for (int v = 0; v < %d; ++v) {", n_states + n_params))
 
@@ -558,7 +571,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
       externC <- c(externC, fixed_checks,
                    "        if (!(is_fixed_init || is_fixed_param)) {",
-                   "          sens1_out[IDX_sens1(i, s, v_sens)] = xi.d(v);",
+                   "          sens1_out[IDX_sens1(i, s, v_sens)] = round_to_prec(xi.d(v));",
                    "          v_sens++;",
                    "        }",
                    "      }",
@@ -570,9 +583,9 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = xi.x();",
+                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x());",
                    sprintf("      for (int v = 0; v < %d; ++v) {", n_total_sens),
-                   "        sens1_out[IDX_sens1(i, s, v)] = xi.d(v);",
+                   "        sens1_out[IDX_sens1(i, s, v)] = round_to_prec(xi.d(v));",
                    "      }",
                    "    }",
                    "  }")
@@ -620,6 +633,12 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "  auto IDX_state = [n_out](int r, int c){ return r + c * n_out; };",
                  sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_states),
                  sprintf("  auto IDX_sens2 = [n_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + %d * v2)); };", n_states, n_total_sens),
+                 "",
+                 "  // Rounding helper",
+                 "  auto round_to_prec = [precision](double x) {",
+                 "    if (precision > 0.0) return std::round(x / precision) * precision;",
+                 "    return x;",
+                 "  };",
                  ""
     )
 
@@ -630,7 +649,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x().x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = xi.x().x();",
+                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x().x());",
                    "      int v1_sens = 0;",
                    sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_states + n_params))
 
@@ -655,7 +674,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
       externC <- c(externC, fixed_checks_outer,
                    "        if (!(is_fixed_init1 || is_fixed_param1)) {",
-                   "          sens1_out[IDX_sens1(i, s, v1_sens)] = xi.d(v1).x();",
+                   "          sens1_out[IDX_sens1(i, s, v1_sens)] = round_to_prec(xi.d(v1).x());",
                    "          int v2_sens = 0;",
                    sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_states + n_params))
 
@@ -680,7 +699,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
       externC <- c(externC, fixed_checks_inner,
                    "            if (!(is_fixed_init2 || is_fixed_param2)) {",
-                   "              sens2_out[IDX_sens2(i, s, v1_sens, v2_sens)] = xi.d(v1).d(v2);",
+                   "              sens2_out[IDX_sens2(i, s, v1_sens, v2_sens)] = round_to_prec(xi.d(v1).d(v2));",
                    "              v2_sens++;",
                    "            }",
                    "          }",
@@ -695,11 +714,11 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x().x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_states),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_states),
-                   "      state_out[IDX_state(i, s)] = xi.x().x();",
+                   "      state_out[IDX_state(i, s)] = round_to_prec(xi.x().x());",
                    sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_total_sens),
-                   "        sens1_out[IDX_sens1(i, s, v1)] = xi.d(v1).x();",
+                   "        sens1_out[IDX_sens1(i, s, v1)] = round_to_prec(xi.d(v1).x());",
                    sprintf("        for (int v2 = 0; v2 < %d; ++v2) {", n_total_sens),
-                   "          sens2_out[IDX_sens2(i, s, v1, v2)] = xi.d(v1).d(v2);",
+                   "          sens2_out[IDX_sens2(i, s, v1, v2)] = round_to_prec(xi.d(v1).d(v2));",
                    "        }",
                    "      }",
                    "    }",
@@ -729,6 +748,14 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Write C++ file ---
   filename <- paste0(modelname, ".cpp")
+
+  # Warn if file already exists
+  if (file.exists(filename)) {
+    if (verbose) {
+      message("⚠ Overwriting existing file: ", normalizePath(filename))
+    }
+  }
+
   sink(filename)
   cat("/** Code auto-generated by CppODE ",
       as.character(utils::packageVersion("CppODE")), " **/\n\n", sep = "")
@@ -746,7 +773,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   jac_matrix_R <- matrix(unlist(jac_matrix_str), nrow = n_states, ncol = n_states, byrow = TRUE)
   dimnames(jac_matrix_R) <- list(states, states)
 
-  attr(modelname, "equations")     <- odes
+  attr(modelname, "equations")     <- rhs
   attr(modelname, "modelname")     <- modelname
   attr(modelname, "variables")     <- states
   attr(modelname, "parameters")    <- params
@@ -762,8 +789,7 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     attr(modelname, "dim_names") <- list(
       time = "time",
       state = states,
-      sens = c(sens_states, sens_params),
-      sens = c(sens_states, sens_params, sens_params)
+      sens = c(sens_states, sens_params)
     )
   } else if (deriv) {
     attr(modelname, "dim_names") <- list(
@@ -785,24 +811,14 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
 #' Generate and optionally compile C++ code for algebraic expressions
 #'
-#' `funCpp0()` turns a named character vector of algebraic expressions into
+#' `funCpp()` turns a named character vector of algebraic expressions into
 #' (i) a plain R evaluator and (optionally) (ii) a C++ evaluator that can be
-#' compiled and called via `.C()`. No Rcpp is used – the generated C++ has a
-#' simple signature
-#'
-#' \preformatted{
-#'   void <modelname>_eval(double *x, double *y, double *p,
-#'                         int *n, int *k, int *l)
-#' }
+#' compiled and and will then internally be called via `.C()`.
 #'
 #' If `deriv = TRUE` and/or `deriv2 = TRUE`, symbolic first and second
 #' derivatives are obtained from `derivSymb()` **with respect to all symbols**
-#' in `c(variables, parameters)`. Those symbolic objects are
-#'
-#' - stored on the returned function as attributes
-#'   `"jacobian.symb"` / `"hessian.symb"`, and
-#' - evaluated on every call and attached to the **result** as numeric
-#'   arrays `"jacobian"` (3D) and `"hessian"` (4D).
+#' found within the expressions `x`. Those symbolic objects are evaluated on every call and attached to the **result** as numeric
+#' arrays `"jacobian"` (3D) and `"hessian"` (4D).
 #'
 #' @param x named character vector of expressions, e.g. `c(f1 = "a*x", f2 = "x*y")`
 #' @param variables character, names of variables (columns of `vars`)
@@ -811,18 +827,27 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' @param modelname character, base name for the generated C++ file
 #' @param verbose logical, print progress information
 #' @param warnings logical, warn about missing variables/parameters (filled with 0)
-#' @param deriv logical, compute symbolic Jacobian (w.r.t. vars + params)
-#' @param deriv2 logical, compute symbolic Hessian (w.r.t. vars + params)
+#' @param convenient logical, if `TRUE` return a function with argument `...` to pass
+#'   all variables/parameters as named arguments
+#' @param deriv logical, compute symbolic Jacobian
+#' @param deriv2 logical, compute symbolic Hessian
 #'
 #' @return
-#' A function
+#' If `convenient = FALSE`, a function
 #' \preformatted{
 #'   f <- funCpp0(...)
-#'   out <- f(vars, params)
+#'   out <- f(vars, params, attach.input = FALSE)
 #' }
 #' where
 #' - `vars` is a **numeric matrix** with columns named by `variables`
 #' - `params` is a **named numeric vector** with names `parameters`
+#'
+#' If `convenient = TRUE`, a function
+#' \preformatted{
+#'   f <- funCpp0(...)
+#'   out <- f(..., attach.input = FALSE)
+#' }
+#' where all variables and parameters can be passed as named arguments.
 #'
 #' The return value `out` is a numeric matrix of size
 #' `[n_obs × n_out]` (observations in rows, expressions in columns).
@@ -842,17 +867,39 @@ CppFun <- function(odes, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #'   attr(f, "hessian.symb")   # character array   (if deriv2 = TRUE)
 #' }
 #'
+#' @examples
+#' \dontrun{
+#' # Without convenient mode
+#' f <- funCpp0(c(y = "a*x^2 + b"), convenient = FALSE)
+#' M <- matrix(1:10, ncol = 1, dimnames = list(NULL, "x"))
+#' p <- c(a = 2, b = 3)
+#' f(M, p)
+#'
+#' # With convenient mode (default)
+#' f <- funCpp0(c(y = "a*x^2 + b"), convenient = TRUE)
+#' f(x = 1:10, a = 2, b = 3, attach.input = TRUE)
+#' }
+#'
 #' @importFrom reticulate import_from_path
 #' @export
-funCpp0 <- function(x,
-                    variables  = getSymbols(x, exclude = parameters),
-                    parameters = NULL,
-                    compile    = FALSE,
-                    modelname  = NULL,
-                    verbose    = FALSE,
-                    warnings   = TRUE,
-                    deriv      = FALSE,
-                    deriv2     = FALSE) {
+funCpp <- function(x,
+                   variables  = getSymbols(x, exclude = parameters),
+                   parameters = NULL,
+                   compile    = FALSE,
+                   modelname  = NULL,
+                   verbose    = FALSE,
+                   warnings   = TRUE,
+                   convenient = TRUE,
+                   deriv      = TRUE,
+                   deriv2     = FALSE) {
+
+  # ---------------------------------------------------------------------------
+  # Check deriv/deriv2 consistency
+  # ---------------------------------------------------------------------------
+  if (deriv2 && !deriv) {
+    warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
+    deriv <- TRUE
+  }
 
   # ---------------------------------------------------------------------------
   # basic names
@@ -862,8 +909,11 @@ funCpp0 <- function(x,
     outnames <- paste0("f", seq_along(x))
 
   innames  <- variables
-  if (is.null(modelname))
-    modelname <- paste0("funCpp0_", paste(sample(c(letters, 0:9), 8), collapse = ""))
+
+  # --- Generate unique model name (like in CppODE) ---
+  if (is.null(modelname)) {
+    modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
+  }
 
   all_syms <- c(variables, parameters)
 
@@ -932,7 +982,7 @@ funCpp0 <- function(x,
   }
 
   # ---------------------------------------------------------------------------
-  # 2) generate C++ code via Python
+  # generate C++ code via Python
   # ---------------------------------------------------------------------------
   cppfile <- NULL
   if (!is.null(modelname)) {
@@ -976,6 +1026,14 @@ funCpp0 <- function(x,
     exprs_list <- as.list(x)
     names(exprs_list) <- outnames
 
+    # --- Warn if file already exists ---
+    cppfile <- paste0(modelname, ".cpp")
+    if (file.exists(cppfile)) {
+      if (verbose) {
+        message("⚠ Overwriting existing file: ", normalizePath(cppfile))
+      }
+    }
+
     pyres <- tryCatch(
       pytools$generate_fun_cpp(
         exprs      = exprs_list,
@@ -991,11 +1049,11 @@ funCpp0 <- function(x,
     )
 
     cppfile <- pyres$filename
-    if (verbose) message("C++ file written: ", cppfile)
+    if (verbose) message("Wrote: ", normalizePath(cppfile))
   }
 
   # ---------------------------------------------------------------------------
-  # 3) prepare R fallback (parse expressions)
+  # prepare R fallback (parse expressions)
   # ---------------------------------------------------------------------------
   parsed_exprs <- lapply(x, function(e) {
     if (e == "0") return(expression(0))
@@ -1030,9 +1088,9 @@ funCpp0 <- function(x,
   }
 
   # ---------------------------------------------------------------------------
-  # 4) main evaluation function (now called outfn)
+  # main evaluation function (myRfun - the non-convenient version)
   # ---------------------------------------------------------------------------
-  outfn <- function(vars, params = numeric(0), attach.input = FALSE) {
+  myRfun <- function(vars, params = numeric(0), attach.input = FALSE) {
     if (is.vector(vars) && length(innames) > 0) {
       vars <- matrix(vars, ncol = length(innames))
       colnames(vars) <- innames[seq_len(ncol(vars))]
@@ -1048,7 +1106,7 @@ funCpp0 <- function(x,
 
     # --- compiled evaluation -------------------------------------------------
     if (file.exists(sofile) && is.loaded(funsym)) {
-      if (verbose) message("Using compiled C++ function")
+      if (verbose) message("Using compiled function: ", funsym)
 
       xvec <- as.double(as.vector(M))
       yvec <- double(length(outnames) * n_obs)
@@ -1137,6 +1195,31 @@ funCpp0 <- function(x,
   }
 
   # ---------------------------------------------------------------------------
+  # Decide on convenient vs non-convenient interface
+  # ---------------------------------------------------------------------------
+  outfn <- myRfun
+
+  if (convenient) {
+    outfn <- function(..., attach.input = FALSE) {
+      arglist <- list(...)
+
+      # Extract variables into matrix M
+      M <- NULL
+      if (!is.null(innames) && length(innames) > 0) {
+        M <- do.call(cbind, arglist[innames])
+      }
+
+      # Extract parameters into vector p
+      p <- numeric(0)
+      if (!is.null(parameters) && length(parameters) > 0) {
+        p <- do.call(c, arglist[parameters])
+      }
+
+      myRfun(M, p, attach.input)
+    }
+  }
+
+  # ---------------------------------------------------------------------------
   # attach symbolic stuff to outfn
   # ---------------------------------------------------------------------------
   attr(outfn, "equations")     <- x
@@ -1207,9 +1290,27 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   roots <- vapply(files, function(f) sub("\\.[^.]+$", "", f), character(1))
   .so <- .Platform$dynlib.ext
 
+  # --- Clean up old compiled files ---
+  for (root in roots) {
+    so_file <- paste0(root, .so)
+    o_file <- paste0(root, ".o")
+
+    # Unload shared library if loaded
+    try(dyn.unload(so_file), silent = TRUE)
+
+    # Delete old .so and .o files
+    if (file.exists(so_file)) {
+      if (verbose) message("Removing old: ", so_file)
+      unlink(so_file)
+    }
+    if (file.exists(o_file)) {
+      if (verbose) message("Removing old: ", o_file)
+      unlink(o_file)
+    }
+  }
+
   # --- Compiler flags ---
   if (Sys.info()[["sysname"]] == "Windows") cores <- 1
-
   include_flags <- paste0("-I", shQuote(system.file("include", package = "CppODE")))
   cxxflags <- if (Sys.info()[["sysname"]] == "Windows") {
     "-std=c++20 -O2 -DNDEBUG"
@@ -1227,30 +1328,38 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
     if (verbose) message("Compiling ", length(files), " model(s)...")
     parallel::mclapply(seq_along(files), function(i) {
       root <- roots[i]
-      try(dyn.unload(paste0(root, .so)), silent = TRUE)
       cmd <- paste0(R.home("bin"), "/R CMD SHLIB ", shQuote(files[i]), " ", args)
       system(cmd, intern = !verbose)
       dyn.load(paste0(root, .so))
       if (verbose) message("✔ Loaded ", root, .so)
       invisible(root)
     }, mc.cores = cores, mc.silent = !verbose)
-
   } else {
     # --- Combine all into one shared object ---
     output <- sub("\\.so$", "", output)
-    for (r in roots) try(dyn.unload(paste0(r, .so)), silent = TRUE)
-    try(dyn.unload(paste0(output, .so)), silent = TRUE)
+
+    # Clean up output file too
+    output_so <- paste0(output, .so)
+    output_o <- paste0(output, ".o")
+    try(dyn.unload(output_so), silent = TRUE)
+    if (file.exists(output_so)) {
+      if (verbose) message("Removing old: ", output_so)
+      unlink(output_so)
+    }
+    if (file.exists(output_o)) {
+      if (verbose) message("Removing old: ", output_o)
+      unlink(output_o)
+    }
 
     cmd <- paste0(
       R.home("bin"), "/R CMD SHLIB ",
       paste(shQuote(files), collapse = " "),
-      " -o ", shQuote(paste0(output, .so)), " ", args
+      " -o ", shQuote(output_so), " ", args
     )
     if (verbose)
       message("Linking into shared library: ", output, .so)
-
     system(cmd, intern = !verbose)
-    dyn.load(paste0(output, .so))
+    dyn.load(output_so)
     if (verbose)
       message("✔ Loaded ", output, .so)
   }

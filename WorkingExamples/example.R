@@ -9,33 +9,32 @@ library(ggplot2)
 library(dplyr)
 
 # Define ODE system
-eqns <- c(
-  A = "k^2 * B",
+rhs <- c(
+  A = "B",
   B = "-k^2 * A"
 )
 
-# # Define an event
-# events <- data.frame(
-#   var   = "A",
-#   time  = "t_e",
-#   value = 1,
-#   method= "add",
-#   root  = NA
-# )
+# Define an event
+events <- data.frame(
+  var   = "A",
+  time  = "t_e",
+  value = 1,
+  method= "add",
+  root  = NA
+)
 
 # # Generate and compile solver
 # f <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s_dense",
 #                     deriv = T, deriv2 = F, useDenseOutput=TRUE, verbose = T)
 
 # Generate and compile solver
-f <- CppODE::CppFun(eqns, modelname = "Amodel_s",
-                       deriv = T, deriv2 = F, useDenseOutput=T, verbose = T)
-
+f <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s", deriv = T, deriv2 = F, useDenseOutput=T, verbose = F, compile = F)
+CppODE:::compile(f)
 # Wrap in an R solver function
 solve <- function(times, params,
-                  abstol = 1e-8, reltol = 1e-6,
+                  abstol = 1e-6, reltol = 1e-6,
                   maxattemps = 5000, maxsteps = 1e6,
-                  roottol = 1e-8, maxroot = 1) {
+                  roottol = 1e-8, maxroot = 1, precision = 1e-5) {
 
   paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
@@ -52,7 +51,8 @@ solve <- function(times, params,
                   as.integer(maxattemps),
                   as.integer(maxsteps),
                   as.numeric(roottol),
-                  as.integer(maxroot))
+                  as.integer(maxroot),
+                  as.numeric(precision))
 
   # Extract dimension names
   dims <- attr(f, "dim_names")
@@ -69,7 +69,7 @@ solve <- function(times, params,
 }
 
 # Example run
-params <- c(A = 1, B = 0, k = 1)
+params <- c(A = 1, B = 0, k = 1, t_e = 2)
 times  <- seq(0, 2*pi, length.out = 300)
 
 res <- solve(times, params, abstol = 1e-6, reltol = 1e-6)
@@ -118,7 +118,7 @@ out_long <- dMod::wide2long(out_full) %>%
 
 library(dMod)
 
-x <- odemodel(eqns) %>% Xs()
+x <- odemodel(rhs, events = events) %>% Xs()
 
 out_dMod <- x(times, params)
 out_dMod_derivs <- getDerivs(out_dMod)[[1]] %>% wide2long()
@@ -135,7 +135,7 @@ outtime_cOde
 out_analytical = data.frame(
   time = times,
   name = "A.k",
-  value = -2*times*sin(times),
+  value = -times*sin(times),
   solver = "analytical"
 )
 
@@ -149,12 +149,12 @@ ggplot(out_all, aes(x = time, y = value, color = solver, linetype = solver)) +
 
 
 # # For deriv2 = TRUE example:
-f2 <- CppODE::CppFun(eqns, modelname = "Amodel_s2",
-                     deriv = TRUE, deriv2 = TRUE, useDenseOutput=F, verbose = T)
+# f2 <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s2",
+#                      deriv = TRUE, deriv2 = TRUE, useDenseOutput=F, verbose = T)
 
-# # For deriv2 = TRUE example:
-# f2 <- CppODE::CppFun(eqns, events = events, modelname = "Amodel_s2_dense",
-#                      deriv = TRUE, deriv2 = TRUE, useDenseOutput=T, verbose = T)
+# For deriv2 = TRUE example:
+f2 <- CppODE::CppODE(rhs, events = events, modelname = "Amodel_s2_dense",
+                     deriv = TRUE, deriv2 = TRUE, useDenseOutput=T, verbose = T)
 
 solve2 <- function(times, params,
                    abstol = 1e-6, reltol = 1e-6,
@@ -186,10 +186,10 @@ solve2 <- function(times, params,
   return(result)
 }
 
-res2 <- solve2(times, params, abstol = 1e-3, reltol = 1e-3, maxattemps = 10000)
+res2 <- solve2(times, params)
 
 outtime_deriv2 <- system.time({
-  solve2(times, params, abstol = 1e-3, reltol = 1e-3)
+  solve2(times, params)
 })
 outtime_deriv2
 # Access second-order sensitivities
@@ -198,7 +198,7 @@ res2$sens2[10, "A", , ]
 
 res2$sens1[1, "A", ]
 
-res2$sens2[10, "A", , ]
+res2$sens2[200, "A", , ]
 
 calculate_AB <- function(time, A0, B0, k, t0 = min(time)) {
   # Sortiere Zeit
