@@ -9,21 +9,18 @@ library(CppODE)
 eqs <- c(f1 = "a*x^2 + b*y^2",
          f2 = "x*y + exp(2*c)")
 
-f <- funCpp0(eqs,
+f <- funCpp(eqs,
              variables  = c("x", "y"),
              parameters = c("a", "b", "c"),
              deriv = TRUE,
              deriv2 = TRUE,
              compile = FALSE,
-             modelname = "algfun",
+             modelname = "obsfn",
              verbose = TRUE)
 
 CppODE:::compile(f)
 
-vars   <- cbind(x = 1:4, y = 2:5)
-params <- c(a = 1, b = 2, c = 0)
-
-res <- f(vars, params)
+res <- f(x = 1:4, y = 2:5, a = 1, b = 2, c = 0)
 res
 attributes(res)$jacobian["f1", , 1]
 attributes(res)$hessian["f1", , , 2]
