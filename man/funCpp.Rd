@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{funCpp}
 \alias{funCpp}
-\title{Generate and optionally compile C++ code for algebraic expressions}
+\title{Create and (optionally) compile C++ code for algebraic expressions}
 \usage{
 funCpp(
   x,
@@ -18,86 +18,73 @@ funCpp(
 )
 }
 \arguments{
-\item{x}{named character vector of expressions, e.g. \code{c(f1 = "a*x", f2 = "x*y")}}
+\item{x}{Named character vector of algebraic expressions.}
 
-\item{variables}{character, names of variables (columns of \code{vars})}
+\item{variables}{Character vector of variable names.}
 
-\item{parameters}{character, names of parameters (elements of \code{params})}
+\item{parameters}{Character vector of parameter names.}
 
-\item{compile}{logical, if \code{TRUE} write, compile and load the C++ file}
+\item{compile}{Logical; if \code{TRUE}, generate, compile, and load the C++ code.}
 
-\item{modelname}{character, base name for the generated C++ file}
+\item{modelname}{Optional base name for generated files.}
 
-\item{verbose}{logical, print progress information}
+\item{verbose}{Logical; print diagnostic output.}
 
-\item{warnings}{logical, warn about missing variables/parameters (filled with 0)}
+\item{warnings}{Logical; warn about missing variables or parameters
+(filled with zeros).}
 
-\item{convenient}{logical, if \code{TRUE} return a function with argument \code{...} to pass
-all variables/parameters as named arguments}
+\item{convenient}{Logical; if \code{TRUE} (default), return a wrapper function
+that accepts variables and parameters as \code{...}.}
 
-\item{deriv}{logical, compute symbolic Jacobian}
+\item{deriv}{Logical; if \code{TRUE}, compute the symbolic Jacobian.}
 
-\item{deriv2}{logical, compute symbolic Hessian}
+\item{deriv2}{Logical; if \code{TRUE}, compute the symbolic Hessian
+(implies \code{deriv = TRUE}).}
 }
 \value{
-If \code{convenient = FALSE}, a function
-\preformatted{
-  f <- funCpp0(...)
-  out <- f(vars, params, attach.input = FALSE)
-}
-where
+A callable function that evaluates the system of equations.
+
+The output of the function call is a numeric matrix
+\verb{[n_obs × n_outputs]}.  If derivatives are available,
+attributes \code{"jacobian"} (\verb{[n_out × n_sym × n_obs]}) and
+\code{"hessian"} (\verb{[n_out × n_sym × n_sym × n_obs]}) are attached.
+
+The returned function itself also carries the symbolic representations:
 \itemize{
-\item \code{vars} is a \strong{numeric matrix} with columns named by \code{variables}
-\item \code{params} is a \strong{named numeric vector} with names \code{parameters}
+\item \code{attr(f, "jacobian.symb")} – character matrix of analytic first derivatives
+\item \code{attr(f, "hessian.symb")} – character 3D array of analytic second derivatives
 }
 
-If \code{convenient = TRUE}, a function
-\preformatted{
-  f <- funCpp0(...)
-  out <- f(..., attach.input = FALSE)
-}
-where all variables and parameters can be passed as named arguments.
-
-The return value \code{out} is a numeric matrix of size
-\verb{[n_obs × n_out]} (observations in rows, expressions in columns).
-
-If \code{deriv = TRUE}, \code{out} has attribute
-\preformatted{
-  attr(out, "jacobian")  # [n_out × n_sym × n_obs]
-}
-If \code{deriv2 = TRUE}, \code{out} has attribute
-\preformatted{
-  attr(out, "hessian")   # [n_out × n_sym × n_sym × n_obs]
-}
-
-In addition, the returned \emph{function} carries the symbolic objects:
-\preformatted{
-  attr(f, "jacobian.symb")  # character matrix  (if deriv = TRUE)
-  attr(f, "hessian.symb")   # character array   (if deriv2 = TRUE)
-}
+If symbolic parsing fails for R fallback (e.g. due to \code{Piecewise} or
+\code{DiracDelta}), a warning is issued at creation time and only compiled
+evaluation will be available.
 }
 \description{
-\code{funCpp()} turns a named character vector of algebraic expressions into
-(i) a plain R evaluator and (optionally) (ii) a C++ evaluator that can be
-compiled and and will then internally be called via \code{.C()}.
+\code{funCpp()} transforms a named character vector of algebraic expressions
+into an R callable function that evaluates them either in pure R or through
+an automatically generated and compiled C++ backend.
 }
 \details{
-If \code{deriv = TRUE} and/or \code{deriv2 = TRUE}, symbolic first and second
-derivatives are obtained from \code{derivSymb()} \strong{with respect to all symbols}
-found within the expressions \code{x}. Those symbolic objects are evaluated on every call and attached to the \strong{result} as numeric
-arrays \code{"jacobian"} (3D) and \code{"hessian"} (4D).
+If symbolic derivatives are requested (\code{deriv = TRUE} or \code{deriv2 = TRUE}),
+the function uses \code{\link[=derivSymb]{derivSymb()}} to compute analytic Jacobians and
+Hessians via \strong{SymPy} (Python).  The symbolic results are attached both to
+the returned function and, when evaluated, as numeric derivative arrays.
+
+Complex symbolic forms that cannot be parsed by R (for example,
+\code{Piecewise()} or \code{DiracDelta()}) are detected automatically.  In such
+cases, the pure-R fallback is disabled and a clear warning is issued,
+advising the user to use \code{compile = TRUE} for C++ evaluation.
 }
 \examples{
 \dontrun{
-# Without convenient mode
-f <- funCpp0(c(y = "a*x^2 + b"), convenient = FALSE)
-M <- matrix(1:10, ncol = 1, dimnames = list(NULL, "x"))
-p <- c(a = 2, b = 3)
-f(M, p)
-
-# With convenient mode (default)
-f <- funCpp0(c(y = "a*x^2 + b"), convenient = TRUE)
-f(x = 1:10, a = 2, b = 3, attach.input = TRUE)
+f <- funCpp(c(y = "a*x^2 + b*y^2"), deriv2 = TRUE)
+f(x = 1:3, y = 2, a = 0.5, b = 1)
+attr(f, "jacobian.symb")
+attr(f, "hessian.symb")
 }
 
+}
+\seealso{
+\code{\link[=derivSymb]{derivSymb()}} for symbolic differentiation,
+\code{\link[=ensurePythonEnv]{ensurePythonEnv()}} for Python setup.
 }

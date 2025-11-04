@@ -62,137 +62,128 @@ sanitizeExprs <- function(exprs) {
 }
 
 
-#' Symbolic Jacobian and Hessian computation using Python's SymPy
+#' Symbolic differentiation (Jacobian and optional Hessian) via SymPy
 #'
 #' Computes symbolic first- and second-order derivatives of a system of
 #' algebraic expressions using Python's **SymPy** library via the
-#' \pkg{reticulate} interface. The Jacobian is returned as a matrix and,
-#' optionally, the Hessian as a three-dimensional array.
+#' \pkg{reticulate} interface.
 #'
-#' @param f Named character vector of algebraic expressions. Each name
-#'   corresponds to the dependent variable \eqn{f_i}, and the element content
+#' The Jacobian (first derivatives) is returned as a character matrix,
+#' and, if requested, the Hessian (second derivatives) as a list of
+#' 3D arrays — one per expression.
+#'
+#' The Python backend automatically infers all variables occurring in
+#' the expressions using SymPy's internal symbol detection.
+#'
+#' @param exprs Named character vector of algebraic expressions. Each name
+#'   corresponds to a dependent variable \eqn{f_i}, and the element content
 #'   defines the right-hand side expression in terms of other variables.
 #'   Both \code{^} and \code{**} are supported for exponentiation.
-#' @param variables Character vector of variables with respect to which the
-#'   derivatives are computed. If \code{NULL} (default), all symbols found
-#'   in \code{f} are used as variables.
-#' @param deriv2 Logical; if \code{TRUE}, second derivatives are also
-#'   computed and returned as a 3D array (the Hessian tensor). Default is
-#'   \code{FALSE}.
-#' @param verbose Logical; if \code{TRUE}, print diagnostic output during
-#'   Python environment setup and SymPy execution. Default is \code{FALSE}.
+#' @param real Logical; if \code{TRUE}, imaginary parts of symbolic expressions
+#'   are set to zero post hoc, and real parts are replaced by their argument.
+#'   This ensures real-valued simplifications even for non-analytic functions
+#'   such as \code{abs()}, \code{max()}, \code{min()}, or \code{sign()}.
+#'   Default is \code{FALSE}.
+#' @param deriv2 Logical; if \code{TRUE}, second derivatives (Hessians)
+#'   are computed and returned. Default is \code{FALSE}.
+#' @param verbose Logical; if \code{TRUE}, print diagnostic information
+#'   during backend setup and execution. Default is \code{FALSE}.
 #'
 #' @return
-#' If \code{deriv2 = FALSE}, returns a character matrix of first derivatives
-#' (the Jacobian) with dimensions \code{[length(f) × length(variables)]}.
-#' Row names correspond to the names of \code{f}, and column names to
-#' \code{variables}.
-#'
-#' If \code{deriv2 = TRUE}, returns a list with two components:
+#' A list with components:
 #' \describe{
 #'   \item{jacobian}{Character matrix \code{[n_functions × n_variables]}
-#'     containing \eqn{\partial f_i / \partial v_j}.}
-#'   \item{hessian}{Character 3D array \code{[n_functions × n_variables × n_variables]}
-#'     containing \eqn{\partial^2 f_i / (\partial v_j \partial v_k)}.}
+#'     containing first derivatives.}
+#'   \item{hessian}{List of character arrays \code{[n_variables × n_variables]},
+#'     one per function, or \code{NULL} if \code{deriv2 = FALSE}.}
 #' }
 #'
 #' @details
-#' The function automatically ensures that a Python environment with
-#' **SymPy** is available (via \code{\link{ensurePythonEnv}}). Symbolic
-#' computation is delegated to a Python backend
-#' (\code{inst/python/derivSymb.py}) that implements symbolic differentiation
-#' using SymPy.
+#' This function calls the Python module \code{derivSymb.py} (shipped with the
+#' \pkg{CppODE} package) using \pkg{reticulate}. The Python side performs
+#' symbolic differentiation using SymPy. If \code{variables = NULL},
+#' all free symbols in the expressions are automatically detected.
 #'
-#' Non-analytic expressions such as \code{abs()}, \code{min()}, \code{max()},
-#' and \code{sign()} are supported; their derivatives are expressed using
-#' symbolic constructs such as \code{Heaviside()} or \code{sign()}.
-#'
-#' Reserved Python keywords (e.g., \code{if}, \code{for}, \code{lambda}) in
-#' expressions are automatically sanitized by appending an underscore.
-#'
-#' If \code{variables} is an empty vector or \code{f} contains no symbols,
-#' an empty matrix or list is returned.
+#' Setting \code{real = TRUE} simplifies all results under the assumption
+#' that all variables are real, without invoking SymPy's \code{refine()}
+#' (which can cause recursion issues for non-analytic functions).
 #'
 #' @examples
 #' \dontrun{
-#' # Simple example with named expressions
-#' f <- c(k1 = "exp(K1)", k2 = "exp(K2)")
-#' derivSymb(f)
-#' #>      K1          K2
-#' #> k1 "exp(K1)"   "0"
-#' #> k2 "0"         "exp(K2)"
+#' library(CppODE)
 #'
-#' # Using both ^ and ** for exponentiation
-#' f <- c(y = "a*x^2 + b*x**3")
-#' derivSymb(f, variables = c("x", "a", "b"))
-#' #>   x              a       b
-#' #> y "2*a*x+3*b*x**2" "x**2" "x**3"
+#' eqs <- c(
+#'   f1 = "a*x^2 + b*y^2",
+#'   f2 = "x*y + exp(2*c) + abs(max(x,y))"
+#' )
 #'
-#' # Computing Jacobian and Hessian
-#' result <- derivSymb(f, deriv2 = TRUE)
+#' # Compute Jacobian only
+#' result <- derivSymb(eqs, real = TRUE)
 #' result$jacobian
-#' result$hessian
 #'
-#' # Automatic variable detection
-#' f <- c(z = "alpha + beta*x")
-#' derivSymb(f)  # uses variables = c("alpha", "beta", "x")
+#' # Compute Jacobian and Hessian
+#' result2 <- derivSymb(eqs, real = TRUE, deriv2 = TRUE)
+#' result2$hessian[[1]]  # Hessian of f1
 #' }
 #'
 #' @seealso
-#' \code{\link{ensurePythonEnv}} for Python environment setup,
-#' \code{\link{getSymbols}} for symbol extraction,
-#' \code{\link{sanitizeExprs}} for expression sanitization.
+#' \code{\link[reticulate]{import_from_path}} for Python imports,
+#' and \code{\link{ensurePythonEnv}} for ensuring a Python environment.
 #'
-#' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
-#' @importFrom reticulate import_from_path
 #' @export
-derivSymb <- function(f, variables = NULL, deriv2 = FALSE, verbose = FALSE) {
-  # ensure Python/SymPy
+derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, verbose = FALSE) {
+  # --- ensure environment ---
   ensurePythonEnv(envname = "CppODE", verbose = verbose)
 
-  # load backend
+  # --- import Python backend ---
   sympy_tools <- reticulate::import_from_path(
     "derivSymb",
     path = system.file("python", package = "CppODE")
   )
 
-  f <- sanitizeExprs(f)
-  if (is.null(variables)) variables <- getSymbols(f)
-  if (length(variables) == 0) {
-    if (!deriv2) return(matrix(nrow = length(f), ncol = 0))
-    return(list(
-      jacobian = matrix(nrow = length(f), ncol = 0),
-      hessian = array(dim = c(length(f), 0, 0))
-    ))
+  # --- prepare input ---
+  if (is.null(names(exprs))) {
+    names(exprs) <- paste0("f", seq_along(exprs))
+  }
+  expr_dict <- as.list(exprs)
+
+  # --- call Python backend ---
+  result <- sympy_tools$jac_hess_symb(
+    exprs = expr_dict,
+    variables = NULL,  # Python determines vars automatically
+    deriv2 = deriv2,
+    real = real
+  )
+
+  # --- format Jacobian ---
+  J <- do.call(rbind, result$jacobian)
+  colnames(J) <- result$vars
+  rownames(J) <- result$names
+
+  # --- format Hessian (if present) ---
+  H <- NULL
+  if (!is.null(result$hessian)) {
+    varnames <- result$vars
+    funcnames <- result$names
+
+    H <- lapply(seq_along(result$hessian), function(i) {
+      H_i <- result$hessian[[i]]
+      # konvertiere zu Matrix mit Zeilen- und Spaltennamen
+      Hmat <- matrix(
+        unlist(H_i),
+        nrow = length(varnames),
+        ncol = length(varnames),
+        byrow = TRUE,
+        dimnames = list(varnames, varnames)
+      )
+      Hmat
+    })
+    names(H) <- funcnames
   }
 
-  fnames <- names(f)
-  if (is.null(fnames)) fnames <- paste0("f", seq_along(f))
-
-  # Convert named vector to list (dict in Python)
-  f_list <- as.list(f)
-  names(f_list) <- fnames
-
-  result <- sympy_tools$jac_hess_symb(f_list, variables, deriv2)
-
-  n_i <- length(f)
-  n_j <- length(variables)
-
-  # --- Jacobian as matrix [inner × outer] ---
-  Jmat <- matrix(result$jacobian, nrow = n_i, ncol = n_j, byrow = TRUE,
-                 dimnames = list(fnames, variables))
-
-  if (!deriv2)
-    return(Jmat)
-
-  # --- Hessian as 3D array [inner × outer × outer] ---
-  H_array <- array(dim = c(n_i, n_j, n_j),
-                   dimnames = list(fnames, variables, variables))
-
-  for (i in seq_len(n_i)) {
-    H_array[i, , ] <- matrix(unlist(result$hessian[[i]]),
-                             nrow = n_j, ncol = n_j, byrow = TRUE)
-  }
-
-  list(jacobian = Jmat, hessian = H_array)
+  # --- return result list ---
+  list(
+    jacobian = J,
+    hessian = H
+  )
 }

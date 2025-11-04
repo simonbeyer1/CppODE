@@ -1,96 +1,177 @@
+# =============================================================================
 # derivSymb.py
-# Author: Simon Beyer
+# Symbolic differentiation utilities for CppODE
+#
+# Provides safe symbolic differentiation (Jacobian + Hessian)
+# using SymPy, with optional post-hoc enforcement of real-valued
+# simplifications. Non-analytic expressions like abs(), max(), or
+# sign() are supported without recursion errors.
+# =============================================================================
+
 import sympy as sp
 
-def jac_hess_symb(exprs, variables, deriv2=False):
-    """
-    Compute the symbolic Jacobian matrix and optionally the Hessian tensor
-    for a system of algebraic expressions using SymPy.
 
-    This function is designed for interoperability with R via reticulate.
-    It accepts either a dict of named expressions or a list of expressions
-    (strings), computes first and, optionally, second derivatives with
-    respect to a list of variables, and returns the results as nested lists
-    of strings.
+# -----------------------------------------------------------------------------
+# Helper: Enforce real-valued simplification
+# -----------------------------------------------------------------------------
+def _make_real_and_simplify(expr):
+    """
+    Aggressively strip complex parts from an expression by
+    replacing:
+      re(Z) -> Z
+      im(Z) -> 0
+      Abs(re(Z)) -> Abs(Z)
+      Derivative(re(Z), V) -> Derivative(Z, V)
+      Derivative(im(Z), V) -> 0
+
+    …und zwar iterativ, bis keine Änderung mehr passiert.
+    Danach wird simplify() aufgerufen.
+    """
+    Z = sp.Wild('Z')
+    V = sp.Wild('V')
+
+    try:
+        old = None
+        while expr != old:
+            old = expr
+            # direkte re/im
+            expr = expr.replace(sp.re(Z), Z)
+            expr = expr.replace(sp.im(Z), 0)
+
+            # Abs(re(.)) -> Abs(.)
+            expr = expr.replace(sp.Abs(sp.re(Z)), sp.Abs(Z))
+
+            # Ableitungen von re/im
+            expr = expr.replace(sp.Derivative(sp.re(Z), V), sp.Derivative(Z, V))
+            expr = expr.replace(sp.Derivative(sp.im(Z), V), 0)
+
+            # manchmal entstehen danach noch triviale Derivates: d/dx(x) -> 1 etc.
+            try:
+                expr = sp.simplify(expr.doit())
+            except Exception:
+                # wenn .doit() mal nicht evaluieren kann – okay, wir lassen es
+                pass
+
+        # abschließende Vereinfachung
+        expr = sp.simplify(expr)
+    except Exception:
+        # konservativer Fallback
+        pass
+
+    return expr
+
+# -----------------------------------------------------------------------------
+# Helper: Parse expressions and infer variables
+# -----------------------------------------------------------------------------
+def _prepare_expressions(exprs, variables=None):
+    """
+    Parse expressions from strings (or dict) and infer variable symbols.
 
     Parameters
     ----------
     exprs : dict or list of str
-        The expressions to differentiate.
-        - If a dict, keys correspond to the function names (e.g. inner parameters)
-          and values are algebraic expressions as strings.
-        - If a list, entries are expressions as strings; names will be generated
-          automatically ("f1", "f2", ...).
-        Example: {"y": "a*x**2 + b"}
+        Either a dict {name: expression_string} or a list of expression strings.
+    variables : list of str or None, optional
+        If provided, use these variable names. Otherwise, infer them
+        automatically from all expressions' free symbols.
 
-    variables : list of str
-        The variables with respect to which the derivatives are computed
-        (e.g. outer parameters).
+    Returns
+    -------
+    tuple
+        (fnames, exprs_syms, vars_syms)
+        - fnames: list of expression names
+        - exprs_syms: list of sympy expressions
+        - vars_syms: list of sympy Symbols (sorted by name)
+    """
+    # Handle dict or list input
+    if isinstance(exprs, dict):
+        fnames = list(exprs.keys())
+        expr_strs = [exprs[k] for k in fnames]
+    elif isinstance(exprs, (list, tuple)):
+        fnames = [f"f{i+1}" for i in range(len(exprs))]
+        expr_strs = list(exprs)
+    else:
+        raise TypeError("exprs must be a dict or list of expression strings")
 
-    deriv2 : bool, optional (default: False)
-        If True, compute also the Hessian tensor (second derivatives).
-        The Hessian is returned as a 3-D list with dimensions
-        [n_functions][n_variables][n_variables], where
-        H[i][j][k] = ∂²f_i / (∂var_j ∂var_k).
+    # Parse to SymPy
+    exprs_syms = [sp.sympify(e) for e in expr_strs]
+
+    # Determine variables
+    if variables is None:
+        vars_syms = sorted(
+            set().union(*(e.free_symbols for e in exprs_syms)),
+            key=lambda s: s.name
+        )
+    else:
+        vars_syms = [sp.Symbol(v) for v in variables]
+
+    return fnames, exprs_syms, vars_syms
+
+
+# -----------------------------------------------------------------------------
+# Main function: Compute Jacobian and optional Hessians
+# -----------------------------------------------------------------------------
+def jac_hess_symb(exprs, variables=None, deriv2=False, real=False):
+    """
+    Compute symbolic Jacobian and optionally Hessian for one or more expressions.
+
+    Differentiation is always performed without assumptions for stability.
+    If `real=True`, all resulting expressions are post-processed by
+    `_make_real_and_simplify()` to remove imaginary parts and simplify safely.
+
+    Parameters
+    ----------
+    exprs : dict or list of str
+        Dictionary or list of symbolic expressions.
+        Example: {"f1": "a*x**2 + b*y**2", "f2": "x*y + exp(2*c) + abs(max(x,y))"}
+    variables : list of str or None, optional
+        Variable names to differentiate with respect to. If None, automatically
+        inferred using SymPy’s free symbol detection.
+    deriv2 : bool, optional
+        If True, compute second derivatives (Hessians) for each expression. Default: False.
+    real : bool, optional
+        If True, enforce real-valued simplification post-hoc. Default: False.
 
     Returns
     -------
     dict
-        A dictionary with the following entries:
-        - "jacobian" : list of str
-              Flattened list of first derivatives in row-major order,
-              i.e. for each function f_i and variable v_j.
-        - "hessian" : list or None
-              3-D list of strings with second derivatives
-              [n_functions][n_variables][n_variables],
-              or None if `deriv2` is False.
-        - "names" : list of str
-              Names of the functions (inner parameters).
+        A dictionary with:
+          - "jacobian": list[list[str]] — Jacobian entries as strings
+          - "hessian": list[list[list[str]]] or None — Hessians (if deriv2=True)
+          - "names": list[str] — expression names
+          - "vars": list[str] — variable names (in order)
 
-    Examples
-    --------
-    >>> jac_hess_symb({"y": "a*x**2 + b"}, ["x", "a", "b"], deriv2=False)
-    {'jacobian': ['2*a*x', 'x**2', '1'], 'hessian': None, 'names': ['y']}
-
-    >>> jac_hess_symb({"y": "a*x**2 + b"}, ["x", "a", "b"], deriv2=True)["hessian"][0]
-    [['2*a', '2*x', '0'],
-     ['2*x', '0', '0'],
-     ['0', '0', '0']]
-
-    Notes
-    -----
-    - SymPy supports differentiation of non-analytic operations such as
-      `abs`, `min`, `max`, and `sign`; in these cases, the result may
-      contain Heaviside or sign functions.
-    - Returned expressions are simplified using `sympy.simplify()`.
-    - Designed to be called from R via reticulate and combined with
-      higher-level wrapper functions such as `derivSymb()`.
-
-    Author
-    ------
-    Simon Beyer, 2025
+    Example
+    -------
+    >>> exprs = {
+    ...   "f1": "a*x**2 + b*y**2",
+    ...   "f2": "x*y + exp(2*c) + abs(max(x,y))"
+    ... }
+    >>> jac_hess_symb(exprs, real=True)
+    {
+        "jacobian": [
+            ["x**2", "2*a*x", "y**2", "2*b*y", "0"],
+            ["0", "y + Heaviside(x - y)", "0", "x - Heaviside(x - y)", "2*exp(2*c)"]
+        ],
+        "hessian": None,
+        "names": ["f1", "f2"],
+        "vars": ["a", "b", "c", "x", "y"]
+    }
     """
+    fnames, exprs_syms, vars_syms = _prepare_expressions(exprs, variables)
 
-    # convert variable names to sympy Symbols
-    vars_syms = sp.symbols(variables)
-
-    # parse expressions
-    if isinstance(exprs, dict):
-        fnames = list(exprs.keys())
-        exprs_syms = [sp.sympify(exprs[k]) for k in fnames]
-    elif isinstance(exprs, (list, tuple)):
-        fnames = [f"f{i+1}" for i in range(len(exprs))]
-        exprs_syms = [sp.sympify(e) for e in exprs]
-    else:
-        raise TypeError("exprs must be a dict or list of strings")
-
-    # Jacobian
+    # --- Compute Jacobian ---
     J = sp.Matrix(exprs_syms).jacobian(vars_syms)
-    jac_list = [str(sp.simplify(J[i, j]))
-                for i in range(len(exprs_syms))
-                for j in range(len(vars_syms))]
+    jac = []
+    for i in range(len(exprs_syms)):
+        row = []
+        for j in range(len(vars_syms)):
+            d = J[i, j]
+            d = _make_real_and_simplify(d) if real else sp.simplify(d)
+            row.append(str(d))
+        jac.append(row)
 
-    # Hessian (3D list)
+    # --- Compute Hessian if requested ---
     H = None
     if deriv2:
         H = []
@@ -99,9 +180,15 @@ def jac_hess_symb(exprs, variables, deriv2=False):
             for v1 in vars_syms:
                 row = []
                 for v2 in vars_syms:
-                    d2 = sp.simplify(sp.diff(f_expr, v1, v2))
+                    d2 = sp.diff(f_expr, v1, v2)
+                    d2 = _make_real_and_simplify(d2) if real else sp.simplify(d2)
                     row.append(str(d2))
                 Hi.append(row)
             H.append(Hi)
 
-    return {"jacobian": jac_list, "hessian": H, "names": fnames}
+    return {
+        "jacobian": jac,
+        "hessian": H,
+        "names": fnames,
+        "vars": [v.name for v in vars_syms]
+    }
