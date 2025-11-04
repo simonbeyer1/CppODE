@@ -86,6 +86,9 @@ sanitizeExprs <- function(exprs) {
 #'   Default is \code{FALSE}.
 #' @param deriv2 Logical; if \code{TRUE}, second derivatives (Hessians)
 #'   are computed and returned. Default is \code{FALSE}.
+#' @param fixed Character vector of variable names that should be treated
+#'   as *fixed parameters* (no derivatives are computed with respect to them).
+#'   Default: `NULL`.
 #' @param verbose Logical; if \code{TRUE}, print diagnostic information
 #'   during backend setup and execution. Default is \code{FALSE}.
 #'
@@ -131,7 +134,7 @@ sanitizeExprs <- function(exprs) {
 #' and \code{\link{ensurePythonEnv}} for ensuring a Python environment.
 #'
 #' @export
-derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, verbose = FALSE) {
+derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, fixed = NULL, verbose = FALSE) {
   # --- ensure environment ---
   ensurePythonEnv(envname = "CppODE", verbose = verbose)
 
@@ -150,7 +153,8 @@ derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, verbose = FALSE) {
   # --- call Python backend ---
   result <- sympy_tools$jac_hess_symb(
     exprs = expr_dict,
-    variables = NULL,  # Python determines vars automatically
+    variables = NULL,
+    fixed = fixed,
     deriv2 = deriv2,
     real = real
   )
@@ -168,22 +172,17 @@ derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, verbose = FALSE) {
 
     H <- lapply(seq_along(result$hessian), function(i) {
       H_i <- result$hessian[[i]]
-      # konvertiere zu Matrix mit Zeilen- und Spaltennamen
-      Hmat <- matrix(
+      matrix(
         unlist(H_i),
         nrow = length(varnames),
         ncol = length(varnames),
         byrow = TRUE,
         dimnames = list(varnames, varnames)
       )
-      Hmat
     })
     names(H) <- funcnames
   }
 
-  # --- return result list ---
-  list(
-    jacobian = J,
-    hessian = H
-  )
+  # --- return ---
+  list(jacobian = J, hessian = H)
 }

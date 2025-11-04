@@ -98,7 +98,7 @@
 #'   }
 #'
 #' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
-#' @example inst/examples/example.R
+#' @example inst/examples/example_ODE.R
 #' @importFrom reticulate import source_python
 #' @export
 CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
@@ -804,67 +804,75 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 }
 
 
-#' Create and (optionally) compile C++ code for algebraic expressions
+#' Generate an R/C++ Hybrid Function with Symbolic Derivatives
 #'
-#' `funCpp()` transforms a named character vector of algebraic expressions
-#' into an R callable function that evaluates them either in pure R or through
-#' an automatically generated and compiled C++ backend.
+#' @description
+#' Constructs an algebraic function interface in R, optionally compiled to C++,
+#' including symbolic first- and second-order derivatives.
+#' The symbolic differentiation is performed via Python's **SymPy**
+#' (through \pkg{reticulate}), using the CppODE backend modules
+#' \code{derivSymb.py} and \code{generatefunCppCode.py}.
 #'
-#' If symbolic derivatives are requested (`deriv = TRUE` or `deriv2 = TRUE`),
-#' the function uses [`derivSymb()`] to compute analytic Jacobians and
-#' Hessians via **SymPy** (Python).  The symbolic results are attached both to
-#' the returned function and, when evaluated, as numeric derivative arrays.
+#' @details
+#' This function builds a flexible, self-contained model function from
+#' algebraic expressions. The resulting function can evaluate outputs,
+#' Jacobians, and Hessians either:
+#' \itemize{
+#'   \item in pure R (interpreted mode), or
+#'   \item in compiled C++ form (for high-performance simulation or optimization).
+#' }
 #'
-#' Complex symbolic forms that cannot be parsed by R (for example,
-#' `Piecewise()` or `DiracDelta()`) are detected automatically.  In such
-#' cases, the pure-R fallback is disabled and a clear warning is issued,
-#' advising the user to use `compile = TRUE` for C++ evaluation.
+#' Symbolic derivatives are computed automatically using \code{\link{derivSymb}}.
+#' Symbols specified in the \code{fixed} argument are treated as constant
+#' parameters — they appear in the generated function environment but are
+#' excluded from symbolic differentiation.
 #'
 #' @param x Named character vector of algebraic expressions.
-#' @param variables Character vector of variable names.
+#'   Each name corresponds to an output variable \eqn{f_i}, and each value
+#'   defines the expression in terms of the model variables and parameters.
+#' @param variables Character vector of variable names (independent symbols).
+#'   These represent the inputs that vary across observations.
 #' @param parameters Character vector of parameter names.
-#' @param compile Logical; if `TRUE`, generate, compile, and load the C++ code.
-#' @param modelname Optional base name for generated files.
-#' @param verbose Logical; print diagnostic output.
-#' @param warnings Logical; warn about missing variables or parameters
-#'   (filled with zeros).
-#' @param convenient Logical; if `TRUE` (default), return a wrapper function
-#'   that accepts variables and parameters as `...`.
-#' @param deriv Logical; if `TRUE`, compute the symbolic Jacobian.
-#' @param deriv2 Logical; if `TRUE`, compute the symbolic Hessian
-#'   (implies `deriv = TRUE`).
+#'   Parameters are constant across observations.
+#' @param fixed Character vector of symbol names that are treated as fixed
+#'   constants (excluded from differentiation).
+#' @param compile Logical; if \code{TRUE}, the generated C++ source code is
+#'   compiled immediately and linked via \code{.C()} interface.
+#' @param modelname Character string; base name for generated C++ functions
+#'   and source files. If \code{NULL}, a random name is generated.
+#' @param verbose Logical; if \code{TRUE}, print diagnostic and progress
+#'   information during generation.
+#' @param warnings Logical; if \code{TRUE}, emit warnings about missing
+#'   variables or parameters filled with zero.
+#' @param convenient Logical; if \code{TRUE}, generate a convenience wrapper
+#'   allowing calls of the form \code{f(x = ..., y = ..., a = ..., b = ...)}.
+#' @param deriv Logical; if \code{TRUE}, compute symbolic first derivatives
+#'   (Jacobian).
+#' @param deriv2 Logical; if \code{TRUE}, compute symbolic second derivatives
+#'   (Hessian). Requires \code{deriv = TRUE}.
 #'
-#' @return A callable function that evaluates the system of equations.
-#'
-#' The output of the function call is a numeric matrix
-#' `[n_obs × n_outputs]`.  If derivatives are available,
-#' attributes `"jacobian"` (`[n_out × n_sym × n_obs]`) and
-#' `"hessian"` (`[n_out × n_sym × n_sym × n_obs]`) are attached.
-#'
-#' The returned function itself also carries the symbolic representations:
-#' \itemize{
-#'   \item `attr(f, "jacobian.symb")` – character matrix of analytic first derivatives
-#'   \item `attr(f, "hessian.symb")` – character 3D array of analytic second derivatives
+#' @return
+#' A function object representing the model.
+#' Attributes include:
+#' \describe{
+#'   \item{\code{"equations"}}{Original expressions.}
+#'   \item{\code{"variables"}}{Variable symbols.}
+#'   \item{\code{"parameters"}}{Parameter symbols.}
+#'   \item{\code{"fixed"}}{Fixed symbols excluded from differentiation.}
+#'   \item{\code{"jacobian.symb"}}{Character matrix of symbolic Jacobian entries.}
+#'   \item{\code{"hessian.symb"}}{List of symbolic Hessian matrices (if requested).}
 #' }
 #'
-#' If symbolic parsing fails for R fallback (e.g. due to `Piecewise` or
-#' `DiracDelta`), a warning is issued at creation time and only compiled
-#' evaluation will be available.
+#' @example inst/examples/example_fun.R
 #'
-#' @examples
-#' \dontrun{
-#' f <- funCpp(c(y = "a*x^2 + b*y^2"), deriv2 = TRUE)
-#' f(x = 1:3, y = 2, a = 0.5, b = 1)
-#' attr(f, "jacobian.symb")
-#' attr(f, "hessian.symb")
-#' }
+#' @seealso
+#' \code{\link{derivSymb}} for symbolic differentiation backend
 #'
-#' @seealso [derivSymb()] for symbolic differentiation,
-#'   [ensurePythonEnv()] for Python setup.
 #' @export
 funCpp <- function(x,
                    variables  = getSymbols(x, exclude = parameters),
                    parameters = NULL,
+                   fixed      = NULL,
                    compile    = FALSE,
                    modelname  = NULL,
                    verbose    = FALSE,
@@ -874,7 +882,7 @@ funCpp <- function(x,
                    deriv2     = FALSE) {
 
   # ---------------------------------------------------------------------------
-  # Validation
+  # Input validation
   # ---------------------------------------------------------------------------
   if (deriv2 && !deriv) {
     warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
@@ -885,14 +893,23 @@ funCpp <- function(x,
   if (is.null(outnames))
     outnames <- paste0("f", seq_along(x))
 
-  innames  <- variables
-  all_syms <- c(variables, parameters)
+  # ---------------------------------------------------------------------------
+  # Variable and parameter setup
+  # ---------------------------------------------------------------------------
+  if (!is.null(fixed)) {
+    variables  <- setdiff(variables, fixed)
+    parameters <- union(parameters, fixed)
+  }
+
+  innames     <- variables
+  diff_params <- setdiff(parameters, fixed)
+  diff_syms   <- c(variables, diff_params)
 
   if (is.null(modelname))
     modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
 
   # ---------------------------------------------------------------------------
-  # Argument checking helper
+  # Argument checking utility
   # ---------------------------------------------------------------------------
   checkArguments <- function(M, p) {
     n_obs <- 1
@@ -907,7 +924,7 @@ funCpp <- function(x,
       }
       if (is.null(colnames(M))) {
         if (ncol(M) != length(innames))
-          stop("vars has no column names and wrong length.")
+          stop("vars has no column names and incorrect length.")
         colnames(M) <- innames
       }
       if (!all(innames %in% colnames(M))) {
@@ -938,13 +955,13 @@ funCpp <- function(x,
   }
 
   # ---------------------------------------------------------------------------
-  # Symbolic derivatives
+  # Symbolic differentiation (Jacobian / Hessian)
   # ---------------------------------------------------------------------------
   sym_jac  <- NULL
   sym_hess <- NULL
   if (deriv || deriv2) {
     if (verbose) message("Computing symbolic derivatives via derivSymb() ...")
-    ds <- derivSymb(x, deriv2 = deriv2, real = TRUE, verbose = verbose)
+    ds <- derivSymb(x, deriv2 = deriv2, real = TRUE, fixed = fixed, verbose = verbose)
     sym_jac  <- ds$jacobian
     sym_hess <- ds$hessian
   }
@@ -958,7 +975,7 @@ funCpp <- function(x,
   }
 
   # ---------------------------------------------------------------------------
-  # Parse expressions with tryCatch; detect non-R-parsable constructs
+  # Safe parsing for fallback R evaluation
   # ---------------------------------------------------------------------------
   fallback_available <- TRUE
   safe_parse <- function(expr_str) {
@@ -984,43 +1001,27 @@ funCpp <- function(x,
         parsed_jac[[i, j]] <- safe_parse(sym_jac[i, j])
   }
 
-  # ---------------------------------------------------------------------------
-  # Parse Hessian safely (support list-of-matrices OR array)
-  # ---------------------------------------------------------------------------
   parsed_hess <- NULL
   if (!is.null(sym_hess)) {
-    if (is.list(sym_hess) && !is.array(sym_hess)) {
-      # List of matrices (new format)
-      parsed_hess <- lapply(names(sym_hess), function(fname) {
-        H <- sym_hess[[fname]]
-        parsed <- matrix(vector("list", nrow(H) * ncol(H)),
-                         nrow = nrow(H), ncol = ncol(H),
-                         dimnames = dimnames(H))
-        for (i in seq_len(nrow(H))) {
-          for (j in seq_len(ncol(H))) {
-            parsed[[i, j]] <- safe_parse(H[i, j])
-          }
-        }
-        parsed
-      })
-      names(parsed_hess) <- names(sym_hess)
-    } else {
-      # 3D array (old format)
-      parsed_hess <- array(vector("list", prod(dim(sym_hess))),
-                           dim = dim(sym_hess), dimnames = dimnames(sym_hess))
-      for (i in seq_len(dim(sym_hess)[1]))
-        for (j in seq_len(dim(sym_hess)[2]))
-          for (k in seq_len(dim(sym_hess)[3]))
-            parsed_hess[[i, j, k]] <- safe_parse(sym_hess[i, j, k])
-    }
+    parsed_hess <- lapply(names(sym_hess), function(fname) {
+      H <- sym_hess[[fname]]
+      parsed <- matrix(vector("list", nrow(H) * ncol(H)),
+                       nrow = nrow(H), ncol = ncol(H),
+                       dimnames = dimnames(H))
+      for (i in seq_len(nrow(H)))
+        for (j in seq_len(ncol(H)))
+          parsed[[i, j]] <- safe_parse(H[i, j])
+      parsed
+    })
+    names(parsed_hess) <- names(sym_hess)
   }
 
   if (!fallback_available)
     warning("R fallback not available (expressions contain non-R constructs such as Piecewise or DiracDelta). ",
-            "Please use compile = TRUE.")
+            "Please compile the function.")
 
   # ---------------------------------------------------------------------------
-  # Generate C++ code via Python
+  # C++ code generation via Python
   # ---------------------------------------------------------------------------
   cppfile <- NULL
   if (!is.null(modelname)) {
@@ -1029,35 +1030,54 @@ funCpp <- function(x,
       "generatefunCppCode",
       path = system.file("python", package = "CppODE")
     )
+
     exprs_list <- as.list(x)
     names(exprs_list) <- outnames
     py_jac <- if (!is.null(sym_jac))
-      lapply(seq_len(nrow(sym_jac)), function(i) as.list(as.character(sym_jac[i,])))
+      lapply(seq_len(nrow(sym_jac)), function(i) as.list(as.character(sym_jac[i, ])))
     else NULL
     if (!is.null(py_jac)) names(py_jac) <- rownames(sym_jac)
+
     py_hess <- if (!is.null(sym_hess))
       lapply(seq_len(length(sym_hess)), function(i)
         lapply(seq_len(nrow(sym_hess[[i]])), function(j)
           as.list(as.character(sym_hess[[i]][j, ]))))
     else NULL
     if (!is.null(py_hess)) names(py_hess) <- names(sym_hess)
-    if (verbose) message("Generating C++ source code ...")
+
+    gen_variables  <- variables
+    gen_parameters <- parameters  # include fixed ones for runtime mapping
+
+    if (verbose) {
+      message("Generating C++ source code ...")
+      message("  variables        = ", paste(gen_variables, collapse = ", "))
+      message("  parameters       = ", paste(parameters, collapse = ", "))
+      message("  differentiated   = ", paste(diff_syms, collapse = ", "))
+    }
+
     pyres <- pytools$generate_fun_cpp(
       exprs      = exprs_list,
-      variables  = if (length(variables) > 0) variables else list(),
-      parameters = if (length(parameters) > 0) parameters else list(),
+      variables  = if (length(gen_variables)  > 0) gen_variables  else list(),
+      parameters = if (length(gen_parameters) > 0) gen_parameters else list(),
       jacobian   = py_jac,
       hessian    = py_hess,
       modelname  = modelname
     )
+
     cppfile <- pyres$filename
     if (verbose) message("Wrote: ", normalizePath(cppfile))
   }
 
   # ---------------------------------------------------------------------------
-  # Main evaluation function
+  # Evaluation function
   # ---------------------------------------------------------------------------
-  myRfun <- function(vars, params = numeric(0), attach.input = FALSE) {
+  myRfun <- function(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE) {
+
+    if (deriv2 && !deriv) {
+      warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
+      deriv <- TRUE
+    }
+
     checked <- checkArguments(vars, params)
     M <- checked$M; p <- checked$p; n_obs <- checked$n_obs
 
@@ -1068,13 +1088,11 @@ funCpp <- function(x,
     compiled_available <- file.exists(sofile) && is.loaded(funsym_eval)
 
     if (!compiled_available && !fallback_available)
-      stop("R fallback not available for this model. Please use compile = TRUE.")
+      stop("R fallback not available for this model. Please compile the function.")
 
-    # =========================================================================
-    # Evaluation
-    # =========================================================================
+    # --------------------------- Evaluation ---------------------------
     if (compiled_available) {
-      if (verbose) message("Using compiled function: ", funsym_eval)
+      if (verbose) message("Using compiled C++ function")
       xvec <- as.double(as.vector(M))
       yvec <- double(length(outnames) * n_obs)
       n <- as.integer(n_obs)
@@ -1084,7 +1102,7 @@ funCpp <- function(x,
       res <- matrix(out$y, nrow = n_obs, ncol = length(outnames), byrow = FALSE)
       colnames(res) <- outnames
     } else {
-      if (verbose) message("Using R fallback (compiled version not available)")
+      if (verbose) message("Using R fallback (C++ not compiled)")
       res <- matrix(NA_real_, nrow = n_obs, ncol = length(outnames))
       colnames(res) <- outnames
       for (i in seq_len(n_obs)) {
@@ -1095,13 +1113,10 @@ funCpp <- function(x,
       }
     }
 
-    # =========================================================================
-    # Jacobian
-    # =========================================================================
+    # --------------------------- Jacobian ----------------------------
     if (deriv && !is.null(sym_jac)) {
-      n_out <- length(outnames); n_sym <- length(all_syms)
+      n_out <- length(outnames); n_sym <- length(diff_syms)
       if (compiled_available && is.loaded(funsym_jac)) {
-        if (verbose) message("Using compiled Jacobian: ", funsym_jac)
         xvec <- as.double(as.vector(M))
         jac_vec <- double(n_out * n_sym * n_obs)
         n <- as.integer(n_obs)
@@ -1110,11 +1125,10 @@ funCpp <- function(x,
         out_jac <- .C(funsym_jac, x = xvec, jac = jac_vec, p = as.double(p),
                       n = n, k = k, l = l)
         jac_arr <- array(out_jac$jac, dim = c(n_out, n_sym, n_obs),
-                         dimnames = list(outnames, all_syms, NULL))
+                         dimnames = list(outnames, diff_syms, NULL))
       } else {
-        if (verbose) message("Using R fallback for Jacobian")
         jac_arr <- array(0, dim = c(n_out, n_sym, n_obs),
-                         dimnames = list(outnames, all_syms, NULL))
+                         dimnames = list(outnames, diff_syms, NULL))
         for (obs_i in seq_len(n_obs)) {
           env <- as.list(c(as.numeric(M[, obs_i]), p))
           names(env) <- c(innames, parameters)
@@ -1128,13 +1142,10 @@ funCpp <- function(x,
       attr(res, "jacobian") <- jac_arr
     }
 
-    # =========================================================================
-    # Hessian
-    # =========================================================================
+    # --------------------------- Hessian -----------------------------
     if (deriv2 && !is.null(sym_hess)) {
-      n_out <- length(outnames); n_sym <- length(all_syms)
+      n_out <- length(outnames); n_sym <- length(diff_syms)
       if (compiled_available && is.loaded(funsym_hess)) {
-        if (verbose) message("Using compiled Hessian: ", funsym_hess)
         xvec <- as.double(as.vector(M))
         hess_vec <- double(n_out * n_sym * n_sym * n_obs)
         n <- as.integer(n_obs)
@@ -1143,31 +1154,21 @@ funCpp <- function(x,
         out_hess <- .C(funsym_hess, x = xvec, hess = hess_vec, p = as.double(p),
                        n = n, k = k, l = l)
         hes_arr <- array(out_hess$hess, dim = c(n_out, n_sym, n_sym, n_obs),
-                         dimnames = list(outnames, all_syms, all_syms, NULL))
+                         dimnames = list(outnames, diff_syms, diff_syms, NULL))
       } else {
-        if (verbose) message("Using R fallback for Hessian")
         hes_arr <- array(0, dim = c(n_out, n_sym, n_sym, n_obs),
-                         dimnames = list(outnames, all_syms, all_syms, NULL))
+                         dimnames = list(outnames, diff_syms, diff_syms, NULL))
         for (obs_i in seq_len(n_obs)) {
           env <- as.list(c(as.numeric(M[, obs_i]), p))
           names(env) <- c(innames, parameters)
           for (out_i in seq_len(n_out)) {
-            if (is.list(parsed_hess) && !is.array(parsed_hess)) {
-              Hmat <- parsed_hess[[outnames[out_i]]]
-              for (sym_i in seq_len(n_sym))
-                for (sym_j in seq_len(n_sym)) {
-                  expr <- Hmat[[sym_i, sym_j]][[1]]
-                  hes_arr[out_i, sym_i, sym_j, obs_i] <-
-                    if (is.null(expr)) 0 else eval(expr, envir = env)
-                }
-            } else {
-              for (sym_i in seq_len(n_sym))
-                for (sym_j in seq_len(n_sym)) {
-                  expr <- parsed_hess[[out_i, sym_i, sym_j]][[1]]
-                  hes_arr[out_i, sym_i, sym_j, obs_i] <-
-                    if (is.null(expr)) 0 else eval(expr, envir = env)
-                }
-            }
+            Hmat <- parsed_hess[[outnames[out_i]]]
+            for (sym_i in seq_len(n_sym))
+              for (sym_j in seq_len(n_sym)) {
+                expr <- Hmat[[sym_i, sym_j]][[1]]
+                hes_arr[out_i, sym_i, sym_j, obs_i] <-
+                  if (is.null(expr)) 0 else eval(expr, envir = env)
+              }
           }
         }
       }
@@ -1184,19 +1185,20 @@ funCpp <- function(x,
   # ---------------------------------------------------------------------------
   outfn <- myRfun
   if (convenient) {
-    outfn <- function(..., attach.input = FALSE) {
+    outfn <- function(..., attach.input = FALSE, deriv = TRUE, deriv2 = FALSE) {
       arglist <- list(...)
       M <- if (!is.null(innames) && length(innames) > 0)
         do.call(cbind, arglist[innames]) else NULL
       p <- if (!is.null(parameters) && length(parameters) > 0)
         do.call(c, arglist[parameters]) else numeric(0)
-      myRfun(M, p, attach.input)
+      myRfun(M, p, attach.input = attach.input, deriv = deriv, deriv2 = deriv2)
     }
   }
 
   attr(outfn, "equations")     <- x
   attr(outfn, "variables")     <- variables
   attr(outfn, "parameters")    <- parameters
+  attr(outfn, "fixed")         <- fixed
   attr(outfn, "modelname")     <- modelname
   if (deriv && !is.null(sym_jac))
     attr(outfn, "jacobian.symb") <- sym_jac
@@ -1210,6 +1212,8 @@ funCpp <- function(x,
 
   outfn
 }
+
+
 
 
 #' @title Internal C++ model compiler

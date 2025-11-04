@@ -4,7 +4,7 @@
 \alias{derivSymb}
 \title{Symbolic differentiation (Jacobian and optional Hessian) via SymPy}
 \usage{
-derivSymb(exprs, real = FALSE, deriv2 = FALSE, verbose = FALSE)
+derivSymb(exprs, real = FALSE, deriv2 = FALSE, fixed = NULL, verbose = FALSE)
 }
 \arguments{
 \item{exprs}{Named character vector of algebraic expressions. Each name
@@ -20,6 +20,10 @@ Default is \code{FALSE}.}
 
 \item{deriv2}{Logical; if \code{TRUE}, second derivatives (Hessians)
 are computed and returned. Default is \code{FALSE}.}
+
+\item{fixed}{Character vector of variable names that should be treated
+as \emph{fixed parameters} (no derivatives are computed with respect to them).
+Default: \code{NULL}.}
 
 \item{verbose}{Logical; if \code{TRUE}, print diagnostic information
 during backend setup and execution. Default is \code{FALSE}.}

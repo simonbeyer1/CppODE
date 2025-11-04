@@ -20,30 +20,35 @@ kugelkoord_derivs$hessian[["f3"]]
 eqs <- c(f1 = "a*x^2 + b*y^2",
          f2 = "x*y + exp(2*c)")
 
-# derivs <- derivSymb(eqs, deriv2 = T, real = T)
-# derivs$jacobian
-# derivs$hessian[["f1"]]
-# derivs$hessian[["f2"]]
+derivs <- derivSymb(eqs, deriv2 = T, real = T, fixed = "c")
+derivs$jacobian
+derivs$hessian[["f1"]]
+derivs$hessian[["f2"]]
 
 
 f <- funCpp(eqs,
-             variables  = c("x", "y"),
-             parameters = c("a", "b", "c"),
-             deriv = TRUE,
-             deriv2 = TRUE,
-             compile = FALSE,
-             modelname = "obsfn",
-             verbose = FALSE)
+            variables  = NULL,
+            parameters = c("x", "y", "a", "b", "c"),
+            fixed = "c",
+            deriv = TRUE,
+            deriv2 = TRUE,
+            compile = FALSE,
+            modelname = "obsfn",
+            convenient = FALSE,
+            verbose = TRUE)
 
-# res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0)
+res <- f(NULL, c(x = 1, y = 1, a = 1, b = 2, c = 0), deriv2 = T)
 # res
-# attributes(res)$jacobian
-# attributes(f)$jacobian.symb
+attributes(res)$jacobian[ , , 1]
+attributes(res)$hessian["f1", , , 1]
+attributes(f)$jacobian.symb
+system.time({f(NULL, c(x = 1, y = 1, a = 1, b = 2, c = 0), deriv2 = T)})
 
-# CppODE:::compile(f)
+# Compile the function
+CppODE:::compile(f)
 
-res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0)
-attributes(res)$jacobian
+system.time({res <- f(NULL, c(x = 1, y = 1, a = 1, b = 2, c = 0), deriv2 = T)})
+attributes(res)$jacobian[,,1]
 attributes(f)$jacobian.symb
 
 attributes(f)$hessian.symb
@@ -51,7 +56,6 @@ attributes(f)$hessian.symb
 symbolic_jacobian <- attributes(f)$jacobian.symb
 symbolic_jacobian
 symbolic_hessian <- attributes(f)$hessian.symb
-symbolic_hessian
 symbolic_hessian$f2
 attributes(res)$hessian["f2", , , 1]
 

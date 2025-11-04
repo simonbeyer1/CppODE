@@ -2,12 +2,13 @@
 % Please edit documentation in R/CppODE.R
 \name{funCpp}
 \alias{funCpp}
-\title{Create and (optionally) compile C++ code for algebraic expressions}
+\title{Generate an R/C++ Hybrid Function with Symbolic Derivatives}
 \usage{
 funCpp(
   x,
   variables = getSymbols(x, exclude = parameters),
   parameters = NULL,
+  fixed = NULL,
   compile = FALSE,
   modelname = NULL,
   verbose = FALSE,
@@ -18,73 +19,108 @@ funCpp(
 )
 }
 \arguments{
-\item{x}{Named character vector of algebraic expressions.}
+\item{x}{Named character vector of algebraic expressions.
+Each name corresponds to an output variable \eqn{f_i}, and each value
+defines the expression in terms of the model variables and parameters.}
 
-\item{variables}{Character vector of variable names.}
+\item{variables}{Character vector of variable names (independent symbols).
+These represent the inputs that vary across observations.}
 
-\item{parameters}{Character vector of parameter names.}
+\item{parameters}{Character vector of parameter names.
+Parameters are constant across observations.}
 
-\item{compile}{Logical; if \code{TRUE}, generate, compile, and load the C++ code.}
+\item{fixed}{Character vector of symbol names that are treated as fixed
+constants (excluded from differentiation).}
 
-\item{modelname}{Optional base name for generated files.}
+\item{compile}{Logical; if \code{TRUE}, the generated C++ source code is
+compiled immediately and linked via \code{.C()} interface.}
 
-\item{verbose}{Logical; print diagnostic output.}
+\item{modelname}{Character string; base name for generated C++ functions
+and source files. If \code{NULL}, a random name is generated.}
 
-\item{warnings}{Logical; warn about missing variables or parameters
-(filled with zeros).}
+\item{verbose}{Logical; if \code{TRUE}, print diagnostic and progress
+information during generation.}
 
-\item{convenient}{Logical; if \code{TRUE} (default), return a wrapper function
-that accepts variables and parameters as \code{...}.}
+\item{warnings}{Logical; if \code{TRUE}, emit warnings about missing
+variables or parameters filled with zero.}
 
-\item{deriv}{Logical; if \code{TRUE}, compute the symbolic Jacobian.}
+\item{convenient}{Logical; if \code{TRUE}, generate a convenience wrapper
+allowing calls of the form \code{f(x = ..., y = ..., a = ..., b = ...)}.}
 
-\item{deriv2}{Logical; if \code{TRUE}, compute the symbolic Hessian
-(implies \code{deriv = TRUE}).}
+\item{deriv}{Logical; if \code{TRUE}, compute symbolic first derivatives
+(Jacobian).}
+
+\item{deriv2}{Logical; if \code{TRUE}, compute symbolic second derivatives
+(Hessian). Requires \code{deriv = TRUE}.}
 }
 \value{
-A callable function that evaluates the system of equations.
-
-The output of the function call is a numeric matrix
-\verb{[n_obs × n_outputs]}.  If derivatives are available,
-attributes \code{"jacobian"} (\verb{[n_out × n_sym × n_obs]}) and
-\code{"hessian"} (\verb{[n_out × n_sym × n_sym × n_obs]}) are attached.
-
-The returned function itself also carries the symbolic representations:
-\itemize{
-\item \code{attr(f, "jacobian.symb")} – character matrix of analytic first derivatives
-\item \code{attr(f, "hessian.symb")} – character 3D array of analytic second derivatives
+A function object representing the model.
+Attributes include:
+\describe{
+\item{\code{"equations"}}{Original expressions.}
+\item{\code{"variables"}}{Variable symbols.}
+\item{\code{"parameters"}}{Parameter symbols.}
+\item{\code{"fixed"}}{Fixed symbols excluded from differentiation.}
+\item{\code{"jacobian.symb"}}{Character matrix of symbolic Jacobian entries.}
+\item{\code{"hessian.symb"}}{List of symbolic Hessian matrices (if requested).}
 }
-
-If symbolic parsing fails for R fallback (e.g. due to \code{Piecewise} or
-\code{DiracDelta}), a warning is issued at creation time and only compiled
-evaluation will be available.
 }
 \description{
-\code{funCpp()} transforms a named character vector of algebraic expressions
-into an R callable function that evaluates them either in pure R or through
-an automatically generated and compiled C++ backend.
+Constructs an algebraic function interface in R, optionally compiled to C++,
+including symbolic first- and second-order derivatives.
+The symbolic differentiation is performed via Python's \strong{SymPy}
+(through \pkg{reticulate}), using the CppODE backend modules
+\code{derivSymb.py} and \code{generatefunCppCode.py}.
 }
 \details{
-If symbolic derivatives are requested (\code{deriv = TRUE} or \code{deriv2 = TRUE}),
-the function uses \code{\link[=derivSymb]{derivSymb()}} to compute analytic Jacobians and
-Hessians via \strong{SymPy} (Python).  The symbolic results are attached both to
-the returned function and, when evaluated, as numeric derivative arrays.
+This function builds a flexible, self-contained model function from
+algebraic expressions. The resulting function can evaluate outputs,
+Jacobians, and Hessians either:
+\itemize{
+\item in pure R (interpreted mode), or
+\item in compiled C++ form (for high-performance simulation or optimization).
+}
 
-Complex symbolic forms that cannot be parsed by R (for example,
-\code{Piecewise()} or \code{DiracDelta()}) are detected automatically.  In such
-cases, the pure-R fallback is disabled and a clear warning is issued,
-advising the user to use \code{compile = TRUE} for C++ evaluation.
+Symbolic derivatives are computed automatically using \code{\link{derivSymb}}.
+Symbols specified in the \code{fixed} argument are treated as constant
+parameters — they appear in the generated function environment but are
+excluded from symbolic differentiation.
 }
 \examples{
-\dontrun{
-f <- funCpp(c(y = "a*x^2 + b*y^2"), deriv2 = TRUE)
-f(x = 1:3, y = 2, a = 0.5, b = 1)
-attr(f, "jacobian.symb")
-attr(f, "hessian.symb")
-}
+setwd(tempdir())
+eqs <- c(f1 = "a*x^2 + b*y^2",
+         f2 = "x*y + exp(2*c)")
 
+derivs <- derivSymb(eqs, deriv2 = T, real = T)
+derivs$jacobian
+derivs$hessian[["f1"]]
+derivs$hessian[["f2"]]
+
+
+f <- funCpp(eqs,
+            variables  = c("x", "y"),
+            parameters = c("a", "b", "c"),
+            fixed = "c",
+            deriv = TRUE,
+            deriv2 = TRUE,
+            compile = FALSE,
+            modelname = "obsfn",
+            verbose = TRUE)
+
+res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0)
+head(res)
+
+CppODE:::compile(f)
+res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0, deriv2 = T)
+
+attr(res,"jacobian")[,,1]
+attr(res,"jacobian")[,,2]
+attributes(res)$hessian["f2", , , 1]
+
+attr(f,"jacobian.symb")
+attr(f,"hessian.symb")$f1
+attr(f,"hessian.symb")$f2
 }
 \seealso{
-\code{\link[=derivSymb]{derivSymb()}} for symbolic differentiation,
-\code{\link[=ensurePythonEnv]{ensurePythonEnv()}} for Python setup.
+\code{\link{derivSymb}} for symbolic differentiation backend
 }

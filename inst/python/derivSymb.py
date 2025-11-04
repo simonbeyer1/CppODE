@@ -111,7 +111,7 @@ def _prepare_expressions(exprs, variables=None):
 # -----------------------------------------------------------------------------
 # Main function: Compute Jacobian and optional Hessians
 # -----------------------------------------------------------------------------
-def jac_hess_symb(exprs, variables=None, deriv2=False, real=False):
+def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False):
     """
     Compute symbolic Jacobian and optionally Hessian for one or more expressions.
 
@@ -127,6 +127,8 @@ def jac_hess_symb(exprs, variables=None, deriv2=False, real=False):
     variables : list of str or None, optional
         Variable names to differentiate with respect to. If None, automatically
         inferred using SymPy’s free symbol detection.
+    fixed : list of str or None
+        Variable names to treat as fixed (excluded from differentiation).
     deriv2 : bool, optional
         If True, compute second derivatives (Hessians) for each expression. Default: False.
     real : bool, optional
@@ -159,6 +161,11 @@ def jac_hess_symb(exprs, variables=None, deriv2=False, real=False):
     }
     """
     fnames, exprs_syms, vars_syms = _prepare_expressions(exprs, variables)
+
+    # --- remove fixed symbols if any ---
+    if fixed is not None:
+        fixed_set = set(fixed)
+        vars_syms = [v for v in vars_syms if v.name not in fixed_set]
 
     # --- Compute Jacobian ---
     J = sp.Matrix(exprs_syms).jacobian(vars_syms)
