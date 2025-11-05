@@ -24,9 +24,9 @@ head(res)
 CppODE:::compile(f)
 res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0, deriv2 = T)
 
-attr(res,"jacobian")[,,1]
-attr(res,"jacobian")[,,2]
-attributes(res)$hessian["f2", , , 1]
+res$jacobian[,,1]
+res$jacobian[,,2]
+res$hessian["f2", , , 1]
 
 attr(f,"jacobian.symb")
 attr(f,"hessian.symb")$f1

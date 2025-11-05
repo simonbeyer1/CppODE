@@ -1090,6 +1090,8 @@ funCpp <- function(x,
     if (!compiled_available && !fallback_available)
       stop("R fallback not available for this model. Please compile the function.")
 
+    result <- list()
+
     # --------------------------- Evaluation ---------------------------
     if (compiled_available) {
       if (verbose) message("Using compiled C++ function")
@@ -1113,6 +1115,10 @@ funCpp <- function(x,
       }
     }
 
+    if (attach.input && ncol(M) > 0)
+      res <- cbind(t(M), res)
+
+    result[["out"]] <- res
     # --------------------------- Jacobian ----------------------------
     if (deriv && !is.null(sym_jac)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
@@ -1139,7 +1145,7 @@ funCpp <- function(x,
             }
         }
       }
-      attr(res, "jacobian") <- jac_arr
+      result[["jacobian"]] <- jac_arr
     }
 
     # --------------------------- Hessian -----------------------------
@@ -1172,12 +1178,10 @@ funCpp <- function(x,
           }
         }
       }
-      attr(res, "hessian") <- hes_arr
+      result[["hessian"]] <- hes_arr
     }
 
-    if (attach.input && ncol(M) > 0)
-      res <- cbind(t(M), res)
-    res
+  return(result)
   }
 
   # ---------------------------------------------------------------------------
