@@ -1,33 +1,20 @@
 setwd(tempdir())
-eqs <- c(f1 = "a*x^2 + b*y^2",
-         f2 = "x*y + exp(2*c)")
+trafo <- c(A="k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
 
-derivs <- derivSymb(eqs, deriv2 = T, real = T)
-derivs$jacobian
-derivs$hessian[["f1"]]
-derivs$hessian[["f2"]]
-
-
-f <- funCpp(eqs,
-            variables  = c("x", "y"),
-            parameters = c("a", "b", "c"),
-            fixed = "c",
+f <- funCpp(trafo,
+            variables  = NULL,
+            parameters = c("k_p","k1", "k2", "k_d"),
+            fixed = NULL,
             deriv = TRUE,
             deriv2 = TRUE,
             compile = FALSE,
             modelname = "obsfn",
+            convenient = TRUE,
             verbose = TRUE)
 
-res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0)
-head(res)
-
-CppODE:::compile(f)
-res <- f(x = 1:2, y = 1:2, a = 1, b = 2, c = 0, deriv2 = T)
-
+res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = T)
+res$out
 res$jacobian[,,1]
-res$jacobian[,,2]
-res$hessian["f2", , , 1]
-
-attr(f,"jacobian.symb")
-attr(f,"hessian.symb")$f1
-attr(f,"hessian.symb")$f2
+attributes(f)$jacobian.symb
+res$hessian["A",,,1]
+attributes(f)$hessian.symb$A

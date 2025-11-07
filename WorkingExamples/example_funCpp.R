@@ -5,6 +5,7 @@ if (!dir.exists(.workingDir)) dir.create(.workingDir)
 setwd(.workingDir)
 
 library(CppODE)
+library(dMod)
 library(dplyr)
 
 # kugelkoord <- c(f1 = "r*cos(phi)*sin(theta)",
@@ -60,13 +61,12 @@ library(dplyr)
 # symbolic_hessian$f2
 # attributes(res)$hessian["f2", , , 1]
 
-trafo <- c(k0 = "0",
-           k1 = "exp(log(10) * K1)",
-           k2 = "exp(log(10) * K2)") %>% dMod::as.eqnvec()
+# Check with analytical derivs
+trafo <- c(A="k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
 
 f <- funCpp(trafo,
             variables  = NULL,
-            parameters = c("K1", "K2"),
+            parameters = c("k_p","k1", "k2", "k_d"),
             fixed = NULL,
             deriv = TRUE,
             deriv2 = TRUE,
@@ -75,8 +75,17 @@ f <- funCpp(trafo,
             convenient = FALSE,
             verbose = TRUE)
 
-res <- f(NULL, c(K2 = -1, K1 = -2), deriv2 = T)
+res <- f(NULL, c(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4), deriv2 = T)
 res$out
-res$jacobian[,c("K1", "K2"),1]
-
+res$jacobian[,,1]
 attributes(f)$jacobian.symb
+res$hessian["A",,,1]
+attributes(f)$hessian.symb$A
+
+CppODE:::compile(f)
+res <- f(NULL, c(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4), deriv2 = T)
+res$out
+res$jacobian[,,1]
+attributes(f)$jacobian.symb
+res$hessian["A",,,1]
+attributes(f)$hessian.symb$A

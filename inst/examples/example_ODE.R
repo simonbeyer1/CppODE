@@ -21,7 +21,7 @@
   solve <- function(times, params,
                     abstol = 1e-6, reltol = 1e-6,
                     maxattemps = 5000L, maxsteps = 1e6L,
-                    roottol = 1e-6, maxroot = 1L, precision = 1e-5) {
+                    roottol = 1e-6, maxroot = 1L) {
     paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
     missing <- setdiff(paramnames, names(params))
     if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
@@ -34,8 +34,7 @@
                  as.integer(maxattemps),
                  as.integer(maxsteps),
                  as.numeric(roottol),
-                 as.integer(maxroot),
-                 as.numeric(precision))
+                 as.integer(maxroot))
 
     # Extract dimension names
     dims <- attr(f, "dim_names")

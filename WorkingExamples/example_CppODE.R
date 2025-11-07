@@ -7,18 +7,19 @@ setwd(.workingDir)
 library(CppODE)
 library(ggplot2)
 library(dplyr)
+library(tidyr)
 
 # Define ODE system
 eqns <- c(
-  A = "-k1*A^2 * time",
-  B = "k1*A^2 * time - k2*B"
+  A = "-k1*A + k2*B",
+  B = "k1*A - k2*B"
 )
 
 # Define an event
 events <- data.frame(
   var   = "A",
-  time  = "t_e",
-  value = 1,
+  time  = 0,
+  value = "dose",
   method= "add",
   root  = NA
 )
@@ -30,7 +31,7 @@ f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv2 = T)
 solve <- function(times, params,
                   abstol = 1e-6, reltol = 1e-6,
                   maxattemps = 5000L, maxsteps = 1e6L,
-                  roottol = 1e-6, maxroot = 1L, precision = 1e-5) {
+                  roottol = 1e-6, maxroot = 1L) {
   paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
   if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
@@ -43,8 +44,7 @@ solve <- function(times, params,
                as.integer(maxattemps),
                as.integer(maxsteps),
                as.numeric(roottol),
-               as.integer(maxroot),
-               as.numeric(precision))
+               as.integer(maxroot))
 
   # Extract dimension names
   dims <- attr(f, "dim_names")
@@ -57,12 +57,32 @@ solve <- function(times, params,
     dimnames(out$sens1) <- list(NULL, dims$variable, dims$sens)
   }
 
+  if (!is.null(out$sens2)) {
+    dimnames(out$sens2) <- list(NULL, dims$variable, dims$sens, dims$sens)
+  }
+
   return(out)
 }
 
 # Example run
-params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 3)
-times  <- seq(0, 10, length.out = 300)
+params <- c(A = 0, B = 0, k1 = 0.1, k2 = 0.2, dose = 1)
+times  <- seq(-10, 100, length.out = 400)
 res <- solve(times, params)
-head(res$variable)
+res$variable
 head(res$sens1[, "A", ])
+
+res$sens2[10, "A", , ]
+
+out <- as.data.frame(res$variable) %>%
+  mutate(time = res$time) %>%
+  pivot_longer(-time, names_to = "name", values_to = "value")
+
+ggplot(out, aes(x = time, y = value)) +
+  geom_line() +
+  facet_wrap(~ name, scales = "free_y") +
+  dMod::theme_dMod() +
+  labs(
+    x = "Time",
+    y = "Value"
+  )
+

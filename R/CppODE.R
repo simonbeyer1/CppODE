@@ -253,7 +253,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Solver function (externC) ---
   externC <- c(
-    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP precisionSEXP) {', modelname),
+    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP) {', modelname),
     "try {",
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
@@ -449,7 +449,6 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  double reltol = REAL(reltolSEXP)[0];",
                "  double root_tol = REAL(root_tolSEXP)[0];",
                "  int maxroot = INTEGER(maxrootSEXP)[0];",
-               "  double precision = REAL(precisionSEXP)[0];",
                "  ode_system sys(full_params);",
                "  jacobian jac(full_params);",
                "  observer obs(result_times, y);",
@@ -488,16 +487,10 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "  double* variable_out = REAL(variable_mat);",
                  "  auto IDX = [n_out](int r, int c){ return r + c * n_out; };",
                  "",
-                 "  // Rounding helper",
-                 "  auto round_to_prec = [precision](double x) {",
-                 "    if (precision > 0.0) return std::round(x / precision) * precision;",
-                 "    return x;",
-                 "  };",
-                 "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i];",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                 sprintf("      variable_out[IDX(i, s)] = round_to_prec(y[i * %d + s]);", n_variables),
+                 sprintf("      variable_out[IDX(i, s)] = y[i * %d + s];", n_variables),
                  "    }",
                  "  }",
                  "",
@@ -531,12 +524,6 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "",
                  "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
                  sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
-                 "",
-                 "  // Rounding helper",
-                 "  auto round_to_prec = [precision](double x) {",
-                 "    if (precision > 0.0) return std::round(x / precision) * precision;",
-                 "    return x;",
-                 "  };",
                  ""
     )
 
@@ -547,7 +534,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x());",
+                   "      variable_out[IDX_variable(i, s)] = xi.x();",
                    "      int v_sens = 0;",
                    sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params))
 
@@ -572,7 +559,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
       externC <- c(externC, fixed_checks,
                    "        if (!(is_fixed_init || is_fixed_param)) {",
-                   "          sens1_out[IDX_sens1(i, s, v_sens)] = round_to_prec(xi.d(v));",
+                   "          sens1_out[IDX_sens1(i, s, v_sens)] = xi.d(v);",
                    "          v_sens++;",
                    "        }",
                    "      }",
@@ -584,9 +571,9 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x());",
+                   "      variable_out[IDX_variable(i, s)] = xi.x();",
                    sprintf("      for (int v = 0; v < %d; ++v) {", n_total_sens),
-                   "        sens1_out[IDX_sens1(i, s, v)] = round_to_prec(xi.d(v));",
+                   "        sens1_out[IDX_sens1(i, s, v)] = xi.d(v);",
                    "      }",
                    "    }",
                    "  }")
@@ -634,12 +621,6 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
                  sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
                  sprintf("  auto IDX_sens2 = [n_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + %d * v2)); };", n_variables, n_total_sens),
-                 "",
-                 "  // Rounding helper",
-                 "  auto round_to_prec = [precision](double x) {",
-                 "    if (precision > 0.0) return std::round(x / precision) * precision;",
-                 "    return x;",
-                 "  };",
                  ""
     )
 
@@ -650,7 +631,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x().x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x().x());",
+                   "      variable_out[IDX_variable(i, s)] = xi.x().x();",
                    "      int v1_sens = 0;",
                    sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params))
 
@@ -675,7 +656,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
       externC <- c(externC, fixed_checks_outer,
                    "        if (!(is_fixed_init1 || is_fixed_param1)) {",
-                   "          sens1_out[IDX_sens1(i, s, v1_sens)] = round_to_prec(xi.d(v1).x());",
+                   "          sens1_out[IDX_sens1(i, s, v1_sens)] = xi.d(v1).x();",
                    "          int v2_sens = 0;",
                    sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params))
 
@@ -700,7 +681,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
       externC <- c(externC, fixed_checks_inner,
                    "            if (!(is_fixed_init2 || is_fixed_param2)) {",
-                   "              sens2_out[IDX_sens2(i, s, v1_sens, v2_sens)] = round_to_prec(xi.d(v1).d(v2));",
+                   "              sens2_out[IDX_sens2(i, s, v1_sens, v2_sens)] = xi.d(v1).d(v2);",
                    "              v2_sens++;",
                    "            }",
                    "          }",
@@ -715,11 +696,11 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    "    time_out[i] = result_times[i].x().x();",
                    sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                    sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = round_to_prec(xi.x().x());",
+                   "      variable_out[IDX_variable(i, s)] = xi.x().x();",
                    sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_total_sens),
-                   "        sens1_out[IDX_sens1(i, s, v1)] = round_to_prec(xi.d(v1).x());",
+                   "        sens1_out[IDX_sens1(i, s, v1)] = xi.d(v1).x();",
                    sprintf("        for (int v2 = 0; v2 < %d; ++v2) {", n_total_sens),
-                   "          sens2_out[IDX_sens2(i, s, v1, v2)] = round_to_prec(xi.d(v1).d(v2));",
+                   "          sens2_out[IDX_sens2(i, s, v1, v2)] = xi.d(v1).d(v2);",
                    "        }",
                    "      }",
                    "    }",
@@ -804,70 +785,66 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 }
 
 
-#' Generate an R/C++ Hybrid Function with Symbolic Derivatives
+#' Generate a fast R/C++ evaluator for algebraic models with optional Jacobian/Hessian
 #'
 #' @description
-#' Constructs an algebraic function interface in R, optionally compiled to C++,
-#' including symbolic first- and second-order derivatives.
-#' The symbolic differentiation is performed via Python's **SymPy**
-#' (through \pkg{reticulate}), using the CppODE backend modules
-#' \code{derivSymb.py} and \code{generatefunCppCode.py}.
+#' `funCpp()` takes a named vector/list of algebraic expressions and returns an evaluation
+#' function that can compute model outputs and, optionally, symbolic Jacobians and Hessians.
+#' It supports two backends:
+#' - A compiled C++ backend generated via a small Python helper (recommended for performance).
+#' - A pure-R fallback that evaluates parsed R expressions.
 #'
-#' @details
-#' This function builds a flexible, self-contained model function from
-#' algebraic expressions. The resulting function can evaluate outputs,
-#' Jacobians, and Hessians either:
-#' \itemize{
-#'   \item in pure R (interpreted mode), or
-#'   \item in compiled C++ form (for high-performance simulation or optimization).
-#' }
+#' The function automatically:
+#' - Validates and aligns variable/parameter inputs.
+#' - Computes symbolic derivatives (via `derivSymb()`), if requested.
+#' - Normalizes derivative arrays so that their row/column orders match the internal
+#'   differentiation order used throughout the evaluator.
 #'
-#' Symbolic derivatives are computed automatically using \code{\link{derivSymb}}.
-#' Symbols specified in the \code{fixed} argument are treated as constant
-#' parameters — they appear in the generated function environment but are
-#' excluded from symbolic differentiation.
+#' @param x Named character vector or list of expressions (e.g. `c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")`).
+#'           Names become output column names. If `names(x)` is `NULL`, default names `f1, f2, ...` are used.
+#' @param variables Character vector of variable names that appear in `x` and are supplied per observation.
+#'                  If `NULL` or length 0, the model is treated as purely parametric (no per-row variables).
+#' @param parameters Character vector of parameter names used by the model.
+#' @param fixed Optional character vector of symbols that should be treated as parameters at evaluation time,
+#'              even if they originally appear in `variables`. Useful for “fixing” variables temporarily.
+#' @param compile Logical; if `TRUE`, compile the generated C++ code immediately via `CppODE:::compile()`.
+#' @param modelname Optional string used as the base name for the generated C++ symbols and files.
+#'                  Defaults to a random `fXXXXXXXX` if not supplied.
+#' @param verbose Logical; if `TRUE`, prints progress messages.
+#' @param warnings Logical; if `TRUE`, prints soft warnings about missing inputs filled with zeros.
+#' @param convenient Logical; if `TRUE`, returns a wrapper so you can call the function using
+#'                   `f(var1 = ..., var2 = ..., k1 = ..., k2 = ...)` style arguments without
+#'                   manually assembling matrices/vectors.
+#' @param deriv Logical; if `TRUE`, compute and return the Jacobian. Required if `deriv2 = TRUE`.
+#' @param deriv2 Logical; if `TRUE`, compute and return the Hessian in addition to the Jacobian.
 #'
-#' @param x Named character vector of algebraic expressions.
-#'   Each name corresponds to an output variable \eqn{f_i}, and each value
-#'   defines the expression in terms of the model variables and parameters.
-#' @param variables Character vector of variable names (independent symbols).
-#'   These represent the inputs that vary across observations.
-#' @param parameters Character vector of parameter names.
-#'   Parameters are constant across observations.
-#' @param fixed Character vector of symbol names that are treated as fixed
-#'   constants (excluded from differentiation).
-#' @param compile Logical; if \code{TRUE}, the generated C++ source code is
-#'   compiled immediately and linked via \code{.C()} interface.
-#' @param modelname Character string; base name for generated C++ functions
-#'   and source files. If \code{NULL}, a random name is generated.
-#' @param verbose Logical; if \code{TRUE}, print diagnostic and progress
-#'   information during generation.
-#' @param warnings Logical; if \code{TRUE}, emit warnings about missing
-#'   variables or parameters filled with zero.
-#' @param convenient Logical; if \code{TRUE}, generate a convenience wrapper
-#'   allowing calls of the form \code{f(x = ..., y = ..., a = ..., b = ...)}.
-#' @param deriv Logical; if \code{TRUE}, compute symbolic first derivatives
-#'   (Jacobian).
-#' @param deriv2 Logical; if \code{TRUE}, compute symbolic second derivatives
-#'   (Hessian). Requires \code{deriv = TRUE}.
+#' @return A function with signature
+#'   \preformatted{
+#'   f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE)
+#'   }
+#' where:
+#' - `vars`: numeric matrix/data frame whose columns match `variables` (or `NULL` if none).
+#' - `params`: named numeric vector containing all `parameters` (missing entries are filled with 0 if allowed).
+#' - `attach.input`: if `TRUE`, input variables are prepended to the returned `out` matrix.
+#' - `deriv`, `deriv2`: request derivatives at call time (must be compatible with how `f` was created).
 #'
-#' @return
-#' A function object representing the model.
-#' Attributes include:
-#' \describe{
-#'   \item{\code{"equations"}}{Original expressions.}
-#'   \item{\code{"variables"}}{Variable symbols.}
-#'   \item{\code{"parameters"}}{Parameter symbols.}
-#'   \item{\code{"fixed"}}{Fixed symbols excluded from differentiation.}
-#'   \item{\code{"jacobian.symb"}}{Character matrix of symbolic Jacobian entries.}
-#'   \item{\code{"hessian.symb"}}{List of symbolic Hessian matrices (if requested).}
-#' }
+#' The returned list has elements:
+#' - `out`: numeric matrix of outputs with columns named as in `x`.
+#' - `jacobian`: 3D array `[n_out, n_diff_syms, n_obs]` if `deriv=TRUE`.
+#' - `hessian`: 4D array `[n_out, n_diff_syms, n_diff_syms, n_obs]` if `deriv2=TRUE`.
+#'
+#' Attributes on the returned function include:
+#' - `equations`, `variables`, `parameters`, `fixed`, `modelname`
+#' - `jacobian.symb` (if `deriv=TRUE`)
+#' - `hessian.symb`  (if `deriv2=TRUE`)
+#'
+#' @section Derivative ordering:
+#' Derivative dimensions always follow `diff_syms = c(variables, setdiff(parameters, fixed))`.
+#' Internally, the symbolic Jacobian/Hessian matrices returned by `derivSymb()` are reindexed
+#' to this order to ensure compiled and R-fallback paths produce consistent layouts.
 #'
 #' @example inst/examples/example_fun.R
-#'
-#' @seealso
-#' \code{\link{derivSymb}} for symbolic differentiation backend
-#'
+#' @importFrom reticulate import source_python
 #' @export
 funCpp <- function(x,
                    variables  = getSymbols(x, exclude = parameters),
@@ -881,21 +858,18 @@ funCpp <- function(x,
                    deriv      = TRUE,
                    deriv2     = FALSE) {
 
-  # ---------------------------------------------------------------------------
-  # Input validation
-  # ---------------------------------------------------------------------------
+  # Early sanity: Hessian requires Jacobian
   if (deriv2 && !deriv) {
     warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
     deriv <- TRUE
   }
 
+  # Output names default to f1, f2, ...
   outnames <- names(x)
   if (is.null(outnames))
     outnames <- paste0("f", seq_along(x))
 
-  # ---------------------------------------------------------------------------
-  # Variable and parameter setup
-  # ---------------------------------------------------------------------------
+  # Reassign variables/parameters if some symbols are declared fixed
   if (!is.null(fixed)) {
     variables  <- setdiff(variables, fixed)
     parameters <- union(parameters, fixed)
@@ -905,14 +879,15 @@ funCpp <- function(x,
   diff_params <- setdiff(parameters, fixed)
   diff_syms   <- c(variables, diff_params)
 
+  # Default model name if none provided
   if (is.null(modelname))
     modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
 
-  # ---------------------------------------------------------------------------
-  # Argument checking utility
-  # ---------------------------------------------------------------------------
+  # Small helper to validate and align inputs at call time
   checkArguments <- function(M, p) {
     n_obs <- 1
+
+    # Variables: normalize to a k-by-n matrix with rows = variables, cols = observations
     if (is.null(innames) || length(innames) == 0) {
       M <- matrix(0, nrow = 1, ncol = 0)
       n_obs <- 1
@@ -937,7 +912,9 @@ funCpp <- function(x,
       M <- M[, innames, drop = FALSE]
       n_obs <- nrow(M)
     }
-    M <- t(M)
+    M <- t(M)  # shape: vars x n_obs
+
+    # Parameters: normalize to a named numeric vector in the given 'parameters' order
     if (is.null(parameters) || length(parameters) == 0) {
       p <- numeric(0)
     } else {
@@ -954,9 +931,7 @@ funCpp <- function(x,
     list(M = M, p = p, n_obs = n_obs)
   }
 
-  # ---------------------------------------------------------------------------
-  # Symbolic differentiation (Jacobian / Hessian)
-  # ---------------------------------------------------------------------------
+  # Symbolic derivatives (Jacobian/Hessian)
   sym_jac  <- NULL
   sym_hess <- NULL
   if (deriv || deriv2) {
@@ -966,17 +941,32 @@ funCpp <- function(x,
     sym_hess <- ds$hessian
   }
 
-  # ---------------------------------------------------------------------------
-  # Replace Heaviside for R compatibility
-  # ---------------------------------------------------------------------------
+  # Ensure the symbolic derivatives follow the exact internal differentiation order.
+  # This is critical to avoid misaligned Jacobians/Hessians between backends.
+  if (!is.null(sym_jac)) {
+    # Rows correspond to outputs; columns must be ordered like diff_syms
+    if (is.null(rownames(sym_jac))) rownames(sym_jac) <- outnames
+    if (!identical(colnames(sym_jac), diff_syms)) {
+      sym_jac <- sym_jac[, diff_syms, drop = FALSE]
+    }
+  }
+  if (!is.null(sym_hess)) {
+    for (nm in names(sym_hess)) {
+      H <- sym_hess[[nm]]
+      # Reindex both dimensions to diff_syms if needed
+      if (!identical(rownames(H), diff_syms) || !identical(colnames(H), diff_syms)) {
+        sym_hess[[nm]] <- H[diff_syms, diff_syms, drop = FALSE]
+      }
+    }
+  }
+
+  # Replace Heaviside(...) with an R-compatible ifelse(...) for the fallback
   replaceHeaviside <- function(expr_str) {
     if (is.null(expr_str) || expr_str == "0") return(expr_str)
     gsub("Heaviside\\(([^)]+)\\)", "ifelse(\\1 >= 0, 1, 0)", expr_str)
   }
 
-  # ---------------------------------------------------------------------------
-  # Safe parsing for fallback R evaluation
-  # ---------------------------------------------------------------------------
+  # Parse expressions safely for the R fallback
   fallback_available <- TRUE
   safe_parse <- function(expr_str) {
     if (is.null(expr_str) || expr_str == "0") return(list(expression(0)))
@@ -989,8 +979,10 @@ funCpp <- function(x,
     if (is.null(out)) list(NULL) else out
   }
 
+  # Pre-parse model outputs
   parsed_exprs <- lapply(x, function(e) safe_parse(e)[[1]])
 
+  # Pre-parse Jacobian entries
   parsed_jac <- NULL
   if (!is.null(sym_jac)) {
     parsed_jac <- matrix(vector("list", nrow(sym_jac) * ncol(sym_jac)),
@@ -1001,6 +993,7 @@ funCpp <- function(x,
         parsed_jac[[i, j]] <- safe_parse(sym_jac[i, j])
   }
 
+  # Pre-parse Hessians, stored per-output
   parsed_hess <- NULL
   if (!is.null(sym_hess)) {
     parsed_hess <- lapply(names(sym_hess), function(fname) {
@@ -1020,9 +1013,7 @@ funCpp <- function(x,
     warning("R fallback not available (expressions contain non-R constructs such as Piecewise or DiracDelta). ",
             "Please compile the function.")
 
-  # ---------------------------------------------------------------------------
-  # C++ code generation via Python
-  # ---------------------------------------------------------------------------
+  # C++ code generation via Python helper (if a model name is given)
   cppfile <- NULL
   if (!is.null(modelname)) {
     ensurePythonEnv(envname = "CppODE", verbose = verbose)
@@ -1033,11 +1024,14 @@ funCpp <- function(x,
 
     exprs_list <- as.list(x)
     names(exprs_list) <- outnames
+
+    # The Jacobian is already column-ordered as diff_syms
     py_jac <- if (!is.null(sym_jac))
       lapply(seq_len(nrow(sym_jac)), function(i) as.list(as.character(sym_jac[i, ])))
     else NULL
     if (!is.null(py_jac)) names(py_jac) <- rownames(sym_jac)
 
+    # Each Hessian matrix has both dims ordered as diff_syms
     py_hess <- if (!is.null(sym_hess))
       lapply(seq_len(length(sym_hess)), function(i)
         lapply(seq_len(nrow(sym_hess[[i]])), function(j)
@@ -1068,9 +1062,7 @@ funCpp <- function(x,
     if (verbose) message("Wrote: ", normalizePath(cppfile))
   }
 
-  # ---------------------------------------------------------------------------
-  # Evaluation function
-  # ---------------------------------------------------------------------------
+  # Core evaluator used by both the convenient wrapper and the raw function
   myRfun <- function(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE) {
 
     if (deriv2 && !deriv) {
@@ -1085,6 +1077,7 @@ funCpp <- function(x,
     funsym_jac  <- paste0(modelname, "_jacobian")
     funsym_hess <- paste0(modelname, "_hessian")
     sofile <- paste0(modelname, .Platform$dynlib.ext)
+
     compiled_available <- file.exists(sofile) && is.loaded(funsym_eval)
 
     if (!compiled_available && !fallback_available)
@@ -1092,7 +1085,7 @@ funCpp <- function(x,
 
     result <- list()
 
-    # --------------------------- Evaluation ---------------------------
+    # Output evaluation
     if (compiled_available) {
       if (verbose) message("Using compiled C++ function")
       xvec <- as.double(as.vector(M))
@@ -1119,7 +1112,8 @@ funCpp <- function(x,
       res <- cbind(t(M), res)
 
     result[["out"]] <- res
-    # --------------------------- Jacobian ----------------------------
+
+    # Jacobian evaluation
     if (deriv && !is.null(sym_jac)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
       if (compiled_available && is.loaded(funsym_jac)) {
@@ -1140,7 +1134,8 @@ funCpp <- function(x,
           names(env) <- c(innames, parameters)
           for (out_i in seq_len(n_out))
             for (sym_i in seq_len(n_sym)) {
-              expr <- parsed_jac[[out_i, sym_i]][[1]]
+              # Name-robust access; parsed_jac has dimnames aligned to diff_syms
+              expr <- parsed_jac[[outnames[out_i], diff_syms[sym_i]]][[1]]
               jac_arr[out_i, sym_i, obs_i] <- if (is.null(expr)) 0 else eval(expr, envir = env)
             }
         }
@@ -1148,7 +1143,7 @@ funCpp <- function(x,
       result[["jacobian"]] <- jac_arr
     }
 
-    # --------------------------- Hessian -----------------------------
+    # Hessian evaluation
     if (deriv2 && !is.null(sym_hess)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
       if (compiled_available && is.loaded(funsym_hess)) {
@@ -1168,10 +1163,11 @@ funCpp <- function(x,
           env <- as.list(c(as.numeric(M[, obs_i]), p))
           names(env) <- c(innames, parameters)
           for (out_i in seq_len(n_out)) {
-            Hmat <- parsed_hess[[outnames[out_i]]]
+            Hmat <- parsed_hess[[outnames[out_i]]]  # already dimnamed with diff_syms
             for (sym_i in seq_len(n_sym))
               for (sym_j in seq_len(n_sym)) {
-                expr <- Hmat[[sym_i, sym_j]][[1]]
+                # Name-robust access to guarantee correct reindexing
+                expr <- Hmat[[ diff_syms[sym_i], diff_syms[sym_j] ]][[1]]
                 hes_arr[out_i, sym_i, sym_j, obs_i] <-
                   if (is.null(expr)) 0 else eval(expr, envir = env)
               }
@@ -1181,12 +1177,10 @@ funCpp <- function(x,
       result[["hessian"]] <- hes_arr
     }
 
-  return(result)
+    return(result)
   }
 
-  # ---------------------------------------------------------------------------
-  # Convenience wrapper and attributes
-  # ---------------------------------------------------------------------------
+  # Optional convenient wrapper that lets users pass ... in any order by name
   outfn <- myRfun
   if (convenient) {
     outfn <- function(..., attach.input = FALSE, deriv = TRUE, deriv2 = FALSE) {
@@ -1199,6 +1193,7 @@ funCpp <- function(x,
     }
   }
 
+  # Attach informative attributes for downstream inspection
   attr(outfn, "equations")     <- x
   attr(outfn, "variables")     <- variables
   attr(outfn, "parameters")    <- parameters
@@ -1209,6 +1204,7 @@ funCpp <- function(x,
   if (deriv2 && !is.null(sym_hess))
     attr(outfn, "hessian.symb")  <- sym_hess
 
+  # Optional immediate compilation
   if (compile) {
     if (verbose) message("Compiling generated C++ code ...")
     compile(outfn, verbose = verbose)
@@ -1216,8 +1212,6 @@ funCpp <- function(x,
 
   outfn
 }
-
-
 
 
 #' @title Internal C++ model compiler
