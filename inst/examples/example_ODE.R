@@ -56,4 +56,5 @@
   res <- solve(times, params)
   head(res$variable)
   head(res$sens1[, "A", ])
+  res$sens2[10, "A", , ]
 }

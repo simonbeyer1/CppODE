@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{CppODE}
 \alias{CppODE}
-\title{Generate C++ code for ODE models with events and optional sensitivities}
+\title{Generate C++ code for ODE models with events and parameter sensitivities}
 \usage{
 CppODE(
   rhs,
@@ -18,120 +18,121 @@ CppODE(
 )
 }
 \arguments{
-\item{rhs}{Named character vector of ODE right-hand sides.
-Names must correspond to variables.}
+\item{rhs}{Named character vector of ODE right-hand sides; names must correspond to variables.}
 
-\item{events}{Optional \code{data.frame} describing events (see Events section below).
-Default: \code{NULL} (no events).}
+\item{events}{Optional \code{data.frame} describing events (see \strong{Events}). Default: \code{NULL}.}
 
-\item{fixed}{Character vector of fixed initial conditions or parameters (excluded from
-sensitivity system). Only relevant if \code{deriv = TRUE}.}
+\item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is
-included among integration times. Default: \code{TRUE}.}
+\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
 
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
-\item{modelname}{Optional base name for the generated C++ file. If \code{NULL},
-a random identifier is used.}
+\item{modelname}{Optional base name for the generated C++ file. If \code{NULL}, a random identifier is used.}
 
-\item{deriv}{Logical. If \code{TRUE}, compute first-order sensitivities using AD.
-If \code{FALSE}, use plain doubles.}
+\item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
 
-\item{deriv2}{Logical. If \code{TRUE}, compute second-order sensitivities using
-nested AD. Requires \code{deriv = TRUE}. Default: \code{FALSE}.}
+\item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers; requires \code{deriv = TRUE}.}
 
-\item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (interpolation with hermite polynomials).}
+\item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
-The model name (character). The object has attributes:
-\itemize{
-\item \code{equations}: ODE definitions
-\item \code{variables}: Variable names
-\item \code{parameters}: Parameter names
-\item \code{events}: Events \code{data.frame} (if any)
-\item \code{solver}: Solver description
-\item \code{fixed}: Fixed initial conditions/parameters
-\item \code{jacobian}: Symbolic Jacobian expressions
-\item \code{deriv}: Logical indicating first-order derivatives
-\item \code{deriv2}: Logical indicating second-order derivatives
-\item \code{dim_names}: List with dimension names (time, variable, sens)
+The compiled model name (character).
+The returned object carries a set of attributes that describe the compiled solver
+and its symbolic structure:\tabular{lll}{
+   Attribute \tab Type \tab Description \cr
+   \code{equations} \tab \code{character} \tab ODE right-hand side definitions \cr
+   \code{variables} \tab \code{character} \tab Names of the dynamic state variables \cr
+   \code{parameters} \tab \code{character} \tab Names of model parameters \cr
+   \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
+   \code{solver} \tab \code{list} \tab Description of the numerical solver configuration \cr
+   \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
+   \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
+   \code{deriv} \tab \code{logical} \tab Indicates whether first-order sensitivities (dual numbers) were used \cr
+   \code{deriv2} \tab \code{logical} \tab Indicates whether nested dual numbers were used for second-order sensitivities \cr
+   \code{dim_names} \tab \code{list} \tab Dimension names for arrays: \code{time}, \code{variable}, and \code{sens} \cr
 }
 }
 \description{
-This function generates and compiles a C++ solver for systems of ODEs using
-Boost.Odeint's stiff Rosenbrock 4(3) method with dense output and error control.
-The solver can handle fixed-time and root-triggered events, and (optionally)
-compute parameter sensitivities via forward-mode automatic
-differentiation (AD) using FADBAD++.
+This function generates and compiles a C++ solver for systems of ordinary differential
+equations (ODEs) of the form
+
+\deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
+
+using Boost.Odeint’s stiff Rosenbrock 4(3) method with dense output and error control.
+The solver supports \strong{time-based} and \strong{root-triggered events} and can, optionally,
+compute \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
+\strong{dual number} types provided by
+\href{https://github.com/coin-or/FADBAD++}{\strong{FADBAD++}}.
+\subsection{Sensitivity Computation}{
+
+If \code{deriv = TRUE}, all state variables and parameters are represented as
+\href{https://en.wikipedia.org/wiki/Dual_number}{\strong{dual numbers}} of type \verb{F<double>}.
+The ODE right-hand side \eqn{f} is evaluated on these dual numbers; due to the chain rule
+encoded in dual number arithmetic, the \strong{derivative components propagate automatically}
+through every operation in \eqn{f}. Consequently, the numerical integration solves
+\emph{exactly the same} initial value problem, only over the dual number algebra
+\eqn{\mathbb{D}}, yielding both the state trajectories and their first derivatives
+in a single pass.
+
+If \code{deriv2 = TRUE} (which implies \code{deriv = TRUE}), nested dual numbers
+\verb{F<F<double>>} are used. This allows the evaluation of \eqn{f} over the
+second-order dual algebra \eqn{\mathbb{D}^2}, providing \strong{second-order
+sensitivites} directly through nested automatic differentiation.
+
+Fixed initial conditions or parameters (listed in \code{fixed}) are created as plain scalars
+and therefore do \strong{not} contribute sensitivity components.
+
+If both \code{deriv = FALSE} and \code{deriv2 = FALSE}, plain doubles are used and no sensitivities
+are produced.
 }
-\section{Events}{
 
-Events are specified in a \code{data.frame} with columns:
-\describe{
-\item{var}{Name of the affected variable.}
-\item{value}{Numeric value to apply at the event.}
-\item{method}{How the value is applied: "replace", "add", or "multiply".}
-\item{time}{(optional) Time point at which the event occurs.}
-\item{root}{(optional) Root expression in terms of variables and \code{time}.}
-}
-Each event must define either \code{time} or \code{root}. Events with roots
-are triggered whenever the expression crosses zero.
+\subsection{Event handling}{
+
+Events are specified in a \code{data.frame} with the following columns:\tabular{ll}{
+   Column \tab Description \cr
+   \code{var} \tab Name of the affected variable \cr
+   \code{value} \tab Numeric value to apply at the event \cr
+   \code{method} \tab How the value is applied: \code{"replace"}, \code{"add"}, or \code{"multiply"} \cr
+   \code{time} \tab \emph{(optional)} Time point at which the event occurs \cr
+   \code{root} \tab \emph{(optional)} Root expression in terms of variables and \code{time} \cr
 }
 
-\section{Sensitivities}{
 
-If \code{deriv = TRUE}, the solver augments the system with automatic
-differentiation and returns forward sensitivities with respect to initial
-conditions and parameters. If \code{deriv2 = TRUE} (requires \code{deriv = TRUE}),
-second-order sensitivities are also computed using nested AD types.
-Fixed initial conditions or parameters (specified in \code{fixed}) are excluded from
-the sensitivity system.
-
-If \code{deriv = FALSE}, the solver uses plain doubles (faster) and does not
-compute sensitivities.
+Each event must define either \code{time} or \code{root}.
+Root-triggered events fire when the \code{root} expression crosses zero.
 }
 
-\section{Output}{
+\subsection{Output}{
 
-The generated solver function (accessible via \code{.Call}) returns a named list
-with the following structure:
-\describe{
-\item{deriv = FALSE}{
-Returns \code{list(time, variable)} where:
+The generated solver function (accessible via \code{.Call}) returns a named list:
 \itemize{
-\item \code{time}: Numeric vector of length n_out
-\item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
-}
-}
-\item{deriv = TRUE, deriv2 = FALSE}{
-Returns \code{list(time, variable, sens1)} where:
+\item \code{deriv = FALSE}, \code{deriv2 = FALSE}
+Returns \code{list(time, variable)}
 \itemize{
-\item \code{time}: Numeric vector of length n_out
-\item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
-\item \code{sens1}: Numeric array with dimensions (n_out, n_variables, n_sens)
-containing first-order sensitivities
+\item \code{time}: numeric vector of length \eqn{n_t}
+\item \code{variable}: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_t,n_x)}, containing \eqn{x_j(t_i)}
 }
-}
-\item{deriv = TRUE, deriv2 = TRUE}{
-Returns \code{list(time, variable, sens1, sens2)} where:
+\item \code{deriv = TRUE}, \code{deriv2 = FALSE}
+Returns \code{list(time, variable, sens1)}
 \itemize{
-\item \code{time}: Numeric vector of length n_out
-\item \code{variable}: Numeric matrix with dimensions (n_out, n_variables)
-\item \code{sens1}: Numeric array with dimensions (n_out, n_variables, n_sens)
-containing first-order sensitivities
-\item \code{sens2}: Numeric array with dimensions (n_out, n_variables, n_sens, n_sens)
-containing second-order sensitivities (Hessian matrix)
+\item \code{sens1}: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_t,n_x,n_s)}, containing
+\eqn{\partial x_j(t_i)/\partial p_k}
 }
+\item \code{deriv = TRUE}, \code{deriv2 = TRUE}
+Returns \code{list(time, variable, sens1, sens2)}
+\itemize{
+\item \code{sens2}: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_t,n_x,n_s,n_s)},
+containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
 }
-}
-Here \code{n_out} is the number of output time points, \code{n_variables} is the number
-of variables, and \code{n_sens} is the number of sensitivity parameters
-(non-fixed initial conditions and parameters).
 }
 
+Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
+variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
+}
+}
 \examples{
 \dontrun{
   # Define ODE system
@@ -191,8 +192,9 @@ of variables, and \code{n_sens} is the number of sensitivity parameters
   res <- solve(times, params)
   head(res$variable)
   head(res$sens1[, "A", ])
+  res$sens2[10, "A", , ]
 }
 }
 \author{
-Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
+Simon Beyer, \href{mailto:simon.beyer@fdm.uni-freiburg.de}{simon.beyer@fdm.uni-freiburg.de}
 }
