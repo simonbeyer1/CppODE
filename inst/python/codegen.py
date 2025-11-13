@@ -1,6 +1,10 @@
 """
 ODE and Jacobian C++ code generator for CppODE
-Handles symbolic differentiation and C++ code generation in one go
+==============================================
+Handles symbolic differentiation for the jacobian and C++ code generation
+
+Author: Simon Beyer
+Updated: 2025-11-04
 """
 
 import sympy as sp
@@ -12,6 +16,158 @@ from sympy.parsing.sympy_parser import (
 )
 import re
 
+
+# =====================================================================
+# Safe parsing configuration
+# =====================================================================
+
+def _get_safe_parse_dict():
+    """
+    Create safe local_dict for parsing that avoids SymPy singleton conflicts.
+    """
+    safe_local_dict = {
+        # Override problematic SymPy singletons - treat as regular symbols
+        'S': sp.Symbol('S'),
+        'I': sp.Symbol('I'),
+        'N': sp.Symbol('N'),
+        'O': sp.Symbol('O'),
+        'Q': sp.Symbol('Q'),
+        'C': sp.Symbol('C'),
+        
+        # Exponential and logarithmic functions
+        'exp': sp.exp,
+        'exp10': lambda x: sp.Pow(10, x),
+        'exp2': lambda x: sp.Pow(2, x),
+        'log': sp.log,
+        'ln': sp.log,
+        'log10': lambda x: sp.log(x, 10),
+        'log2': lambda x: sp.log(x, 2),
+        
+        # Trigonometric functions
+        'sin': sp.sin,
+        'cos': sp.cos,
+        'tan': sp.tan,
+        'cot': sp.cot,
+        'sec': sp.sec,
+        'csc': sp.csc,
+        
+        # Inverse trigonometric functions
+        'asin': sp.asin,
+        'acos': sp.acos,
+        'atan': sp.atan,
+        'acot': sp.acot,
+        'asec': sp.asec,
+        'acsc': sp.acsc,
+        'atan2': sp.atan2,
+        
+        # Hyperbolic functions
+        'sinh': sp.sinh,
+        'cosh': sp.cosh,
+        'tanh': sp.tanh,
+        'coth': sp.coth,
+        'sech': sp.sech,
+        'csch': sp.csch,
+        
+        # Inverse hyperbolic functions
+        'asinh': sp.asinh,
+        'acosh': sp.acosh,
+        'atanh': sp.atanh,
+        'acoth': sp.acoth,
+        'asech': sp.asech,
+        'acsch': sp.acsch,
+        
+        # Power and root functions
+        'sqrt': sp.sqrt,
+        'cbrt': sp.cbrt,
+        'root': sp.root,
+        'pow': sp.Pow,
+        
+        # Absolute value and sign
+        'abs': sp.Abs,
+        'sign': sp.sign,
+        
+        # Rounding functions
+        'floor': sp.floor,
+        'ceiling': sp.ceiling,
+        
+        # Min/Max
+        'min': sp.Min,
+        'max': sp.Max,
+        
+        # Factorial and gamma functions
+        'factorial': sp.factorial,
+        'gamma': sp.gamma,
+        'loggamma': sp.loggamma,
+        'digamma': sp.digamma,
+        
+        # Error functions
+        'erf': sp.erf,
+        'erfc': sp.erfc,
+        
+        # Bessel functions
+        'besselj': sp.besselj,
+        'bessely': sp.bessely,
+        'besseli': sp.besseli,
+        'besselk': sp.besselk,
+        
+        # Special functions
+        'Heaviside': sp.Heaviside,
+        'DiracDelta': sp.DiracDelta,
+        
+        # Piecewise
+        'Piecewise': sp.Piecewise,
+        
+        # Constants
+        'pi': sp.pi,
+        'E': sp.E,
+        'oo': sp.oo,
+    }
+    
+    return safe_local_dict
+
+
+def _safe_sympify(expr_str, local_symbols=None):
+    """
+    Safely parse a string expression to SymPy, avoiding singleton conflicts.
+    
+    Parameters
+    ----------
+    expr_str : str
+        Expression string to parse
+    local_symbols : dict, optional
+        Additional local symbols (variables/parameters/time)
+    
+    Returns
+    -------
+    sp.Expr
+        Parsed SymPy expression
+    """
+    expr_str = str(expr_str).strip()
+    if expr_str == "0":
+        return sp.Integer(0)
+    
+    safe_local = _get_safe_parse_dict()
+    
+    # Merge with user-provided symbols
+    if local_symbols:
+        safe_local = {**safe_local, **local_symbols}
+    
+    transformations = standard_transformations + (
+        convert_xor,
+        implicit_multiplication_application,
+    )
+    
+    return parse_expr(
+        expr_str,
+        local_dict=safe_local,
+        transformations=transformations,
+        evaluate=True,
+    )
+
+
+# =====================================================================
+# Main ODE generation
+# =====================================================================
 
 def generate_ode_cpp(rhs_dict, params_list, num_type="AD", 
                      fixed_states=None, fixed_params=None):
@@ -58,26 +214,16 @@ def generate_ode_cpp(rhs_dict, params_list, num_type="AD",
     t = sp.Symbol('time', real=True)
     
     # Build local dictionary for parsing
-    local_dict = {}
-    local_dict.update(states_syms)
-    local_dict.update(params_syms)
-    local_dict['time'] = t
+    local_symbols = {}
+    local_symbols.update(states_syms)
+    local_symbols.update(params_syms)
+    local_symbols['time'] = t
     
-    transformations = standard_transformations + (
-        convert_xor, 
-        implicit_multiplication_application
-    )
-    
-    # --- Parse all ODE expressions ---
+    # --- Parse all ODE expressions with safe parsing ---
     exprs = []
     for ode_str in odes_list:
         try:
-            expr = parse_expr(
-                ode_str, 
-                local_dict=local_dict, 
-                transformations=transformations,
-                evaluate=True
-            )
+            expr = _safe_sympify(ode_str, local_symbols)
             exprs.append(expr)
         except Exception as e:
             raise ValueError(f"Failed to parse ODE expression '{ode_str}': {e}")
@@ -139,6 +285,10 @@ def generate_ode_cpp(rhs_dict, params_list, num_type="AD",
         "params": params_list
     }
 
+
+# =====================================================================
+# Helper functions
+# =====================================================================
 
 def _to_cpp(expr, states, params, n_states):
     """
@@ -212,10 +362,25 @@ def _is_valid_value(value):
     return str_val not in ['none', 'nan', 'na', '']
 
 
-def _parse_value_or_expression(value, local_dict, transformations, states_list, params_list, n_states):
+def _parse_value_or_expression(value, local_symbols, states_list, params_list, n_states):
     """
     Parse a value that can be either numeric or an expression.
     Always returns a string of C++ code or None.
+    
+    Parameters
+    ----------
+    value : str or numeric
+        Value to parse
+    local_symbols : dict
+        Dictionary of SymPy symbols for parsing
+    states_list : list of str
+    params_list : list of str
+    n_states : int
+    
+    Returns
+    -------
+    str or None
+        C++ code string or None if invalid
     """
     if not _is_valid_value(value):
         return None
@@ -229,15 +394,18 @@ def _parse_value_or_expression(value, local_dict, transformations, states_list, 
     except (ValueError, TypeError):
         pass
     
-    # It's an expression - parse it
+    # It's an expression - parse it with safe parsing
     try:
-        value_expr = parse_expr(value_str, local_dict=local_dict, 
-                               transformations=transformations)
+        value_expr = _safe_sympify(value_str, local_symbols)
         value_code = _to_cpp(value_expr, states_list, params_list, n_states)
         return str(value_code)
     except Exception as e:
         raise ValueError(f"Failed to parse expression '{value_str}': {e}")
 
+
+# =====================================================================
+# Event code generation
+# =====================================================================
 
 def generate_event_code(events_df, states_list, params_list, n_states, num_type="AD"):
     """
@@ -273,15 +441,10 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
     params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
     t = sp.Symbol('time', real=True)
     
-    local_dict = {}
-    local_dict.update(states_syms)
-    local_dict.update(params_syms)
-    local_dict['time'] = t
-    
-    transformations = standard_transformations + (
-        convert_xor, 
-        implicit_multiplication_application
-    )
+    local_symbols = {}
+    local_symbols.update(states_syms)
+    local_symbols.update(params_syms)
+    local_symbols['time'] = t
     
     event_lines = []
     
@@ -310,7 +473,7 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
         # Parse value expression
         value_raw = _get_list_value(events_dict, 'value', i, n_events)
         value_code = _parse_value_or_expression(
-            value_raw, local_dict, transformations, states_list, params_list, n_states
+            value_raw, local_symbols, states_list, params_list, n_states
         )
         
         if value_code is None:
@@ -331,13 +494,13 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
         # Parse time if present
         time_raw = _get_list_value(events_dict, 'time', i, n_events)
         time_code = _parse_value_or_expression(
-            time_raw, local_dict, transformations, states_list, params_list, n_states
+            time_raw, local_symbols, states_list, params_list, n_states
         )
         
         # Parse root if present
         root_raw = _get_list_value(events_dict, 'root', i, n_events)
         root_code = _parse_value_or_expression(
-            root_raw, local_dict, transformations, states_list, params_list, n_states
+            root_raw, local_symbols, states_list, params_list, n_states
         )
         
         # Generate C++ code based on event type

@@ -61,11 +61,12 @@ equations (ODEs) of the form
 
 \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 
-using Boost.Odeint’s stiff Rosenbrock 4(3) method with dense output and error control.
+using \href{https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html}{\strong{Boost.Odeint’s}}
+stiff Rosenbrock 4(3) method with dense output and error control.
 The solver supports \strong{time-based} and \strong{root-triggered events} and can, optionally,
 compute \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
 \strong{dual number} types provided by
-\href{https://github.com/coin-or/FADBAD++}{\strong{FADBAD++}}.
+\href{https://uning.dk/fadbad.html}{\strong{FADBAD++}}.
 \subsection{Sensitivity Computation}{
 
 If \code{deriv = TRUE}, all state variables and parameters are represented as
@@ -178,10 +179,9 @@ variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initial
     # Add column names to state matrix
     colnames(out$variable) <- dims$variable
 
-    # Add dimension names to sens1 array if present
-    if (!is.null(out$sens1)) {
-      dimnames(out$sens1) <- list(NULL, dims$variable, dims$sens)
-    }
+    # Add dimension names to sensitivity arrays
+    dimnames(out$sens1) <- list(NULL, dims$variable, dims$sens)
+    dimnames(out$sens2) <- list(NULL, dims$variable, dims$sens, dims$sens)
 
     return(out)
   }

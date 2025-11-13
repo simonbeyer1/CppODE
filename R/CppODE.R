@@ -6,11 +6,12 @@
 #'
 #' \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' using Boost.Odeint’s stiff Rosenbrock 4(3) method with dense output and error control.
+#' using [**Boost.Odeint’s**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
+#' stiff Rosenbrock 4(3) method with dense output and error control.
 #' The solver supports **time-based** and **root-triggered events** and can, optionally,
 #' compute **first- and second-order sensitivities** by evaluating the *same system* with
 #' **dual number** types provided by
-#' [**FADBAD++**](https://github.com/coin-or/FADBAD++).
+#' [**FADBAD++**](https://uning.dk/fadbad.html).
 #'
 #' ## Sensitivity Computation
 #'
@@ -823,7 +824,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #'
 #' @return A function with signature
 #'   \preformatted{
-#'   f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE)
+#'   f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE, verbose = FALSE)
 #'   }
 #' where:
 #' - `vars`: numeric matrix/data frame whose columns match `variables` (or `NULL` if none).
@@ -849,8 +850,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' @example inst/examples/example_fun.R
 #' @importFrom reticulate import source_python
 #' @export
-funCpp <- function(x,
-                   variables  = getSymbols(x, exclude = parameters),
+funCpp <- function(eqns,
+                   variables  = getSymbols(eqns, exclude = parameters),
                    parameters = NULL,
                    fixed      = NULL,
                    compile    = FALSE,
@@ -868,9 +869,9 @@ funCpp <- function(x,
   }
 
   # Output names default to f1, f2, ...
-  outnames <- names(x)
+  outnames <- names(eqns)
   if (is.null(outnames))
-    outnames <- paste0("f", seq_along(x))
+    outnames <- paste0("f", seq_along(eqns))
 
   # Reassign variables/parameters if some symbols are declared fixed
   if (!is.null(fixed)) {
@@ -939,7 +940,7 @@ funCpp <- function(x,
   sym_hess <- NULL
   if (deriv || deriv2) {
     if (verbose) message("Computing symbolic derivatives via derivSymb() ...")
-    ds <- derivSymb(x, deriv2 = deriv2, real = TRUE, fixed = fixed, verbose = verbose)
+    ds <- derivSymb(eqns, deriv2 = deriv2, real = TRUE, fixed = fixed, verbose = verbose)
     sym_jac  <- ds$jacobian
     sym_hess <- ds$hessian
   }
@@ -983,7 +984,7 @@ funCpp <- function(x,
   }
 
   # Pre-parse model outputs
-  parsed_exprs <- lapply(x, function(e) safe_parse(e)[[1]])
+  parsed_exprs <- lapply(eqns, function(e) safe_parse(e)[[1]])
 
   # Pre-parse Jacobian entries
   parsed_jac <- NULL
@@ -1025,7 +1026,7 @@ funCpp <- function(x,
       path = system.file("python", package = "CppODE")
     )
 
-    exprs_list <- as.list(x)
+    exprs_list <- as.list(eqns)
     names(exprs_list) <- outnames
 
     # The Jacobian is already column-ordered as diff_syms
@@ -1066,7 +1067,7 @@ funCpp <- function(x,
   }
 
   # Core evaluator used by both the convenient wrapper and the raw function
-  myRfun <- function(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE) {
+  myRfun <- function(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE, verbose = FALSE) {
 
     if (deriv2 && !deriv) {
       warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
@@ -1097,7 +1098,7 @@ funCpp <- function(x,
       k <- as.integer(length(innames))
       l <- as.integer(length(outnames))
       out <- .C(funsym_eval, x = xvec, y = yvec, p = as.double(p), n = n, k = k, l = l)
-      res <- matrix(out$y, nrow = n_obs, ncol = length(outnames), byrow = FALSE)
+      res <- matrix(out$y, nrow = n_obs, ncol = length(outnames), byrow = TRUE)
       colnames(res) <- outnames
     } else {
       if (verbose) message("Using R fallback (C++ not compiled)")
@@ -1112,7 +1113,7 @@ funCpp <- function(x,
     }
 
     if (attach.input && ncol(M) > 0)
-      res <- cbind(t(M), res)
+      res <- cbind(res, t(M))
 
     result[["out"]] <- res
 
@@ -1197,7 +1198,7 @@ funCpp <- function(x,
   }
 
   # Attach informative attributes for downstream inspection
-  attr(outfn, "equations")     <- x
+  attr(outfn, "equations")     <- eqns
   attr(outfn, "variables")     <- variables
   attr(outfn, "parameters")    <- parameters
   attr(outfn, "fixed")         <- fixed

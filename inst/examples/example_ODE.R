@@ -42,10 +42,9 @@
     # Add column names to state matrix
     colnames(out$variable) <- dims$variable
 
-    # Add dimension names to sens1 array if present
-    if (!is.null(out$sens1)) {
-      dimnames(out$sens1) <- list(NULL, dims$variable, dims$sens)
-    }
+    # Add dimension names to sensitivity arrays
+    dimnames(out$sens1) <- list(NULL, dims$variable, dims$sens)
+    dimnames(out$sens2) <- list(NULL, dims$variable, dims$sens, dims$sens)
 
     return(out)
   }

@@ -1,14 +1,169 @@
-# =============================================================================
-# derivSymb.py
-# Symbolic differentiation utilities for CppODE
-#
-# Provides safe symbolic differentiation (Jacobian + Hessian)
-# using SymPy, with optional post-hoc enforcement of real-valued
-# simplifications. Non-analytic expressions like abs(), max(), or
-# sign() are supported without recursion errors.
-# =============================================================================
+"""
+Symbolic differentiation utilities for CppODE
+=============================================
+Provides safe symbolic differentiation (Jacobian + Hessian)
+using SymPy, with optional post-hoc enforcement of real-valued
+simplifications. Non-analytic expressions like abs(), max(), or
+sign() are supported without recursion errors.
+
+Author: Simon Beyer
+Updated: 2025-11-04
+"""
 
 import sympy as sp
+from sympy.parsing.sympy_parser import (
+    parse_expr,
+    standard_transformations,
+    convert_xor,
+    implicit_multiplication_application
+)
+
+
+# -----------------------------------------------------------------------------
+# Safe parsing configuration
+# -----------------------------------------------------------------------------
+def _get_safe_parse_dict():
+    """
+    Create safe local_dict for parsing that avoids SymPy singleton conflicts.
+    """
+    safe_local_dict = {
+        # Override problematic SymPy singletons - treat as regular symbols
+        'S': sp.Symbol('S'),
+        'I': sp.Symbol('I'),
+        'N': sp.Symbol('N'),
+        'O': sp.Symbol('O'),
+        'Q': sp.Symbol('Q'),
+        'C': sp.Symbol('C'),
+        
+        # Exponential and logarithmic functions
+        'exp': sp.exp,
+        'exp10': lambda x: sp.Pow(10, x),
+        'exp2': lambda x: sp.Pow(2, x),
+        'log': sp.log,
+        'ln': sp.log,
+        'log10': lambda x: sp.log(x, 10),
+        'log2': lambda x: sp.log(x, 2),
+        
+        # Trigonometric functions
+        'sin': sp.sin,
+        'cos': sp.cos,
+        'tan': sp.tan,
+        'cot': sp.cot,
+        'sec': sp.sec,
+        'csc': sp.csc,
+        
+        # Inverse trigonometric functions
+        'asin': sp.asin,
+        'acos': sp.acos,
+        'atan': sp.atan,
+        'acot': sp.acot,
+        'asec': sp.asec,
+        'acsc': sp.acsc,
+        'atan2': sp.atan2,
+        
+        # Hyperbolic functions
+        'sinh': sp.sinh,
+        'cosh': sp.cosh,
+        'tanh': sp.tanh,
+        'coth': sp.coth,
+        'sech': sp.sech,
+        'csch': sp.csch,
+        
+        # Inverse hyperbolic functions
+        'asinh': sp.asinh,
+        'acosh': sp.acosh,
+        'atanh': sp.atanh,
+        'acoth': sp.acoth,
+        'asech': sp.asech,
+        'acsch': sp.acsch,
+        
+        # Power and root functions
+        'sqrt': sp.sqrt,
+        'cbrt': sp.cbrt,
+        'root': sp.root,
+        'pow': sp.Pow,
+        
+        # Absolute value and sign
+        'abs': sp.Abs,
+        'sign': sp.sign,
+        
+        # Rounding functions
+        'floor': sp.floor,
+        'ceiling': sp.ceiling,
+        
+        # Min/Max
+        'min': sp.Min,
+        'max': sp.Max,
+        
+        # Factorial and gamma functions
+        'factorial': sp.factorial,
+        'gamma': sp.gamma,
+        'loggamma': sp.loggamma,
+        'digamma': sp.digamma,
+        
+        # Error functions
+        'erf': sp.erf,
+        'erfc': sp.erfc,
+        
+        # Bessel functions
+        'besselj': sp.besselj,
+        'bessely': sp.bessely,
+        'besseli': sp.besseli,
+        'besselk': sp.besselk,
+        
+        # Special functions
+        'Heaviside': sp.Heaviside,
+        'DiracDelta': sp.DiracDelta,
+        
+        # Piecewise
+        'Piecewise': sp.Piecewise,
+        
+        # Constants
+        'pi': sp.pi,
+        'E': sp.E,
+        'oo': sp.oo,
+    }
+    
+    return safe_local_dict
+
+
+def _safe_sympify(expr_str, local_symbols=None):
+    """
+    Safely parse a string expression to SymPy, avoiding singleton conflicts.
+    
+    Parameters
+    ----------
+    expr_str : str
+        Expression string to parse
+    local_symbols : dict, optional
+        Additional local symbols (variables/parameters)
+    
+    Returns
+    -------
+    sp.Expr
+        Parsed SymPy expression
+    """
+    expr_str = str(expr_str).strip()
+    if expr_str == "0":
+        return sp.Integer(0)
+    
+    safe_local = _get_safe_parse_dict()
+    
+    # Merge with user-provided symbols
+    if local_symbols:
+        safe_local = {**safe_local, **local_symbols}
+    
+    transformations = standard_transformations + (
+        convert_xor,
+        implicit_multiplication_application,
+    )
+    
+    return parse_expr(
+        expr_str,
+        local_dict=safe_local,
+        transformations=transformations,
+        evaluate=True,
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -93,8 +248,8 @@ def _prepare_expressions(exprs, variables=None):
     else:
         raise TypeError("exprs must be a dict or list of expression strings")
 
-    # Parse to SymPy
-    exprs_syms = [sp.sympify(e) for e in expr_strs]
+    # Parse to SymPy using safe parsing
+    exprs_syms = [_safe_sympify(e) for e in expr_strs]
 
     # Determine variables
     if variables is None:
@@ -103,6 +258,7 @@ def _prepare_expressions(exprs, variables=None):
             key=lambda s: s.name
         )
     else:
+        # Create symbols for provided variable names
         vars_syms = [sp.Symbol(v) for v in variables]
 
     return fnames, exprs_syms, vars_syms
@@ -126,7 +282,7 @@ def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False):
         Example: {"f1": "a*x**2 + b*y**2", "f2": "x*y + exp(2*c) + abs(max(x,y))"}
     variables : list of str or None, optional
         Variable names to differentiate with respect to. If None, automatically
-        inferred using SymPy’s free symbol detection.
+        inferred using SymPy's free symbol detection.
     fixed : list of str or None
         Variable names to treat as fixed (excluded from differentiation).
     deriv2 : bool, optional

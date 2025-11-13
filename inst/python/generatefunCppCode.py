@@ -21,6 +21,167 @@ import re
 
 
 # =====================================================================
+# Safe parsing configuration
+# =====================================================================
+
+def _get_safe_parse_dict():
+    """
+    Create safe local_dict for parsing that avoids SymPy singleton conflicts.
+    Allows all standard mathematical functions but treats S, I, N, etc. as regular symbols.
+    """
+    safe_local_dict = {
+        # Override problematic SymPy singletons - treat as regular symbols
+        'S': sp.Symbol('S'),
+        'I': sp.Symbol('I'),
+        'N': sp.Symbol('N'),
+        'O': sp.Symbol('O'),
+        'Q': sp.Symbol('Q'),
+        'C': sp.Symbol('C'),
+        
+        # Exponential and logarithmic functions
+        'exp': sp.exp,
+        'exp10': lambda x: sp.Pow(10, x),
+        'exp2': lambda x: sp.Pow(2, x),
+        'log': sp.log,
+        'ln': sp.log,  # alias for natural log
+        'log10': lambda x: sp.log(x, 10),
+        'log2': lambda x: sp.log(x, 2),
+        
+        # Trigonometric functions
+        'sin': sp.sin,
+        'cos': sp.cos,
+        'tan': sp.tan,
+        'cot': sp.cot,
+        'sec': sp.sec,
+        'csc': sp.csc,
+        
+        # Inverse trigonometric functions
+        'asin': sp.asin,
+        'acos': sp.acos,
+        'atan': sp.atan,
+        'acot': sp.acot,
+        'asec': sp.asec,
+        'acsc': sp.acsc,
+        'atan2': sp.atan2,
+        
+        # Hyperbolic functions
+        'sinh': sp.sinh,
+        'cosh': sp.cosh,
+        'tanh': sp.tanh,
+        'coth': sp.coth,
+        'sech': sp.sech,
+        'csch': sp.csch,
+        
+        # Inverse hyperbolic functions
+        'asinh': sp.asinh,
+        'acosh': sp.acosh,
+        'atanh': sp.atanh,
+        'acoth': sp.acoth,
+        'asech': sp.asech,
+        'acsch': sp.acsch,
+        
+        # Power and root functions
+        'sqrt': sp.sqrt,
+        'cbrt': sp.cbrt,  # cube root
+        'root': sp.root,
+        'pow': sp.Pow,
+        
+        # Absolute value and sign
+        'abs': sp.Abs,
+        'sign': sp.sign,
+        
+        # Rounding functions
+        'floor': sp.floor,
+        'ceiling': sp.ceiling,
+        'round': lambda x: sp.floor(x + sp.Rational(1, 2)),
+        
+        # Min/Max
+        'min': sp.Min,
+        'max': sp.Max,
+        
+        # Factorial and gamma functions
+        'factorial': sp.factorial,
+        'gamma': sp.gamma,
+        'loggamma': sp.loggamma,
+        'digamma': sp.digamma,
+        'polygamma': sp.polygamma,
+        'beta': sp.beta,
+        
+        # Error functions
+        'erf': sp.erf,
+        'erfc': sp.erfc,
+        'erfi': sp.erfi,
+        
+        # Bessel functions
+        'besselj': sp.besselj,
+        'bessely': sp.bessely,
+        'besseli': sp.besseli,
+        'besselk': sp.besselk,
+        
+        # Special functions
+        'Heaviside': sp.Heaviside,
+        'DiracDelta': sp.DiracDelta,
+        'KroneckerDelta': sp.KroneckerDelta,
+        
+        # Piecewise
+        'Piecewise': sp.Piecewise,
+        
+        # Constants (if you want to allow them explicitly)
+        'pi': sp.pi,
+        'E': sp.E,
+        'euler_gamma': sp.EulerGamma,
+        'oo': sp.oo,  # infinity
+        
+        # Complex functions (optional, depending on your use case)
+        're': sp.re,
+        'im': sp.im,
+        'conjugate': sp.conjugate,
+        'arg': sp.arg,
+    }
+    
+    return safe_local_dict
+
+
+def _safe_sympify(expr_str, local_symbols=None):
+    """
+    Safely parse a string expression to SymPy, avoiding singleton conflicts.
+    
+    Parameters
+    ----------
+    expr_str : str
+        Expression string to parse
+    local_symbols : dict, optional
+        Additional local symbols (variables/parameters)
+    
+    Returns
+    -------
+    sp.Expr
+        Parsed SymPy expression
+    """
+    expr_str = str(expr_str).strip()
+    if expr_str == "0":
+        return sp.Integer(0)
+    
+    safe_local = _get_safe_parse_dict()
+    
+    # Merge with user-provided symbols
+    if local_symbols:
+        safe_local = {**safe_local, **local_symbols}
+    
+    transformations = standard_transformations + (
+        convert_xor,
+        implicit_multiplication_application,
+    )
+    
+    return parse_expr(
+        expr_str,
+        local_dict=safe_local,
+        transformations=transformations,
+        evaluate=True,
+    )
+
+
+# =====================================================================
 # Public interface
 # =====================================================================
 
@@ -86,26 +247,13 @@ def _parse_expressions(exprs, variables, parameters):
     """Parse algebraic expressions into SymPy objects."""
     vars_syms = {v: sp.Symbol(v, real=True) for v in variables}
     pars_syms = {p: sp.Symbol(p, real=True) for p in parameters}
-    local_dict = {**vars_syms, **pars_syms}
-
-    transformations = standard_transformations + (
-        convert_xor,
-        implicit_multiplication_application,
-    )
+    local_symbols = {**vars_syms, **pars_syms}
 
     parsed = {}
     for name, expr_str in exprs.items():
         try:
             expr_str = str(expr_str)
-            if expr_str.strip() == "0":
-                parsed[name] = sp.sympify(0)
-            else:
-                parsed[name] = parse_expr(
-                    expr_str,
-                    local_dict=local_dict,
-                    transformations=transformations,
-                    evaluate=True,
-                )
+            parsed[name] = _safe_sympify(expr_str, local_symbols)
         except Exception as e:
             raise ValueError(
                 f"Failed to parse expression '{name}': {expr_str}\nError: {e}"
@@ -152,16 +300,9 @@ def _to_cpp(expr, variables, parameters):
             return "0.0"
         vars_syms = {v: sp.Symbol(v, real=True) for v in variables}
         pars_syms = {p: sp.Symbol(p, real=True) for p in parameters}
-        local_dict = {**vars_syms, **pars_syms}
-        transformations = standard_transformations + (
-            convert_xor,
-            implicit_multiplication_application,
-        )
-        expr = parse_expr(
-            expr, local_dict=local_dict,
-            transformations=transformations,
-            evaluate=True
-        )
+        local_symbols = {**vars_syms, **pars_syms}
+        
+        expr = _safe_sympify(expr, local_symbols)
 
     if expr == 0:
         return "0.0"

@@ -5,8 +5,8 @@
 \title{Generate a fast R/C++ evaluator for algebraic models with optional Jacobian/Hessian}
 \usage{
 funCpp(
-  x,
-  variables = getSymbols(x, exclude = parameters),
+  eqns,
+  variables = getSymbols(eqns, exclude = parameters),
   parameters = NULL,
   fixed = NULL,
   compile = FALSE,
@@ -19,9 +19,6 @@ funCpp(
 )
 }
 \arguments{
-\item{x}{Named character vector or list of expressions (e.g. \code{c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")}).
-Names become output column names. If \code{names(x)} is \code{NULL}, default names \verb{f1, f2, ...} are used.}
-
 \item{variables}{Character vector of variable names that appear in \code{x} and are supplied per observation.
 If \code{NULL} or length 0, the model is treated as purely parametric (no per-row variables).}
 
@@ -46,11 +43,14 @@ manually assembling matrices/vectors.}
 \item{deriv}{Logical; if \code{TRUE}, compute and return the Jacobian. Required if \code{deriv2 = TRUE}.}
 
 \item{deriv2}{Logical; if \code{TRUE}, compute and return the Hessian in addition to the Jacobian.}
+
+\item{x}{Named character vector or list of expressions (e.g. \code{c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")}).
+Names become output column names. If \code{names(x)} is \code{NULL}, default names \verb{f1, f2, ...} are used.}
 }
 \value{
 A function with signature
 \preformatted{
-  f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE)
+  f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE, verbose = FALSE)
   }
 where:
 \itemize{
