@@ -13,8 +13,7 @@ import sympy as sp
 from sympy.parsing.sympy_parser import (
     parse_expr,
     standard_transformations,
-    convert_xor,
-    implicit_multiplication_application
+    convert_xor
 )
 import os
 import re
@@ -170,7 +169,6 @@ def _safe_sympify(expr_str, local_symbols=None):
     
     transformations = standard_transformations + (
         convert_xor,
-        implicit_multiplication_application,
     )
     
     return parse_expr(
