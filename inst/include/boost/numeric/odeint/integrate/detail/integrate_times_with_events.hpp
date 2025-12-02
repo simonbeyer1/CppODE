@@ -167,10 +167,11 @@ inline void apply_event(
 }
 
 /**
- * @brief Check and apply all fixed-time events at the current integration time.
+ * @brief Apply all fixed-time events scheduled for exactly this time.
  *
- * Each event triggers if @c |t - event.time| < tol. Multiple events may fire
- * at the same time. The state vector is updated in place.
+ * Since event times are merged into the output time sequence, the integrator
+ * stops exactly at each event time. This function applies all events whose
+ * time matches the current time exactly (comparing scalar values).
  *
  * @tparam state_type State vector type (e.g. @c ublas::vector<T>).
  * @tparam Time       Scalar time type (e.g. @c double, AD type).
@@ -178,23 +179,20 @@ inline void apply_event(
  * @param x            Current state (modified if events trigger).
  * @param t            Current integration time.
  * @param fixed_events Vector of fixed-time events.
- * @param tol          Absolute tolerance for time matching.
  *
  * @return @c true if at least one event was triggered, @c false otherwise.
  */
 template <class state_type, class Time>
-inline bool check_and_apply_fixed_events(
+inline bool apply_fixed_events_at_time(
     state_type& x,
     const Time& t,
-    const std::vector< FixedEvent<typename state_type::value_type> >& fixed_events,
-    double tol)
+    const std::vector< FixedEvent<typename state_type::value_type> >& fixed_events)
 {
   const double t_val = scalar_value(t);
   bool triggered = false;
 
   for (const auto& ev : fixed_events) {
-    const double ev_t = scalar_value(ev.time);
-    if (std::abs(t_val - ev_t) < tol) {
+    if (scalar_value(ev.time) == t_val) {
       apply_event(x, ev.state_index, ev.value, ev.method);
       triggered = true;
     }
@@ -206,8 +204,8 @@ inline bool check_and_apply_fixed_events(
  * @brief Merge user-defined observation times with all fixed-event times.
  *
  * All event times are appended to the user times. The resulting vector is
- * sorted in ascending order (using @c scalar_value for comparison) and times
- * within @c tol are collapsed into a single entry.
+ * sorted in ascending order (using @c scalar_value for comparison) and
+ * duplicate times are removed.
  *
  * @tparam Time         Scalar time type (e.g. @c double or AD type).
  * @tparam TimeIterator Iterator over user-specified times.
@@ -216,15 +214,13 @@ inline bool check_and_apply_fixed_events(
  * @param user_begin   Iterator to beginning of user times.
  * @param user_end     Iterator past end of user times.
  * @param fixed_events List of fixed events (their times are added).
- * @param tol          Absolute tolerance for duplicate detection.
  *
  * @return Sorted vector of unique times including both user and event times.
  */
 template <class Time, class TimeIterator, class value_type>
 std::vector<Time> merge_user_and_event_times(
     TimeIterator user_begin, TimeIterator user_end,
-    const std::vector< FixedEvent<value_type> >& fixed_events,
-    double tol)
+    const std::vector< FixedEvent<value_type> >& fixed_events)
 {
   std::vector<Time> all_times(user_begin, user_end);
 
@@ -240,8 +236,8 @@ std::vector<Time> merge_user_and_event_times(
 
   const auto new_end = std::unique(
     all_times.begin(), all_times.end(),
-    [tol](const Time& a, const Time& b) {
-      return std::abs(scalar_value(a) - scalar_value(b)) < tol;
+    [](const Time& a, const Time& b) {
+      return scalar_value(a) == scalar_value(b);
     }
   );
   all_times.erase(new_end, all_times.end());
@@ -259,7 +255,7 @@ std::vector<Time> merge_user_and_event_times(
  * @c rosenbrock4_controller_ad) and produces output at a prescribed sequence
  * of times. It applies:
  *
- *  - fixed-time events: applied exactly at scheduled times (within tolerance)
+ *  - fixed-time events: applied exactly at scheduled times
  *  - root events: detected via sign changes of user-supplied root functions
  *
  * Root events are detected by monitoring the sign of f(x, t) after each
@@ -285,11 +281,9 @@ std::vector<Time> merge_user_and_event_times(
  * @param fixed_events  Fixed-time events.
  * @param root_events   Root-triggered events.
  * @param checker       StepChecker for step and progress limits.
- * @param root_tol      Tolerance for merging event times (and root detection
- *                      in dense-output version; here only used for time merge).
  * @param max_trigger_root Maximum number of firings allowed per root event
  *                         (use @c std::numeric_limits<size_t>::max() for
- *                         “unlimited”).
+ *                         "unlimited").
  * @param controlled_stepper_tag Dispatch tag for controlled steppers.
  *
  * @return The number of successful integration steps performed.
@@ -303,26 +297,21 @@ size_t integrate_times(
     const std::vector< FixedEvent<typename state_type::value_type> >& fixed_events,
     const std::vector< RootEvent<state_type, Time> >& root_events,
     StepChecker& checker,
-    double root_tol = 1e-8,
     size_t max_trigger_root = 1,
     controlled_stepper_tag = controlled_stepper_tag())
 {
   using boost::numeric::odeint::detail::less_with_sign;
   typename odeint::unwrap_reference<Observer>::type& obs = observer;
   typename odeint::unwrap_reference<Stepper>::type& st   = stepper;
-
   failed_step_checker fail_checker;
   size_t steps = 0;
 
-  // Merge user times with any fixed-event times.
   auto all_times = merge_user_and_event_times<Time>(
-    start_time, end_time, fixed_events, root_tol
-  );
+    start_time, end_time, fixed_events);
   auto iter = all_times.begin();
   auto end  = all_times.end();
   if (iter == end) return 0;
 
-  // Track last root function values to detect sign changes.
   std::vector<double> last_vals(
       root_events.size(),
       std::numeric_limits<double>::quiet_NaN()
@@ -333,14 +322,14 @@ size_t integrate_times(
   {
     Time current_time = *iter++;
 
-    // Apply fixed-time events exactly at this time (if any).
-    check_and_apply_fixed_events(start_state, current_time, fixed_events, root_tol);
+    // Apply fixed events at exact time
+    apply_fixed_events_at_time(start_state, current_time, fixed_events);
 
-    // Observe current state.
+    // Observe at scheduled time
     obs(start_state, current_time);
     if (iter == end) break;
 
-    // Integrate up to the next observation time.
+    // Integrate toward next output time
     while (less_with_sign(current_time, *iter, dt))
     {
       Time current_dt = min_abs(dt, *iter - current_time);
@@ -352,14 +341,20 @@ size_t integrate_times(
         checker();
         dt = max_abs(dt, current_dt);
 
-        // Root event detection (based on sign change of root function).
-        for (size_t i = 0; i < root_events.size(); ++i) {
-          auto   f_val = root_events[i].func(start_state, current_time);
+        // Check root functions for sign changes
+        for (size_t i = 0; i < root_events.size(); ++i)
+        {
+          auto f_val = root_events[i].func(start_state, current_time);
           double f_now = scalar_value(f_val);
 
           if (root_trigger_count[i] < max_trigger_root &&
-              !std::isnan(last_vals[i]) && last_vals[i] * f_now < 0.0)
+              !std::isnan(last_vals[i]) &&
+              last_vals[i] * f_now < 0.0)
           {
+            // Observe before event
+            obs(start_state, current_time);
+
+            // Apply event
             apply_event(
               start_state,
               root_events[i].state_index,
@@ -367,16 +362,27 @@ size_t integrate_times(
               root_events[i].method
             );
             root_trigger_count[i]++;
+
+            // Observe after event
+            obs(start_state, current_time + Time(1e-15));
+
+            // Reset sign memory for fresh detection
+            last_vals[i] = std::numeric_limits<double>::quiet_NaN();
           }
-          last_vals[i] = f_now;
+          else
+          {
+            last_vals[i] = f_now;
+          }
         }
-      } else {
-        // Step failed: reduce dt and retry.
+      }
+      else
+      {
         fail_checker();
         dt = current_dt;
       }
     }
   }
+
   return steps;
 }
 
@@ -417,10 +423,10 @@ size_t integrate_times(
  * @param fixed_events  Fixed-time events.
  * @param root_events   Root-triggered events.
  * @param checker       StepChecker for step and progress limits.
- * @param root_tol      Tolerance for root localization and time merging.
+ * @param root_tol      Tolerance for root localization via bisection.
  * @param max_trigger_root Maximum number of firings allowed per root event
  *                         (use @c std::numeric_limits<size_t>::max() for
- *                         “unlimited”).
+ *                         "unlimited").
  * @param dense_output_stepper_tag Dispatch tag for dense-output steppers.
  *
  * @return The number of real steps performed by the dense stepper.
@@ -443,97 +449,140 @@ size_t integrate_times_dense(
   typename odeint::unwrap_reference<Observer>::type& obs = observer;
   typename odeint::unwrap_reference<Stepper>::type& st   = stepper;
 
-  auto all_times = merge_user_and_event_times<Time>(start_time, end_time, fixed_events, root_tol);
+  auto all_times = merge_user_and_event_times<Time>(
+    start_time, end_time, fixed_events);
   if (all_times.empty()) return 0;
 
-  auto iter = all_times.begin();
-  auto end  = all_times.end();
-  Time last_time_point = all_times.back();
+  auto iter   = all_times.begin();
+  auto end_it = all_times.end();
 
   st.initialize(start_state, *iter, dt);
-  bool need_reinit = false;
-  Time reinit_time = *iter;
 
-  if (check_and_apply_fixed_events(start_state, *iter, fixed_events, root_tol)) {
-    need_reinit = true;
-    reinit_time = *iter;
+  if (apply_fixed_events_at_time(start_state, *iter, fixed_events)) {
+    st.reinitialize_at_event(start_state, *iter, dt);
   }
 
-  obs(start_state, *iter++);
+  obs(start_state, *iter);
+  ++iter;
+  if (iter == end_it) return 0;
 
+  // Root event bookkeeping - now also store last state and time
   std::vector<double> last_vals(root_events.size(),
                                 std::numeric_limits<double>::quiet_NaN());
+  std::vector<state_type> last_states(root_events.size(), start_state);
+  std::vector<Time> last_times(root_events.size(), *all_times.begin());
   std::vector<size_t> root_trigger_count(root_events.size(), 0);
 
   size_t count = 0;
+  Time t_step_start, t_step_end;
 
-  while (iter != end)
+  while (iter != end_it)
   {
-    if (need_reinit) {
-      st.initialize(start_state, reinit_time, dt);
-      std::fill(last_vals.begin(), last_vals.end(), std::numeric_limits<double>::quiet_NaN());
-      std::fill(root_trigger_count.begin(), root_trigger_count.end(), 0);
-      need_reinit = false;
-    }
+    t_step_start = st.current_time();
+    st.do_step(system);
+    t_step_end = st.current_time();
+    ++count;
+    checker();
 
-    while ((iter != end) &&
-           less_eq_with_sign(*iter, st.current_time(), st.current_time_step()))
+    bool event_triggered = false;
+
+    while (iter != end_it && !event_triggered &&
+           less_eq_with_sign(*iter, t_step_end, st.current_time_step()))
     {
-      st.calc_state(*iter, start_state);
-
-      if (check_and_apply_fixed_events(start_state, *iter, fixed_events, root_tol)) {
-        need_reinit = true;
-        reinit_time = *iter;
+      if (scalar_value(*iter) < scalar_value(t_step_start)) {
+        ++iter;
+        continue;
       }
 
-      for (size_t i = 0; i < root_events.size(); ++i) {
+      st.calc_state(*iter, start_state);
+
+      if (apply_fixed_events_at_time(start_state, *iter, fixed_events)) {
+        obs(start_state, *iter);
+        st.reinitialize_at_event(start_state, *iter, st.current_time_step());
+        std::fill(last_vals.begin(), last_vals.end(),
+                  std::numeric_limits<double>::quiet_NaN());
+        std::fill(root_trigger_count.begin(), root_trigger_count.end(), 0);
+        ++iter;
+        event_triggered = true;
+        continue;
+      }
+
+      for (size_t i = 0; i < root_events.size(); ++i)
+      {
         auto f_val = root_events[i].func(start_state, *iter);
         double f_now = scalar_value(f_val);
 
-        if (!std::isnan(last_vals[i]) &&
-            (root_trigger_count[i] < max_trigger_root) &&
+        if (root_trigger_count[i] < max_trigger_root &&
+            !std::isnan(last_vals[i]) &&
             last_vals[i] * f_now < 0.0)
         {
-          Time ta = st.previous_time();
-          Time tb = st.current_time();
-          state_type xa = st.previous_state();
-          state_type xb = st.current_state();
+          // Root detected - bisection between last known point and current
+          Time       ta = last_times[i];
+          Time       tb = *iter;
+          state_type xa = last_states[i];
+          state_type xb = start_state;
 
-          double fa = scalar_value(root_events[i].func(xa, ta));
-          double fb = scalar_value(root_events[i].func(xb, tb));
+          double fa = last_vals[i];
+          double fb = f_now;
+
+          state_type xm = xa;
 
           while (std::abs(scalar_value(tb - ta)) > root_tol) {
             Time tm = (ta + tb) / 2.0;
-            state_type xm;
             st.calc_state(tm, xm);
             double fm = scalar_value(root_events[i].func(xm, tm));
 
-            if (fa * fm <= 0.0) { tb = tm; xb = xm; fb = fm; }
-            else               { ta = tm; xa = xm; fa = fm; }
+            if (fa * fm <= 0.0) {
+              tb = tm; xb = xm; fb = fm;
+            } else {
+              ta = tm; xa = xm; fa = fm;
+            }
           }
 
-          apply_event(xb, root_events[i].state_index,
-                      root_events[i].value, root_events[i].method);
+          Time t_root = tb;
 
-          need_reinit = true;
-          reinit_time = tb;
+          // Observe all output times before the root
+          while (iter != end_it && scalar_value(*iter) < scalar_value(t_root)) {
+            st.calc_state(*iter, start_state);
+            obs(start_state, *iter);
+            ++iter;
+          }
+
+          state_type x_after = xb;
+
+          obs(xb, t_root);
+
+          apply_event(x_after,
+                      root_events[i].state_index,
+                      root_events[i].value,
+                      root_events[i].method);
 
           root_trigger_count[i]++;
-          std::fill(last_vals.begin(), last_vals.end(), std::numeric_limits<double>::quiet_NaN());
-        }
 
-        last_vals[i] = f_now;
+          obs(x_after, t_root + Time(1e-15));
+
+          start_state = x_after;
+          st.reinitialize_at_event(start_state, t_root, st.current_time_step());
+
+          std::fill(last_vals.begin(), last_vals.end(),
+                    std::numeric_limits<double>::quiet_NaN());
+
+          event_triggered = true;
+          break;
+        }
+        else
+        {
+          last_vals[i] = f_now;
+          last_states[i] = start_state;
+          last_times[i] = *iter;
+        }
       }
 
-      obs(start_state, *iter);
-      ++iter;
+      if (!event_triggered) {
+        obs(start_state, *iter);
+        ++iter;
+      }
     }
-
-    if (iter == end) break;
-
-    st.do_step(system);
-    ++count;
-    checker();
   }
 
   return count;

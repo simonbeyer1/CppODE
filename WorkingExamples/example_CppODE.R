@@ -11,7 +11,7 @@ library(tidyr)
 
 # Define ODE system
 eqns <- c(
-  A = "-k1*A + k2*B",
+  A = "-k1*A + k2*B - k3 * A",
   B = "k1*A - k2*B"
 )
 
@@ -21,17 +21,17 @@ events <- data.frame(
   time  = NA,
   value = "dose",
   method= "replace",
-  root  = "A-0.7"
+  root  = "A-Acrit"
 )
 
 # Generate and compile solver
-f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv2 = T, compile = T, useDenseOutput = F)
+f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv2 = F, compile = T, useDenseOutput = F)
 
 # Wrap in an R solver function
 solve <- function(times, params,
                   abstol = 1e-6, reltol = 1e-6,
                   maxattemps = 5000L, maxsteps = 1e6L,
-                  roottol = 1e-6, maxroot = 10L) {
+                  roottol = 1e-10, maxroot = 4L) {
   paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
   if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
@@ -65,8 +65,8 @@ solve <- function(times, params,
 }
 
 # Example run
-params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, dose = 1)
-times  <- seq(0, 100, length.out = 3000)
+params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, k3 = 0.1, dose = 1, Acrit = 0.25)
+times  <- seq(0, 100, length.out = 300)
 res <- solve(times, params)
 res$variable
 head(res$sens1[, "A", ])
