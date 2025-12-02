@@ -297,6 +297,7 @@ size_t integrate_times(
     const std::vector< FixedEvent<typename state_type::value_type> >& fixed_events,
     const std::vector< RootEvent<state_type, Time> >& root_events,
     StepChecker& checker,
+    double root_tol = 1e-8,
     size_t max_trigger_root = 1,
     controlled_stepper_tag = controlled_stepper_tag())
 {
@@ -312,27 +313,31 @@ size_t integrate_times(
   auto end  = all_times.end();
   if (iter == end) return 0;
 
+  // Root event bookkeeping
   std::vector<double> last_vals(
       root_events.size(),
       std::numeric_limits<double>::quiet_NaN()
   );
+  std::vector<state_type> last_states(root_events.size(), start_state);
+  std::vector<Time> last_times(root_events.size(), *iter);
   std::vector<size_t> root_trigger_count(root_events.size(), 0);
 
   while (true)
   {
     Time current_time = *iter++;
 
-    // Apply fixed events at exact time
     apply_fixed_events_at_time(start_state, current_time, fixed_events);
 
-    // Observe at scheduled time
     obs(start_state, current_time);
     if (iter == end) break;
 
-    // Integrate toward next output time
     while (less_with_sign(current_time, *iter, dt))
     {
       Time current_dt = min_abs(dt, *iter - current_time);
+
+      // Store state before step for bisection
+      state_type state_before_step = start_state;
+      Time time_before_step = current_time;
 
       if (st.try_step(system, start_state, current_time, current_dt) == success)
       {
@@ -351,27 +356,76 @@ size_t integrate_times(
               !std::isnan(last_vals[i]) &&
               last_vals[i] * f_now < 0.0)
           {
+            // Root detected - localize via bisection
+            Time       ta = last_times[i];
+            Time       tb = current_time;
+            state_type xa = last_states[i];
+            state_type xb = start_state;
+
+            double fa = last_vals[i];
+            double fb = f_now;
+
+            // Bisection to find root
+            while (std::abs(scalar_value(tb - ta)) > root_tol) {
+              Time tm = (ta + tb) / 2.0;
+
+              // Integrate from last_times[i] to tm to get state at tm
+              state_type xm = xa;
+              Time t_temp = ta;
+              Time dt_temp = (tm - ta) / 10.0;
+              if (scalar_value(dt_temp) == 0.0) break;
+
+              // Simple integration to midpoint
+              while (less_with_sign(t_temp, tm, dt_temp)) {
+                Time step_dt = min_abs(dt_temp, tm - t_temp);
+                st.try_step(system, xm, t_temp, step_dt);
+              }
+
+              double fm = scalar_value(root_events[i].func(xm, tm));
+
+              if (fa * fm <= 0.0) {
+                tb = tm; xb = xm; fb = fm;
+              } else {
+                ta = tm; xa = xm; fa = fm;
+              }
+            }
+
+            Time t_root = tb;
+
             // Observe before event
-            obs(start_state, current_time);
+            obs(xb, t_root);
 
             // Apply event
-            apply_event(
-              start_state,
-              root_events[i].state_index,
-              root_events[i].value,
-              root_events[i].method
-            );
+            state_type x_after = xb;
+            apply_event(x_after,
+                        root_events[i].state_index,
+                        root_events[i].value,
+                        root_events[i].method);
+
             root_trigger_count[i]++;
 
             // Observe after event
-            obs(start_state, current_time + Time(1e-15));
+            obs(x_after, t_root + Time(1e-15));
 
-            // Reset sign memory for fresh detection
-            last_vals[i] = std::numeric_limits<double>::quiet_NaN();
+            // Update state and continue from root time
+            start_state = x_after;
+            current_time = t_root;
+
+            // Reset sign memory
+            std::fill(last_vals.begin(), last_vals.end(),
+                      std::numeric_limits<double>::quiet_NaN());
+            std::fill(last_times.begin(), last_times.end(), t_root);
+            for (size_t j = 0; j < root_events.size(); ++j) {
+              last_states[j] = start_state;
+            }
+
+            break;  // Exit root loop, continue integration
           }
           else
           {
             last_vals[i] = f_now;
+            last_states[i] = start_state;
+            last_times[i] = current_time;
           }
         }
       }

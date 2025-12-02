@@ -17,15 +17,16 @@ eqns <- c(
 
 # Define an event
 events <- data.frame(
-  var   = "A",
-  time  = NA,
-  value = "dose",
-  method= "replace",
-  root  = "A-Acrit"
+  var   = c("A", "A"),
+  time  = c(NA, 0),
+  value = c("dose","dose"),
+  method= c("replace","add"),
+  root  = c("A-Acrit", NA),
+  stringsAsFactors = FALSE
 )
 
 # Generate and compile solver
-f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv2 = F, compile = T, useDenseOutput = F)
+f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv = F, deriv2 = F, compile = T, useDenseOutput = T)
 
 # Wrap in an R solver function
 solve <- function(times, params,
@@ -65,8 +66,8 @@ solve <- function(times, params,
 }
 
 # Example run
-params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, k3 = 0.1, dose = 1, Acrit = 0.25)
-times  <- seq(0, 100, length.out = 300)
+params <- c(A = 0, B = 0, k1 = 0.1, k2 = 0.2, k3 = 0.1, dose = 1, Acrit = 0.25)
+times  <- seq(-10, 100, length.out = 300)
 res <- solve(times, params)
 res$variable
 head(res$sens1[, "A", ])
