@@ -622,7 +622,7 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
                 f"RootEvent<ublas::vector<{num_type}>, {num_type}>{{"
             )
             event_lines.append(
-                f"    [](const ublas::vector<{num_type}>& x, "
+                f"    [full_params](const ublas::vector<{num_type}>& x, "
                 f"const {num_type}& t){{ return {root_code}; }},"
             )
             event_lines.append(

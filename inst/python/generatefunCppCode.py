@@ -208,9 +208,19 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     dict
         {"filename": absolute path, "modelname": model name}
     """
+    # variables: String -> [String]
+    if isinstance(variables, str):
+        variables = [variables]
+    elif variables is None:
+        variables = []
+
+    # parameters: None / String -> Liste
     if parameters is None:
         parameters = []
-
+    elif isinstance(parameters, str):
+        parameters = [parameters]
+        
+        
     variables = variables or []
     parameters = parameters or []
 
