@@ -11,8 +11,8 @@ library(tidyr)
 
 # Define ODE system
 eqns <- c(
-  A = "-k1*A + k2*B - k3 * A",
-  B = "k1*A - k2*B"
+  A = "-k1*A^2*time + k2*B - k3 * A",
+  B = "k1*A^2*time - k2*B"
 )
 
 # Define an event
@@ -26,13 +26,13 @@ events <- data.frame(
 )
 
 # Generate and compile solver
-f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv = F, deriv2 = F, compile = T, useDenseOutput = T)
+f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv = T, deriv2 = F, compile = T, useDenseOutput = F)
 
 # Wrap in an R solver function
 solve <- function(times, params,
                   abstol = 1e-6, reltol = 1e-6,
-                  maxattemps = 5000L, maxsteps = 1e6L,
-                  roottol = 1e-10, maxroot = 4L) {
+                  maxattemps = 100L, maxsteps = 1e6L,
+                  hini = 0.1, roottol = 1e-10, maxroot = 4L) {
   paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
   if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
@@ -44,6 +44,7 @@ solve <- function(times, params,
                as.numeric(reltol),
                as.integer(maxattemps),
                as.integer(maxsteps),
+               as.numeric(hini),
                as.numeric(roottol),
                as.integer(maxroot))
 

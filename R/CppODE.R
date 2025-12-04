@@ -213,7 +213,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     "#include <algorithm>",
     "#include <vector>",
     "#include <cmath>",
-    "#include <boost_rosenbrock34_fad.hpp>"
+    "#include <boost_rosenbrock34_ad.hpp>"
   )
 
   # --- Using declarations ---
@@ -257,7 +257,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Solver function (externC) ---
   externC <- c(
-    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP) {', modelname),
+    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP) {', modelname),
     "try {",
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
@@ -452,6 +452,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  double abstol = REAL(abstolSEXP)[0];",
                "  double reltol = REAL(reltolSEXP)[0];",
                "  double root_tol = REAL(root_tolSEXP)[0];",
+               "  double hini = REAL(hiniSEXP)[0];",
                "  int maxroot = INTEGER(maxrootSEXP)[0];",
                "  ode_system sys(full_params);",
                "  jacobian jac(full_params);",
@@ -460,8 +461,15 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  // --- Determine dt ---",
                "  auto t_test = times.front();",
                "  auto x_test = x;",
-               sprintf("  %s dt0 = odeint_utils::estimate_initial_dt(sys, jac, x_test, t_test, times.back(), abstol, reltol);", numType),
+               "  ",
+               sprintf("  %s dt0;", numType),
+               "  if (hini == 0.0) {",
+               sprintf("    dt0 = odeint_utils::estimate_initial_dt_local(sys, jac, x_test, t_test, abstol, reltol);"),
+               "  } else {",
+               "    dt0 = hini;",
+               "  }",
                "  auto dt = dt0;",
+               "",
                "  int attempts = 0;",
                "  while (controlledStepper.try_step(std::make_pair(sys, jac), x_test, t_test, dt) == fail) {",
                "    if (++attempts >= 10000) throw std::runtime_error(\"Unable to find valid initial stepsize after 10000 attempts\");",
@@ -473,6 +481,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  if (n_out <= 0) Rf_error(\"Integration produced no output\");",
                ""
   )
+
 
   # --- Copy back results - CONSISTENT LIST OUTPUT ---
   if (!deriv) {
