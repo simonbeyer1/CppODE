@@ -193,7 +193,10 @@ public:
     Time t = *it;
 
     if(apply_fixed_events_at_time(x,t,m_fixed))
-      ;   // no reset here; dt is externally chosen before integration
+    {
+      // Controlled stepper uses x directly, no internal state to reset
+      reset_stepper_unified(m_st, x, t, dt);
+    }
 
     obs(x,t);
     ++it;
@@ -311,89 +314,94 @@ public:
     auto it = times.begin();
     auto end = times.end();
 
+    // Apply fixed events at initial time before initializing stepper
+    if(apply_fixed_events_at_time(x, *it, m_fixed))
+      ;  // x is now modified
+
+    // Initialize stepper with (possibly modified) initial state
     m_st.initialize(x, *it, dt);
 
-    if(apply_fixed_events_at_time(x,*it,m_fixed))
-      ;
-
-    obs(x,*it);
+    obs(x, *it);
     ++it;
     if(it == end) return 0;
 
-    std::vector<double> last_val(m_root.size(),std::numeric_limits<double>::quiet_NaN());
-    std::vector<State>  last_state(m_root.size(),x);
+    std::vector<double> last_val(m_root.size(), std::numeric_limits<double>::quiet_NaN());
+    std::vector<State>  last_state(m_root.size(), x);
     std::vector<Time>   last_time(m_root.size(), times.front());
-    std::vector<size_t> fired(m_root.size(),0);
+    std::vector<size_t> fired(m_root.size(), 0);
 
     while(it != end)
     {
       Time t_start = m_st.current_time();
       m_st.do_step(m_sys);
-      Time t_end   = m_st.current_time();
+      Time t_end = m_st.current_time();
       ++steps;
 
-      // Dense output do_step always advances time
       checker();
       checker.reset();
       dt = m_st.current_time_step();
 
-      bool event_happened = false;
-
-      while(it != end &&
-            !event_happened &&
-            less_eq_with_sign(*it, t_end, dt))
+      while(it != end && less_eq_with_sign(*it, t_end, dt))
       {
         Time t_eval = *it;
 
-        if(scalar_value(t_eval) < scalar_value(t_start)){
+        // Skip times before current interval
+        if(scalar_value(t_eval) < scalar_value(t_start)) {
           ++it;
           continue;
         }
 
+        // Interpolate state at t_eval
         m_st.calc_state(t_eval, x);
 
-        if(apply_fixed_events_at_time(x,t_eval,m_fixed))
+        // Check for fixed events
+        if(apply_fixed_events_at_time(x, t_eval, m_fixed))
         {
-          obs(x,t_eval);
-          reset_memory(fired,last_val,last_state,last_time,x,t_eval);
+          obs(x, t_eval);
+
+          // Reinitialize stepper with new state
+          m_st.initialize(x, t_eval, dt);
+
+          // Reset root tracking
+          for(size_t j = 0; j < m_root.size(); ++j) {
+            last_val[j] = std::numeric_limits<double>::quiet_NaN();
+            last_state[j] = x;
+            last_time[j] = t_eval;
+            fired[j] = 0;
+          }
+
           ++it;
-          event_happened = true;
-          continue;
+          break;  // Exit inner loop, do fresh do_step
         }
 
-        for(size_t i=0;i<m_root.size();++i)
+        // Check for root events
+        bool root_fired = false;
+        for(size_t i = 0; i < m_root.size(); ++i)
         {
-          double f_now = scalar_value(m_root[i].func(x,t_eval));
+          double f_now = scalar_value(m_root[i].func(x, t_eval));
 
           if(fired[i] < max_trigger &&
              !std::isnan(last_val[i]) &&
              last_val[i] * f_now < 0.0)
           {
-            localize_root_dense(
-              i,
-              last_state[i], last_time[i],
-                                      x, t_eval,
-                                      last_val[i], f_now,
-                                      root_tol);
+            // Localize root
+            localize_root_dense(i, last_state[i], last_time[i],
+                                x, t_eval, last_val[i], f_now, root_tol);
 
-            Time t_root = t_eval;
-            obs(x, t_root);
+            // Output state at root (before event)
+            obs(x, t_eval);
 
-            State x_after = x;
-            apply_event(x_after,
-                        m_root[i].state_index,
-                        m_root[i].value,
-                        m_root[i].method);
-
+            // Apply event
+            apply_event(x, m_root[i].state_index, m_root[i].value, m_root[i].method);
             fired[i]++;
-            obs(x_after, t_root + Time(1e-15));
-            x = x_after;
 
-            // Reinitialize dense stepper after discontinuity
-            reset_stepper_unified(m_st, x, t_eval, dt);
+            // Output state after event
+            obs(x, t_eval + Time(1e-15));
+
+            // Reinitialize stepper with post-event state
             m_st.initialize(x, t_eval, dt);
 
-            // Reset root tracking but keep fired counts
+            // Reset root tracking (but keep fired counts!)
             for(size_t j = 0; j < m_root.size(); ++j) {
               last_val[j] = std::numeric_limits<double>::quiet_NaN();
               last_state[j] = x;
@@ -401,20 +409,23 @@ public:
             }
 
             ++it;
-            event_happened = true;
-            break;
+            root_fired = true;
+            break;  // Exit for-loop
           }
           else {
-            last_val[i]   = f_now;
+            last_val[i] = f_now;
             last_state[i] = x;
-            last_time[i]  = t_eval;
+            last_time[i] = t_eval;
           }
         }
 
-        if(!event_happened){
-          obs(x,t_eval);
-          ++it;
+        if(root_fired) {
+          break;  // Exit inner while-loop, do fresh do_step
         }
+
+        // No event - output and continue
+        obs(x, t_eval);
+        ++it;
       }
     }
     return steps;
@@ -487,7 +498,7 @@ private:
     while(std::abs(scalar_value(tb - ta)) > tol)
     {
       Time tm = (ta + tb) / 2.0;
-      State xm;
+      State xm = xa;  // Initialize with correct size (copy from xa)
       m_st.calc_state(tm, xm);
 
       double fm = scalar_value(m_root[idx].func(xm,tm));

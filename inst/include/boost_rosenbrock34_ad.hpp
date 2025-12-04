@@ -159,7 +159,92 @@ inline double weighted_sup_norm(
 }
 
 /*==============================================================================
- Local initial step-size selection (no te needed)
+ Initial step-size selection for plain double (non-AD)
+ Based on Hairer–Wanner NDF heuristics:
+ dt1 = sqrt( η * |x| / |x'| )
+ dt2 = cbrt( η * |x| / |x''| )
+ ==============================================================================*/
+
+inline double estimate_initial_dt_local(
+    const std::function<void(const vector<double>&, vector<double>&, const double&)>& system,
+    const std::function<void(const vector<double>&, matrix<double>&, const double&, vector<double>&)>& jacobian,
+    vector<double>& x0,
+    double t0,
+    double atol,
+    double rtol,
+    double eta = 1e-3)
+{
+  const std::size_t n = x0.size();
+
+  // First derivative
+  vector<double> dxdt(n);
+  system(x0, dxdt, t0);
+
+  // Jacobian + explicit df/dt
+  matrix<double> J(n, n);
+  vector<double> dfdt(n);
+  jacobian(x0, J, t0, dfdt);
+
+  // Second derivative x'' = df/dt + J*dxdt
+  vector<double> xdd(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    double sum = dfdt[i];
+    for (std::size_t j = 0; j < n; ++j)
+      sum += J(i,j) * dxdt[j];
+    xdd[i] = sum;
+  }
+
+  // Norms
+  double norm_x   = weighted_sup_norm(x0, x0, atol, rtol);
+  double norm_dx  = weighted_sup_norm(dxdt, x0, atol, rtol);
+  double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
+
+  // Heuristics
+  double dt1 = std::numeric_limits<double>::infinity();
+  double dt2 = std::numeric_limits<double>::infinity();
+
+  if (norm_dx > 0.0)
+    dt1 = std::sqrt(eta * norm_x / norm_dx);
+
+  if (norm_xdd > 0.0)
+    dt2 = std::cbrt(eta * norm_x / norm_xdd);
+
+  double dt = std::min(dt1, dt2);
+
+  if (!std::isfinite(dt) || dt <= 0.0)
+    dt = 1e-6;  // fallback
+
+  return dt;
+}
+
+/**
+ * @brief Convenience overload for arbitrary functor-style systems (double version)
+ */
+template<typename System, typename Jacobian>
+inline double estimate_initial_dt_local(
+    System system,
+    Jacobian jacobian,
+    vector<double>& x0,
+    double t0,
+    double atol,
+    double rtol,
+    double eta = 1e-3)
+{
+  std::function<void(const vector<double>&, vector<double>&, const double&)> sys_f =
+    [&system](const vector<double>& x, vector<double>& dxdt, const double& t) {
+      system(x, dxdt, t);
+    };
+
+    std::function<void(const vector<double>&, matrix<double>&, const double&, vector<double>&)> jac_f =
+      [&jacobian](const vector<double>& x, matrix<double>& J, const double& t, vector<double>& dfdt) {
+        jacobian(x, J, t, dfdt);
+      };
+
+      return estimate_initial_dt_local(sys_f, jac_f, x0, t0, atol, rtol, eta);
+}
+
+/*==============================================================================
+ Initial step-size selection for AD types (F<T>)
  Based on Hairer–Wanner NDF heuristics:
  dt1 = sqrt( η * |x| / |x'| )
  dt2 = cbrt( η * |x| / |x''| )
@@ -218,10 +303,9 @@ inline F<T> estimate_initial_dt_local(
   return F<T>(dt);
 }
 
-/*==============================================================================
- Convenience overload for arbitrary functor-style systems
- ==============================================================================*/
-
+/**
+ * @brief Convenience overload for arbitrary functor-style systems (AD version)
+ */
 template<typename System, typename Jacobian, typename T>
 inline F<T> estimate_initial_dt_local(
     System system,
@@ -261,7 +345,7 @@ namespace fadbad {
  *
  * This overload prevents ambiguous template resolution between
  * fadbad::F<F<T>> and fadbad::F<T> comparisons by delegating
- * scalar extraction to Boost.Odeint’s scalar_value().
+ * scalar extraction to Boost.Odeint's scalar_value().
  *
  * @tparam Inner  Inner fadbad or arithmetic type.
  * @param a First operand (possibly nested FAD type).

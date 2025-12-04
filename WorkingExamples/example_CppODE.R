@@ -25,8 +25,16 @@ events <- data.frame(
   stringsAsFactors = FALSE
 )
 
-# Generate and compile solver
-f <- CppODE(eqns, events = events, modelname = "Amodel_s", deriv = T, deriv2 = F, compile = T, useDenseOutput = F)
+# # Generate and compile solver
+# f_c_1 <- CppODE(eqns, events = events, modelname = "Amodel_c", deriv = F, deriv2 = F, compile = T, useDenseOutput = F)
+# f_c_2 <- CppODE(eqns, events = events, modelname = "Amodel_c_s", deriv = T, deriv2 = F, compile = T, useDenseOutput = F)
+# f_c_3 <- CppODE(eqns, events = events, modelname = "Amodel_c_2s", deriv = T, deriv2 = T, compile = T, useDenseOutput = F)
+
+f_d_1 <- CppODE(eqns, events = events, modelname = "Amodel_d", deriv = F, deriv2 = F, compile = T, useDenseOutput = T)
+f_d_2 <- CppODE(eqns, events = events, modelname = "Amodel_d_s", deriv = T, deriv2 = F, compile = T, useDenseOutput = T)
+f_d_3 <- CppODE(eqns, events = events, modelname = "Amodel_d_2s", deriv = T, deriv2 = T, compile = T, useDenseOutput = T)
+
+f <- f_d_1
 
 # Wrap in an R solver function
 solve <- function(times, params,

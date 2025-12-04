@@ -21,6 +21,7 @@
 #define BOOST_NUMERIC_ODEINT_STEPPER_ROSENBROCK4_DENSE_OUTPUT_HPP_INCLUDED
 
 #include <utility>
+#include <type_traits>
 
 #include <boost/numeric/odeint/util/bind.hpp>
 #include <boost/numeric/odeint/util/is_resizeable.hpp>
@@ -36,20 +37,34 @@ namespace odeint {
  SFINAE Helper: call cs.reset_after_event() only if it exists
  ==============================================================================*/
 
-template<class CS, class Time>
-auto try_reset_after_event(CS& cs, Time dt_before)
-  -> decltype(cs.reset_after_event(dt_before), void())
-  {
-    // Case 1: ControlledStepper implements reset_after_event()
-    cs.reset_after_event(dt_before);
-  }
+namespace detail {
 
-template<class CS, class Time>
-void try_reset_after_event(...)
-{
-  // Case 2: Fallback for plain Boost steppers with NO reset API.
-  // No additional action required.
-}
+// Primary template: check if CS has reset_after_event(Time)
+template<class CS, class Time, class = void>
+struct has_reset_after_event : std::false_type {};
+
+                             template<class CS, class Time>
+                             struct has_reset_after_event<CS, Time,
+                                                          std::void_t<decltype(std::declval<CS&>().reset_after_event(std::declval<Time>()))>
+                             > : std::true_type {};
+
+                             // Dispatch: call reset_after_event if available
+                             template<class CS, class Time>
+                             inline typename std::enable_if<has_reset_after_event<CS, Time>::value>::type
+                             try_reset_after_event_impl(CS& cs, Time dt_before)
+                             {
+                               cs.reset_after_event(dt_before);
+                             }
+
+                             // Fallback: do nothing if reset_after_event is not available
+                             template<class CS, class Time>
+                             inline typename std::enable_if<!has_reset_after_event<CS, Time>::value>::type
+                             try_reset_after_event_impl(CS& /*cs*/, Time /*dt_before*/)
+                             {
+                               // No-op for plain Boost steppers without reset API
+                             }
+
+} // namespace detail
 
 
 /*==============================================================================
@@ -170,7 +185,7 @@ public:
    - both buffers reset to x_event
    - time reset
    - dt restored
-   - controller reset via try_reset_after_event()
+   - controller reset via try_reset_after_event_impl()
    --------------------------------------------------------------------------*/
   void reinitialize_at_event(const state_type &x_event,
                              time_type t_event,
@@ -183,8 +198,8 @@ public:
     m_t_old = t_event;
     m_dt    = dt_before;
 
-    // Safely reset controller state if supported
-    try_reset_after_event(m_stepper, dt_before);
+    // Safely reset controller state if supported (SFINAE dispatch)
+    detail::try_reset_after_event_impl(m_stepper, dt_before);
   }
 
 
