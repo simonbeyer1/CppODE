@@ -107,7 +107,7 @@
 #' @export
 CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    compile = TRUE, modelname = NULL,
-                   deriv = TRUE, deriv2 = FALSE,
+                   deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
                    useDenseOutput = TRUE,
                    verbose = FALSE) {
 
@@ -413,14 +413,14 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     # Dense output version (WITH Interpolation)
     if (deriv2) {
       stepper_line <- paste(
-        "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);",
+        sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
         "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else if (deriv) {
       stepper_line <- paste(
-        "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);",
+        sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
         "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
@@ -436,10 +436,10 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   } else {
     # Controlled stepper version (WITHOUT Interpolation)
     if (deriv2) {
-      stepper_line <- "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD2>>(abstol, reltol);"
+      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else if (deriv) {
-      stepper_line <- "  auto controlledStepper = rosenbrock4_controller_ad<rosenbrock4<AD>>(abstol, reltol);"
+      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else {
       stepper_line <- "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);"

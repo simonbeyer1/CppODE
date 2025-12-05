@@ -172,7 +172,7 @@ inline double estimate_initial_dt_local(
     double t0,
     double atol,
     double rtol,
-    double eta = 1e-3)
+    double eta = 5e-2)
 {
   const std::size_t n = x0.size();
 
@@ -228,7 +228,7 @@ inline double estimate_initial_dt_local(
     double t0,
     double atol,
     double rtol,
-    double eta = 1e-3)
+    double eta = 5e-2)
 {
   std::function<void(const vector<double>&, vector<double>&, const double&)> sys_f =
     [&system](const vector<double>& x, vector<double>& dxdt, const double& t) {
@@ -258,7 +258,7 @@ inline F<T> estimate_initial_dt_local(
     const F<T> t0,
     double atol,
     double rtol,
-    double eta = 1e-3)
+    double eta = 5e-2)
 {
   const std::size_t n = x0.size();
 
@@ -314,7 +314,7 @@ inline F<T> estimate_initial_dt_local(
     const F<T> t0,
     double atol,
     double rtol,
-    double eta = 1e-3)
+    double eta = 5e-2)
 {
   // Wrap into std::function so both AD and non-AD versions work
   std::function<void(vector<F<T>>&, vector<F<T>>&, const F<T>&)> sys_f =

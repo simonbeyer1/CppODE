@@ -13,6 +13,7 @@ CppODE(
   modelname = NULL,
   deriv = TRUE,
   deriv2 = FALSE,
+  fullErr = TRUE,
   useDenseOutput = TRUE,
   verbose = FALSE
 )

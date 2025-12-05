@@ -332,6 +332,7 @@ public:
 
     while(it != end)
     {
+      // Take a step
       Time t_start = m_st.current_time();
       m_st.do_step(m_sys);
       Time t_end = m_st.current_time();
@@ -341,6 +342,7 @@ public:
       checker.reset();
       dt = m_st.current_time_step();
 
+      // Process all output times in [t_start, t_end]
       while(it != end && less_eq_with_sign(*it, t_end, dt))
       {
         Time t_eval = *it;
@@ -359,8 +361,17 @@ public:
         {
           obs(x, t_eval);
 
-          // Reinitialize stepper with new state
+          // Reinitialize and immediately do a step to get valid interpolation data
           m_st.initialize(x, t_eval, dt);
+          m_st.do_step(m_sys);
+          ++steps;
+          checker();
+          checker.reset();
+          dt = m_st.current_time_step();
+
+          // Update interval for continued processing
+          t_start = t_eval;
+          t_end = m_st.current_time();
 
           // Reset root tracking
           for(size_t j = 0; j < m_root.size(); ++j) {
@@ -371,7 +382,7 @@ public:
           }
 
           ++it;
-          break;  // Exit inner loop, do fresh do_step
+          continue;  // Continue processing times in new interval
         }
 
         // Check for root events
@@ -384,33 +395,44 @@ public:
              !std::isnan(last_val[i]) &&
              last_val[i] * f_now < 0.0)
           {
-            // Localize root
+            // Localize root via bisection
+            Time t_root = t_eval;
+            State x_root = x;
             localize_root_dense(i, last_state[i], last_time[i],
-                                x, t_eval, last_val[i], f_now, root_tol);
+                                x_root, t_root, last_val[i], f_now, root_tol);
 
             // Output state at root (before event)
-            obs(x, t_eval);
+            obs(x_root, t_root);
 
             // Apply event
-            apply_event(x, m_root[i].state_index, m_root[i].value, m_root[i].method);
+            apply_event(x_root, m_root[i].state_index, m_root[i].value, m_root[i].method);
             fired[i]++;
 
             // Output state after event
-            obs(x, t_eval + Time(1e-15));
+            obs(x_root, t_root + Time(1e-15));
 
-            // Reinitialize stepper with post-event state
-            m_st.initialize(x, t_eval, dt);
+            // Reinitialize stepper and immediately do a step
+            x = x_root;
+            m_st.initialize(x, t_root, dt);
+            m_st.do_step(m_sys);
+            ++steps;
+            checker();
+            checker.reset();
+            dt = m_st.current_time_step();
 
-            // Reset root tracking (but keep fired counts!)
+            // Update interval - DON'T increment it, reprocess current time
+            t_start = t_root;
+            t_end = m_st.current_time();
+
+            // Reset root tracking (keep fired counts!)
             for(size_t j = 0; j < m_root.size(); ++j) {
               last_val[j] = std::numeric_limits<double>::quiet_NaN();
               last_state[j] = x;
-              last_time[j] = t_eval;
+              last_time[j] = t_root;
             }
 
-            ++it;
             root_fired = true;
-            break;  // Exit for-loop
+            break;  // Exit for-loop, continue with same *it in new interval
           }
           else {
             last_val[i] = f_now;
@@ -420,7 +442,7 @@ public:
         }
 
         if(root_fired) {
-          break;  // Exit inner while-loop, do fresh do_step
+          continue;  // Reprocess current *it in new interval
         }
 
         // No event - output and continue
