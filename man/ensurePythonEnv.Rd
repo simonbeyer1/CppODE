@@ -2,46 +2,33 @@
 % Please edit documentation in R/tools.R
 \name{ensurePythonEnv}
 \alias{ensurePythonEnv}
-\title{Ensure availability of a dedicated Python environment with SymPy}
+\title{Ensure availability of a dedicated Python environment with required packages}
 \usage{
-ensurePythonEnv(envname = "CppODE", verbose = F)
+ensurePythonEnv(
+  envname = "CppODE",
+  packages = c("numpy", "sympy"),
+  verbose = FALSE
+)
 }
 \arguments{
 \item{envname}{Character scalar. Name of the Python virtual environment
 to check or create. Default is \code{"CppODE"}.}
+
+\item{packages}{Character vector. Python packages to ensure are installed.
+Default: c("numpy", "sympy").}
+
+\item{verbose}{Logical. If TRUE, prints progress messages.}
 }
 \value{
-Invisibly returns the name of the environment that was ensured
-and activated.
+Invisibly returns the name of the environment that was ensured.
 }
 \description{
 This helper function checks whether a Python virtual environment with a
-given name (default: \code{"CppODE"}) exists and contains the package
-\strong{SymPy}. If not, it will automatically create the virtual environment
-using \code{reticulate::virtualenv_create()} and install SymPy into it.
+given name (default: \code{"CppODE"}) exists and contains the required
+Python packages (default: c("numpy", "sympy")). If not, it will create
+the virtual environment and install the missing packages.
 }
 \details{
 After ensuring availability, the environment is activated via
-\code{reticulate::use_virtualenv()}, so that subsequent calls to
-\code{reticulate::import("sympy")} work reliably, independent of the user's
-global Python installation.
-\subsection{Requirements}{
-\itemize{
-\item A working \code{python3} executable on your system.
-On Linux, install via your package manager, e.g.:
-\preformatted{
-  sudo apt-get install python3 python3-venv python3-pip
-  }
+\code{reticulate::use_virtualenv()}.
 }
-}
-
-\subsection{Usage}{
-
-\preformatted{
-ensurePythonEnv("CppODE")
-sympy  <- reticulate::import("sympy")
-parser <- reticulate::import("sympy.parsing.sympy_parser")
-}
-}
-}
-\keyword{internal}

@@ -157,7 +157,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   }
 
   # --- CALL PYTHON CODE GENERATOR (single call!) ---
-  ensurePythonEnv("CppODE", verbose)
+  ensurePythonEnv("CppODE", verbose = verbose)
 
   # Source Python module
   py_file <- system.file("python", "codegen.py", package = "CppODE")
