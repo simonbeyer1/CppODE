@@ -893,10 +893,14 @@ funCpp <- function(eqns,
     modelname <- paste(c("f", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
 
   checkArguments <- function(M, p) {
-    n_obs <- 1
+    # Determine n_obs from input matrix even if no variables are needed
+    n_obs <- if (!is.null(M) && (is.matrix(M) || is.data.frame(M))) nrow(M)
+    else if (!is.null(M) && is.vector(M) && !is.list(M)) length(M) / max(length(innames), 1)
+    else 1
+    n_obs <- as.integer(max(n_obs, 1))
+
     if (is.null(innames) || length(innames) == 0) {
-      M <- matrix(0, nrow = 1, ncol = 0)
-      n_obs <- 1
+      M <- matrix(0, nrow = n_obs, ncol = 0)
     } else {
       if (is.null(M)) stop("Variables defined but 'vars' is NULL.")
       if (is.vector(M) && !is.list(M)) {
@@ -909,11 +913,8 @@ funCpp <- function(eqns,
         colnames(M) <- innames
       }
       if (!all(innames %in% colnames(M))) {
-        if (warnings) warning("Missing variable columns → filled with 0.")
         missing <- setdiff(innames, colnames(M))
-        add <- matrix(0, nrow = nrow(M), ncol = length(missing),
-                      dimnames = list(NULL, missing))
-        M <- cbind(M, add)
+        stop("Missing variable columns: ", paste(missing, collapse = ", "))
       }
       M <- M[, innames, drop = FALSE]
       n_obs <- nrow(M)
@@ -926,10 +927,8 @@ funCpp <- function(eqns,
       if (is.null(names(p)))
         stop("params must be a named numeric vector.")
       if (!all(parameters %in% names(p))) {
-        if (warnings) warning("Missing parameters → filled with 0.")
         missing <- setdiff(parameters, names(p))
-        add <- structure(rep(0, length(missing)), names = missing)
-        p <- c(p, add)
+        stop("Missing parameters: ", paste(missing, collapse = ", "))
       }
       p <- p[parameters]
     }
