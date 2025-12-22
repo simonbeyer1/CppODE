@@ -8,14 +8,14 @@ library(CppODE)
 library(dMod)
 library(dplyr)
 
-# eqns <- c(A = "1*(k_p) -1*(k1 * A) +1*(k2 * B)*log(10)",
-#                 B = "1*(k1 * A) -1*(k2 * B) -1*(k_d * B)")
-# #
-# #
-# derivs <- derivSymb(eqns, deriv2 = T, real = T)
-# derivs$jacobian
-# derivs$hessian[["A"]]
-# derivs$hessian[["B"]]
+eqns <- c(A = "1*(k_p) -1*(k1 * A) +1*(k2 * B)*log(10)",
+                B = "1*(k1 * A) -1*(k2 * B) -1*(k_d * B)")
+#
+#
+derivs <- derivSymb(eqns, deriv2 = T, real = T)
+derivs$jacobian
+derivs$hessian[["A"]]
+derivs$hessian[["B"]]
 #
 
 

@@ -26,8 +26,8 @@ events <- data.frame(
 )
 
 # # Generate and compile solver
-f_controlled <- CppODE(eqns, events = events, modelname = "Amodel_c", deriv = T, deriv2 = F, compile = T, useDenseOutput = F, fullErr = F)
-f_dense <- CppODE(eqns, events = events, modelname = "Amodel_d", deriv = T, deriv2 = F, compile = T, useDenseOutput = T, fullErr = F)
+f_controlled <- CppODE(eqns, events = events, modelname = "Amodel_c", compile = T, useDenseOutput = F, fullErr = F)
+f_dense <- CppODE(eqns, events = events, modelname = "Amodel_d", compile = T, useDenseOutput = T, fullErr = F)
 
 # Wrap in an R solver function
 solve_c <- function(times, params,
@@ -106,13 +106,13 @@ solve_d <- function(times, params,
 
 # Example run
 params <- c(A = 0, B = 0, k1 = 0.1, k2 = 0.2, k3 = 0.1, dose = 1, Acrit = 0.25)
-times  <- seq(-10, 400, length.out = 300)
+times  <- seq(-10, 400, length.out = 1000)
 res_c <- solve_c(times, params)
-res_d <- solve_c(times, params)
+res_d <- solve_d(times, params)
 res_c$variable
 head(res_c$sens1[, "A", ])
 
-res_c$sens2[10, "A", , ]
+res_d$sens2[10, "A", , ]
 
 out_c <- as.data.frame(res_c$variable) %>%
   mutate(time = res_c$time) %>%
