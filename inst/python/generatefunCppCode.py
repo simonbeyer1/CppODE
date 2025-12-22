@@ -1,12 +1,12 @@
 """
 Algebraic Function C++ Code Generator for CppODE
-================================================
+============================================================
 Generates C++ source code for evaluating algebraic functions and their
 symbolic Jacobians and Hessians. Supports fixed symbols that are treated
 as constants (no differentiation) but still appear as runtime parameters.
 
 Author: Simon Beyer
-Updated: 2025-11-04
+Updated: 2025-12-16
 """
 
 import sympy as sp
@@ -15,21 +15,25 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
     convert_xor
 )
+from sympy.printing.cxx import CXX17CodePrinter
 import os
 import re
+from functools import lru_cache
+from io import StringIO
 
 
 # =====================================================================
-# Safe parsing configuration
+# Safe parsing configuration (cached)
 # =====================================================================
 
-def _get_safe_parse_dict():
+@lru_cache(maxsize=1)
+def _get_safe_parse_dict_cached():
     """
     Create safe local_dict for parsing that avoids SymPy singleton conflicts.
-    Allows all standard mathematical functions but treats S, I, N, etc. as regular symbols.
+    Cached to avoid repeated dict creation.
     """
-    safe_local_dict = {
-        # Override problematic SymPy singletons - treat as regular symbols
+    return {
+        # Override problematic SymPy singletons
         'S': sp.Symbol('S'),
         'I': sp.Symbol('I'),
         'N': sp.Symbol('N'),
@@ -42,141 +46,172 @@ def _get_safe_parse_dict():
         'exp10': lambda x: sp.Pow(10, x),
         'exp2': lambda x: sp.Pow(2, x),
         'log': sp.log,
-        'ln': sp.log,  # alias for natural log
+        'ln': sp.log,
         'log10': lambda x: sp.log(x, 10),
         'log2': lambda x: sp.log(x, 2),
         
         # Trigonometric functions
-        'sin': sp.sin,
-        'cos': sp.cos,
-        'tan': sp.tan,
-        'cot': sp.cot,
-        'sec': sp.sec,
-        'csc': sp.csc,
+        'sin': sp.sin, 'cos': sp.cos, 'tan': sp.tan,
+        'cot': sp.cot, 'sec': sp.sec, 'csc': sp.csc,
         
         # Inverse trigonometric functions
-        'asin': sp.asin,
-        'acos': sp.acos,
-        'atan': sp.atan,
-        'acot': sp.acot,
-        'asec': sp.asec,
-        'acsc': sp.acsc,
+        'asin': sp.asin, 'acos': sp.acos, 'atan': sp.atan,
+        'acot': sp.acot, 'asec': sp.asec, 'acsc': sp.acsc,
         'atan2': sp.atan2,
         
         # Hyperbolic functions
-        'sinh': sp.sinh,
-        'cosh': sp.cosh,
-        'tanh': sp.tanh,
-        'coth': sp.coth,
-        'sech': sp.sech,
-        'csch': sp.csch,
+        'sinh': sp.sinh, 'cosh': sp.cosh, 'tanh': sp.tanh,
+        'coth': sp.coth, 'sech': sp.sech, 'csch': sp.csch,
         
         # Inverse hyperbolic functions
-        'asinh': sp.asinh,
-        'acosh': sp.acosh,
-        'atanh': sp.atanh,
-        'acoth': sp.acoth,
-        'asech': sp.asech,
-        'acsch': sp.acsch,
+        'asinh': sp.asinh, 'acosh': sp.acosh, 'atanh': sp.atanh,
+        'acoth': sp.acoth, 'asech': sp.asech, 'acsch': sp.acsch,
         
         # Power and root functions
-        'sqrt': sp.sqrt,
-        'cbrt': sp.cbrt,  # cube root
-        'root': sp.root,
-        'pow': sp.Pow,
+        'sqrt': sp.sqrt, 'cbrt': sp.cbrt, 'root': sp.root, 'pow': sp.Pow,
         
         # Absolute value and sign
-        'abs': sp.Abs,
-        'sign': sp.sign,
+        'abs': sp.Abs, 'sign': sp.sign,
         
         # Rounding functions
-        'floor': sp.floor,
-        'ceiling': sp.ceiling,
+        'floor': sp.floor, 'ceiling': sp.ceiling,
         'round': lambda x: sp.floor(x + sp.Rational(1, 2)),
         
         # Min/Max
-        'min': sp.Min,
-        'max': sp.Max,
+        'min': sp.Min, 'max': sp.Max,
         
         # Factorial and gamma functions
-        'factorial': sp.factorial,
-        'gamma': sp.gamma,
-        'loggamma': sp.loggamma,
-        'digamma': sp.digamma,
-        'polygamma': sp.polygamma,
-        'beta': sp.beta,
+        'factorial': sp.factorial, 'gamma': sp.gamma,
+        'loggamma': sp.loggamma, 'digamma': sp.digamma,
+        'polygamma': sp.polygamma, 'beta': sp.beta,
         
         # Error functions
-        'erf': sp.erf,
-        'erfc': sp.erfc,
-        'erfi': sp.erfi,
+        'erf': sp.erf, 'erfc': sp.erfc, 'erfi': sp.erfi,
         
         # Bessel functions
-        'besselj': sp.besselj,
-        'bessely': sp.bessely,
-        'besseli': sp.besseli,
-        'besselk': sp.besselk,
+        'besselj': sp.besselj, 'bessely': sp.bessely,
+        'besseli': sp.besseli, 'besselk': sp.besselk,
         
         # Special functions
-        'Heaviside': sp.Heaviside,
-        'DiracDelta': sp.DiracDelta,
-        'KroneckerDelta': sp.KroneckerDelta,
+        'Heaviside': sp.Heaviside, 'DiracDelta': sp.DiracDelta,
+        'KroneckerDelta': sp.KroneckerDelta, 'Piecewise': sp.Piecewise,
         
-        # Piecewise
-        'Piecewise': sp.Piecewise,
+        # Constants
+        'pi': sp.pi, 'E': sp.E, 'euler_gamma': sp.EulerGamma, 'oo': sp.oo,
         
-        # Constants (if you want to allow them explicitly)
-        'pi': sp.pi,
-        'E': sp.E,
-        'euler_gamma': sp.EulerGamma,
-        'oo': sp.oo,  # infinity
-        
-        # Complex functions (optional, depending on your use case)
-        're': sp.re,
-        'im': sp.im,
-        'conjugate': sp.conjugate,
-        'arg': sp.arg,
+        # Complex functions
+        're': sp.re, 'im': sp.im, 'conjugate': sp.conjugate, 'arg': sp.arg,
     }
-    
-    return safe_local_dict
 
 
-def _safe_sympify(expr_str, local_symbols=None):
+# =====================================================================
+# Code Generation Context (holds precomputed state)
+# =====================================================================
+
+class CodeGenContext:
     """
-    Safely parse a string expression to SymPy, avoiding singleton conflicts.
-    
-    Parameters
-    ----------
-    expr_str : str
-        Expression string to parse
-    local_symbols : dict, optional
-        Additional local symbols (variables/parameters)
-    
-    Returns
-    -------
-    sp.Expr
-        Parsed SymPy expression
+    Holds precomputed state for efficient code generation.
+    Avoids repeated symbol creation and regex compilation.
     """
-    expr_str = str(expr_str).strip()
-    if expr_str == "0":
-        return sp.Integer(0)
     
-    safe_local = _get_safe_parse_dict()
+    def __init__(self, variables, parameters):
+        self.variables = list(variables) if variables else []
+        self.parameters = list(parameters) if parameters else []
+        
+        # Create symbols once
+        self.var_symbols = {v: sp.Symbol(v, real=True) for v in self.variables}
+        self.par_symbols = {p: sp.Symbol(p, real=True) for p in self.parameters}
+        self.all_symbols = {**self.var_symbols, **self.par_symbols}
+        
+        # Build replacement mapping: symbol_name -> replacement string
+        self.replacements = {}
+        for i, v in enumerate(self.variables):
+            self.replacements[v] = f"x_obs[{i}]"
+        for i, p in enumerate(self.parameters):
+            self.replacements[p] = f"p[{i}]"
+        
+        # Precompile regex patterns (sorted by length, longest first)
+        all_names = sorted(self.replacements.keys(), key=len, reverse=True)
+        self.compiled_patterns = [
+            (re.compile(r"\b" + re.escape(name) + r"\b"), self.replacements[name])
+            for name in all_names
+        ]
+        
+        # Custom printer for faster code generation
+        self.printer = CXX17CodePrinter()
+        
+        # Cache for converted expressions
+        self._expr_cache = {}
     
-    # Merge with user-provided symbols
-    if local_symbols:
-        safe_local = {**safe_local, **local_symbols}
+    def to_cpp(self, expr):
+        """
+        Convert a SymPy expression or string to valid C++ code.
+        Uses caching for repeated expressions.
+        """
+        # Create a hashable key
+        if isinstance(expr, str):
+            cache_key = expr.strip()
+            if cache_key == "0":
+                return "0.0"
+        else:
+            cache_key = expr
+            if expr == 0:
+                return "0.0"
+        
+        # Check cache
+        if cache_key in self._expr_cache:
+            return self._expr_cache[cache_key]
+        
+        # Parse string if needed
+        if isinstance(expr, str):
+            expr = self._parse_expr(cache_key)
+        
+        if expr == 0:
+            self._expr_cache[cache_key] = "0.0"
+            return "0.0"
+        
+        # Replace DiracDelta
+        expr = self._replace_dirac_delta(expr)
+        
+        # Generate C++ code
+        cpp_code = self.printer.doprint(expr)
+        
+        # Apply all replacements using precompiled patterns
+        for pattern, replacement in self.compiled_patterns:
+            cpp_code = pattern.sub(replacement, cpp_code)
+        
+        self._expr_cache[cache_key] = cpp_code
+        return cpp_code
     
-    transformations = standard_transformations + (
-        convert_xor,
-    )
+    def _parse_expr(self, expr_str):
+        """Parse a string expression to SymPy."""
+        safe_local = dict(_get_safe_parse_dict_cached())
+        safe_local.update(self.all_symbols)
+        
+        transformations = standard_transformations + (convert_xor,)
+        
+        return parse_expr(
+            expr_str,
+            local_dict=safe_local,
+            transformations=transformations,
+            evaluate=True,
+        )
     
-    return parse_expr(
-        expr_str,
-        local_dict=safe_local,
-        transformations=transformations,
-        evaluate=True,
-    )
+    @staticmethod
+    def _replace_dirac_delta(expr):
+        """Replace DiracDelta(x) with a discrete equivalent Piecewise form."""
+        if expr == 0:
+            return expr
+        
+        def dirac_to_piecewise(d):
+            if isinstance(d, sp.DiracDelta):
+                arg = d.args[0]
+                return sp.Piecewise(
+                    (sp.Float(1.0), sp.Eq(arg, 0)), (sp.Float(0.0), True)
+                )
+            return d
+        
+        return expr.replace(lambda x: isinstance(x, sp.DiracDelta), dirac_to_piecewise)
 
 
 # =====================================================================
@@ -208,36 +243,30 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     dict
         {"filename": absolute path, "modelname": model name}
     """
-    # variables: String -> [String]
+    # Normalize inputs
     if isinstance(variables, str):
         variables = [variables]
-    elif variables is None:
-        variables = []
-
-    # parameters: None / String -> Liste
+    variables = variables or []
+    
     if parameters is None:
         parameters = []
     elif isinstance(parameters, str):
         parameters = [parameters]
-        
-        
-    variables = variables or []
-    parameters = parameters or []
 
-    # Ensure exprs is a dictionary
     if isinstance(exprs, list):
         exprs = {f"f{i+1}": expr for i, expr in enumerate(exprs)}
     elif not isinstance(exprs, dict):
         raise TypeError("exprs must be a dict or list")
 
-    # Parse to SymPy expressions
-    parsed_exprs = _parse_expressions(exprs, variables, parameters)
+    # Create context with precomputed state
+    ctx = CodeGenContext(variables, parameters)
 
-    # Generate full C++ source code
+    # Parse expressions
+    parsed_exprs = _parse_expressions(exprs, ctx)
+
+    # Generate C++ code using StringIO for efficient string building
     cpp_code = _generate_cpp_code(
-        parsed_exprs, variables, parameters,
-        jacobian=jacobian, hessian=hessian,
-        modelname=modelname
+        parsed_exprs, ctx, jacobian, hessian, modelname
     )
 
     filename = f"{modelname}.cpp"
@@ -248,20 +277,29 @@ def generate_fun_cpp(exprs, variables, parameters=None,
 
 
 # =====================================================================
-# Parsing and preprocessing
+# Parsing
 # =====================================================================
 
-def _parse_expressions(exprs, variables, parameters):
+def _parse_expressions(exprs, ctx):
     """Parse algebraic expressions into SymPy objects."""
-    vars_syms = {v: sp.Symbol(v, real=True) for v in variables}
-    pars_syms = {p: sp.Symbol(p, real=True) for p in parameters}
-    local_symbols = {**vars_syms, **pars_syms}
-
+    safe_local = dict(_get_safe_parse_dict_cached())
+    safe_local.update(ctx.all_symbols)
+    
+    transformations = standard_transformations + (convert_xor,)
+    
     parsed = {}
     for name, expr_str in exprs.items():
         try:
-            expr_str = str(expr_str)
-            parsed[name] = _safe_sympify(expr_str, local_symbols)
+            expr_str = str(expr_str).strip()
+            if expr_str == "0":
+                parsed[name] = sp.Integer(0)
+            else:
+                parsed[name] = parse_expr(
+                    expr_str,
+                    local_dict=safe_local,
+                    transformations=transformations,
+                    evaluate=True,
+                )
         except Exception as e:
             raise ValueError(
                 f"Failed to parse expression '{name}': {expr_str}\nError: {e}"
@@ -270,229 +308,146 @@ def _parse_expressions(exprs, variables, parameters):
 
 
 # =====================================================================
-# Utility helpers
+# C++ source assembly (using StringIO)
 # =====================================================================
 
-def _replace_dirac_delta(expr):
-    """Replace DiracDelta(x) with a discrete equivalent Piecewise form."""
-    if expr == 0:
-        return expr
-
-    def dirac_to_piecewise(d):
-        if isinstance(d, sp.DiracDelta):
-            arg = d.args[0]
-            return sp.Piecewise(
-                (sp.Float(1.0), sp.Eq(arg, 0)), (sp.Float(0.0), True)
-            )
-        return d
-
-    return expr.replace(lambda x: isinstance(x, sp.DiracDelta), dirac_to_piecewise)
-
-
-def _safe_replace(text, symbol, replacement):
-    """Replace symbol in code safely using regex word boundaries."""
-    pattern = r"\b" + re.escape(symbol) + r"\b"
-    return re.sub(pattern, replacement, str(text))
-
-
-def _to_cpp(expr, variables, parameters):
-    """
-    Convert a SymPy expression or string to valid C++ code.
-
-    * Variables → x_obs[i]
-    * Parameters (including fixed) → p[i]
-    """
-    # Convert string to SymPy expression if needed
-    if isinstance(expr, str):
-        if expr.strip() == "0":
-            return "0.0"
-        vars_syms = {v: sp.Symbol(v, real=True) for v in variables}
-        pars_syms = {p: sp.Symbol(p, real=True) for p in parameters}
-        local_symbols = {**vars_syms, **pars_syms}
-        
-        expr = _safe_sympify(expr, local_symbols)
-
-    if expr == 0:
-        return "0.0"
-
-    expr = _replace_dirac_delta(expr)
-    cpp_code = sp.cxxcode(expr, standard="c++17", strict=False)
-
-    # Perform safe replacements for all declared symbols
-    all_symbols = list(variables) + list(parameters)
-    sorted_symbols = sorted(all_symbols, key=len, reverse=True)
-
-    # Replace variables with x_obs[i]
-    for sym in sorted_symbols:
-        if sym in variables:
-            idx = variables.index(sym)
-            cpp_code = _safe_replace(cpp_code, sym, f"x_obs[{idx}]")
-
-    # Replace all parameters (including fixed) with p[i]
-    for sym in sorted_symbols:
-        if sym in parameters:
-            idx = parameters.index(sym)
-            cpp_code = _safe_replace(cpp_code, sym, f"p[{idx}]")
-
-    return cpp_code
-
-
-# =====================================================================
-# C++ source assembly
-# =====================================================================
-
-def _generate_cpp_code(exprs, variables, parameters, jacobian, hessian, modelname):
+def _generate_cpp_code(exprs, ctx, jacobian, hessian, modelname):
     """Assemble the complete C++ source for the model."""
     out_names = list(exprs.keys())
+    buf = StringIO()
+    
+    # Header
+    buf.write(f"// Auto-generated C++ code for {modelname}\n")
+    buf.write("// Generated by CppODE\n")
+    buf.write("// ------------------------------------------------------------\n")
+    buf.write("#include <cmath>\n")
+    buf.write("#include <algorithm>\n\n")
+    buf.write("extern \"C\" {\n\n")
+    buf.write(f"// Variables: {', '.join(ctx.variables) if ctx.variables else 'none'}\n")
+    buf.write(f"// Parameters: {', '.join(ctx.parameters) if ctx.parameters else 'none'}\n")
+    buf.write(f"// Outputs: {', '.join(out_names)}\n\n")
 
-    lines = [
-        f"// Auto-generated C++ code for {modelname}",
-        "// Generated by CppODE",
-        "// ------------------------------------------------------------",
-        "#include <cmath>",
-        "#include <algorithm>",
-        "",
-        "extern \"C\" {",
-        "",
-        f"// Variables: {', '.join(variables) if variables else 'none'}",
-        f"// Parameters: {', '.join(parameters) if parameters else 'none'}",
-        f"// Outputs: {', '.join(out_names)}",
-        ""
-    ]
+    # Eval function
+    _write_eval_function(buf, exprs, out_names, ctx, modelname)
 
-    lines.extend(_generate_eval_function(exprs, out_names, variables, parameters, modelname))
-
+    # Jacobian
     if jacobian is not None:
-        lines.extend(_generate_jacobian_function(jacobian, out_names, variables, parameters, modelname))
+        _write_jacobian_function(buf, jacobian, out_names, ctx, modelname)
 
+    # Hessian
     if hessian is not None:
-        lines.extend(_generate_hessian_function(hessian, out_names, variables, parameters, modelname))
+        _write_hessian_function(buf, hessian, out_names, ctx, modelname)
 
-    lines.append("} // extern \"C\"")
-    lines.append("")
-    return "\n".join(lines)
+    buf.write("} // extern \"C\"\n")
+    
+    return buf.getvalue()
 
 
-# =====================================================================
-# Evaluation function
-# =====================================================================
-
-def _generate_eval_function(exprs, out_names, variables, parameters, modelname):
+def _write_eval_function(buf, exprs, out_names, ctx, modelname):
     """Generate main evaluation loop in C++."""
     n_out = len(out_names)
-    n_vars = len(variables)
+    n_vars = len(ctx.variables)
 
-    lines = [
-        f"void {modelname}_eval(double* x, double* y, double* p, int* n, int* k, int* l) {{",
-        "    const int n_obs = *n;",
-        "    const int n_vars = *k;",
-        "    const int n_out  = *l;",
-        ""
-    ]
-
-    lines.append("    for (int obs = 0; obs < n_obs; obs++) {")
+    buf.write(f"void {modelname}_eval(double* x, double* y, double* p, int* n, int* k, int* l) {{\n")
+    buf.write("    const int n_obs = *n;\n")
+    buf.write("    const int n_vars = *k;\n")
+    buf.write("    const int n_out  = *l;\n\n")
+    buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
+    
     if n_vars > 0:
-        lines.append("        const double* x_obs = x + obs * n_vars;")
-    lines.append("")
+        buf.write("        const double* x_obs = x + obs * n_vars;\n\n")
 
     for i, out_name in enumerate(out_names):
-        cpp_code = _to_cpp(exprs[out_name], variables, parameters)
-        lines.append(f"        // {out_name}")
-        lines.append(f"        y[obs * n_out + {i}] = {cpp_code};")
-        lines.append("")
+        cpp_code = ctx.to_cpp(exprs[out_name])
+        buf.write(f"        // {out_name}\n")
+        buf.write(f"        y[obs * n_out + {i}] = {cpp_code};\n\n")
 
-    lines.append("    }")
-    lines.extend(["}", ""])
-    return lines
+    buf.write("    }\n}\n\n")
 
 
-# =====================================================================
-# Jacobian generation
-# =====================================================================
-
-def _generate_jacobian_function(jacobian, out_names, variables, parameters, modelname):
-    """Generate Jacobian evaluation function (robust to missing fixed symbols)."""
+def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
+    """Generate Jacobian evaluation function (sparse: only non-zero entries)."""
     first_fn = next(iter(jacobian))
     n_symbols = len(jacobian[first_fn])
-    n_vars = len(variables)
+    n_vars = len(ctx.variables)
     n_out = len(out_names)
 
-    lines = [
-        f"void {modelname}_jacobian(double* x, double* jac, double* p, int* n, int* k, int* l) {{",
-        "    const int n_obs = *n;",
-        "    const int n_vars = *k;",
-        f"    const int n_out = {n_out};",
-        f"    const int n_symbols = {n_symbols};",
-        "",
-        "    for (int obs = 0; obs < n_obs; obs++) {"
-    ]
+    buf.write(f"void {modelname}_jacobian(double* x, double* jac, double* p, int* n, int* k, int* l) {{\n")
+    buf.write("    const int n_obs = *n;\n")
+    buf.write("    const int n_vars = *k;\n")
+    buf.write(f"    const int n_out = {n_out};\n")
+    buf.write(f"    const int n_symbols = {n_symbols};\n\n")
+    
+    # Zero-initialize entire jacobian array
+    buf.write("    // Zero-initialize\n")
+    buf.write("    std::fill(jac, jac + n_obs * n_out * n_symbols, 0.0);\n\n")
+    
+    buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
+    
     if n_vars > 0:
-        lines.append("        const double* x_obs = x + obs * n_vars;")
-        lines.append("")
+        buf.write("        const double* x_obs = x + obs * n_vars;\n\n")
 
     for i, out_name in enumerate(out_names):
         if out_name not in jacobian:
-            for j in range(n_symbols):
-                lines.append(
-                    f"        jac[{i} + {j} * n_out + obs * (n_out * n_symbols)] = 0.0;"
-                )
             continue
 
         jac_exprs = jacobian[out_name]
+        has_nonzero = False
         for j, expr in enumerate(jac_exprs):
-            cpp_code = _to_cpp(expr, variables, parameters)
-            lines.append(
-                f"        jac[{i} + {j} * n_out + obs * (n_out * n_symbols)] = {cpp_code};"
-            )
-        lines.append("")
+            cpp_code = ctx.to_cpp(expr)
+            # Skip zero entries
+            if cpp_code == "0.0" or cpp_code == "0":
+                continue
+            has_nonzero = True
+            buf.write(f"        jac[{i} + {j} * n_out + obs * (n_out * n_symbols)] = {cpp_code};\n")
+        
+        if has_nonzero:
+            buf.write("\n")
 
-    lines.extend(["    }", "}", ""])
-    return lines
+    buf.write("    }\n}\n\n")
 
 
-# =====================================================================
-# Hessian generation
-# =====================================================================
-
-def _generate_hessian_function(hessian, out_names, variables, parameters, modelname):
-    """Generate Hessian evaluation function (robust to missing fixed symbols)."""
+def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
+    """Generate Hessian evaluation function (sparse: only non-zero entries)."""
     first_fn = next(iter(hessian))
     n_symbols = len(hessian[first_fn])
-    n_vars = len(variables)
+    n_vars = len(ctx.variables)
     n_out = len(out_names)
 
-    lines = [
-        f"void {modelname}_hessian(double* x, double* hess, double* p, int* n, int* k, int* l) {{",
-        "    const int n_obs = *n;",
-        "    const int n_vars = *k;",
-        f"    const int n_out = {n_out};",
-        f"    const int n_symbols = {n_symbols};",
-        "",
-        "    for (int obs = 0; obs < n_obs; obs++) {"
-    ]
+    buf.write(f"void {modelname}_hessian(double* x, double* hess, double* p, int* n, int* k, int* l) {{\n")
+    buf.write("    const int n_obs = *n;\n")
+    buf.write("    const int n_vars = *k;\n")
+    buf.write(f"    const int n_out = {n_out};\n")
+    buf.write(f"    const int n_symbols = {n_symbols};\n\n")
+    
+    # Zero-initialize entire hessian array
+    buf.write("    // Zero-initialize\n")
+    buf.write("    std::fill(hess, hess + n_obs * n_out * n_symbols * n_symbols, 0.0);\n\n")
+    
+    buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
+    
     if n_vars > 0:
-        lines.append("        const double* x_obs = x + obs * n_vars;")
-        lines.append("")
+        buf.write("        const double* x_obs = x + obs * n_vars;\n\n")
 
     for i, out_name in enumerate(out_names):
         if out_name not in hessian:
-            for j in range(n_symbols):
-                for k in range(n_symbols):
-                    lines.append(
-                        f"        hess[{i} + {j} * n_out + {k} * (n_out * n_symbols) + "
-                        f"obs * (n_out * n_symbols * n_symbols)] = 0.0;"
-                    )
             continue
 
         hess_matrix = hessian[out_name]
+        has_nonzero = False
         for j, hess_row in enumerate(hess_matrix):
             for k, expr in enumerate(hess_row):
-                cpp_code = _to_cpp(expr, variables, parameters)
-                lines.append(
+                cpp_code = ctx.to_cpp(expr)
+                # Skip zero entries
+                if cpp_code == "0.0" or cpp_code == "0":
+                    continue
+                has_nonzero = True
+                buf.write(
                     f"        hess[{i} + {j} * n_out + {k} * (n_out * n_symbols) + "
-                    f"obs * (n_out * n_symbols * n_symbols)] = {cpp_code};"
+                    f"obs * (n_out * n_symbols * n_symbols)] = {cpp_code};\n"
                 )
-        lines.append("")
+        
+        if has_nonzero:
+            buf.write("\n")
 
-    lines.extend(["    }", "}", ""])
-    return lines
+    buf.write("    }\n}\n\n")

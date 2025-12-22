@@ -1,13 +1,13 @@
 """
 Symbolic differentiation utilities for CppODE
-=============================================
+=========================================================
 Provides safe symbolic differentiation (Jacobian + Hessian)
 using SymPy, with optional post-hoc enforcement of real-valued
 simplifications. Non-analytic expressions like abs(), max(), or
-sign() are supported without recursion errors.
+sign() are supported.
 
 Author: Simon Beyer
-Updated: 2025-11-04
+Updated: 2025-12-16
 """
 
 import sympy as sp
@@ -16,17 +16,23 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
     convert_xor
 )
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 
 
 # -----------------------------------------------------------------------------
-# Safe parsing configuration
+# Safe parsing configuration (cached)
 # -----------------------------------------------------------------------------
-def _get_safe_parse_dict():
+
+@lru_cache(maxsize=1)
+def _get_safe_parse_dict_cached():
     """
     Create safe local_dict for parsing that avoids SymPy singleton conflicts.
+    Cached to avoid repeated dict creation.
     """
-    safe_local_dict = {
-        # Override problematic SymPy singletons - treat as regular symbols
+    return {
+        # Override problematic SymPy singletons
         'S': sp.Symbol('S'),
         'I': sp.Symbol('I'),
         'N': sp.Symbol('N'),
@@ -44,197 +50,175 @@ def _get_safe_parse_dict():
         'log2': lambda x: sp.log(x, 2),
         
         # Trigonometric functions
-        'sin': sp.sin,
-        'cos': sp.cos,
-        'tan': sp.tan,
-        'cot': sp.cot,
-        'sec': sp.sec,
-        'csc': sp.csc,
+        'sin': sp.sin, 'cos': sp.cos, 'tan': sp.tan,
+        'cot': sp.cot, 'sec': sp.sec, 'csc': sp.csc,
         
         # Inverse trigonometric functions
-        'asin': sp.asin,
-        'acos': sp.acos,
-        'atan': sp.atan,
-        'acot': sp.acot,
-        'asec': sp.asec,
-        'acsc': sp.acsc,
+        'asin': sp.asin, 'acos': sp.acos, 'atan': sp.atan,
+        'acot': sp.acot, 'asec': sp.asec, 'acsc': sp.acsc,
         'atan2': sp.atan2,
         
         # Hyperbolic functions
-        'sinh': sp.sinh,
-        'cosh': sp.cosh,
-        'tanh': sp.tanh,
-        'coth': sp.coth,
-        'sech': sp.sech,
-        'csch': sp.csch,
+        'sinh': sp.sinh, 'cosh': sp.cosh, 'tanh': sp.tanh,
+        'coth': sp.coth, 'sech': sp.sech, 'csch': sp.csch,
         
         # Inverse hyperbolic functions
-        'asinh': sp.asinh,
-        'acosh': sp.acosh,
-        'atanh': sp.atanh,
-        'acoth': sp.acoth,
-        'asech': sp.asech,
-        'acsch': sp.acsch,
+        'asinh': sp.asinh, 'acosh': sp.acosh, 'atanh': sp.atanh,
+        'acoth': sp.acoth, 'asech': sp.asech, 'acsch': sp.acsch,
         
         # Power and root functions
-        'sqrt': sp.sqrt,
-        'cbrt': sp.cbrt,
-        'root': sp.root,
-        'pow': sp.Pow,
+        'sqrt': sp.sqrt, 'cbrt': sp.cbrt, 'root': sp.root, 'pow': sp.Pow,
         
         # Absolute value and sign
-        'abs': sp.Abs,
-        'sign': sp.sign,
+        'abs': sp.Abs, 'sign': sp.sign,
         
         # Rounding functions
-        'floor': sp.floor,
-        'ceiling': sp.ceiling,
+        'floor': sp.floor, 'ceiling': sp.ceiling,
         
         # Min/Max
-        'min': sp.Min,
-        'max': sp.Max,
+        'min': sp.Min, 'max': sp.Max,
         
         # Factorial and gamma functions
-        'factorial': sp.factorial,
-        'gamma': sp.gamma,
-        'loggamma': sp.loggamma,
-        'digamma': sp.digamma,
+        'factorial': sp.factorial, 'gamma': sp.gamma,
+        'loggamma': sp.loggamma, 'digamma': sp.digamma,
         
         # Error functions
-        'erf': sp.erf,
-        'erfc': sp.erfc,
+        'erf': sp.erf, 'erfc': sp.erfc,
         
         # Bessel functions
-        'besselj': sp.besselj,
-        'bessely': sp.bessely,
-        'besseli': sp.besseli,
-        'besselk': sp.besselk,
+        'besselj': sp.besselj, 'bessely': sp.bessely,
+        'besseli': sp.besseli, 'besselk': sp.besselk,
         
         # Special functions
-        'Heaviside': sp.Heaviside,
-        'DiracDelta': sp.DiracDelta,
+        'Heaviside': sp.Heaviside, 'DiracDelta': sp.DiracDelta,
         
         # Piecewise
         'Piecewise': sp.Piecewise,
         
         # Constants
-        'pi': sp.pi,
-        'E': sp.E,
-        'oo': sp.oo,
+        'pi': sp.pi, 'E': sp.E, 'oo': sp.oo,
     }
-    
-    return safe_local_dict
+
+
+# Precompiled transformations (module-level constant)
+_TRANSFORMATIONS = standard_transformations + (convert_xor,)
 
 
 def _safe_sympify(expr_str, local_symbols=None):
     """
     Safely parse a string expression to SymPy, avoiding singleton conflicts.
-    
-    Parameters
-    ----------
-    expr_str : str
-        Expression string to parse
-    local_symbols : dict, optional
-        Additional local symbols (variables/parameters)
-    
-    Returns
-    -------
-    sp.Expr
-        Parsed SymPy expression
     """
     expr_str = str(expr_str).strip()
     if expr_str == "0":
         return sp.Integer(0)
     
-    safe_local = _get_safe_parse_dict()
+    # Start with cached base dict
+    safe_local = dict(_get_safe_parse_dict_cached())
     
     # Merge with user-provided symbols
     if local_symbols:
-        safe_local = {**safe_local, **local_symbols}
-    
-    transformations = standard_transformations + (
-        convert_xor,
-    )
+        safe_local.update(local_symbols)
     
     return parse_expr(
         expr_str,
         local_dict=safe_local,
-        transformations=transformations,
+        transformations=_TRANSFORMATIONS,
         evaluate=True,
     )
 
 
 # -----------------------------------------------------------------------------
-# Helper: Enforce real-valued simplification
+# Helper: Enforce real-valued simplification (optimized)
 # -----------------------------------------------------------------------------
-def _make_real_and_simplify(expr):
-    """
-    Aggressively strip complex parts from an expression by
-    replacing:
-      re(Z) -> Z
-      im(Z) -> 0
-      Abs(re(Z)) -> Abs(Z)
-      Derivative(re(Z), V) -> Derivative(Z, V)
-      Derivative(im(Z), V) -> 0
 
-    …und zwar iterativ, bis keine Änderung mehr passiert.
-    Danach wird simplify() aufgerufen.
-    """
-    Z = sp.Wild('Z')
-    V = sp.Wild('V')
+# Precompute wildcards once at module level
+_Z = sp.Wild('Z')
+_V = sp.Wild('V')
 
+
+def _apply_simplify(expr, simplify_func="powsimp"):
+    """
+    Apply the specified simplification function.
+    """
+    if simplify_func == "powsimp":
+        return sp.powsimp(expr)
+    elif simplify_func == "cancel":
+        return sp.cancel(expr)
+    elif simplify_func == "ratsimp":
+        return sp.ratsimp(expr)
+    elif simplify_func == "simplify":
+        return sp.simplify(expr)
+    else:
+        return sp.powsimp(expr)  # default fallback
+
+
+def _make_real_and_simplify(expr, max_iterations=5, simplify_func="powsimp"):
+    """
+    Aggressively strip complex parts from an expression.
+    
+    Optimized version with:
+    - Precomputed wildcards
+    - Early exit when no change
+    - Limited iterations to prevent infinite loops
+    - Batched replacements
+    """
+    if expr == 0 or expr.is_number:
+        return expr
+    
     try:
-        old = None
-        while expr != old:
+        for _ in range(max_iterations):
             old = expr
-            # direkte re/im
-            expr = expr.replace(sp.re(Z), Z)
-            expr = expr.replace(sp.im(Z), 0)
-
-            # Abs(re(.)) -> Abs(.)
-            expr = expr.replace(sp.Abs(sp.re(Z)), sp.Abs(Z))
-
-            # Ableitungen von re/im
-            expr = expr.replace(sp.Derivative(sp.re(Z), V), sp.Derivative(Z, V))
-            expr = expr.replace(sp.Derivative(sp.im(Z), V), 0)
-
-            # manchmal entstehen danach noch triviale Derivates: d/dx(x) -> 1 etc.
+            
+            # Batch all replacements
+            expr = expr.replace(sp.re(_Z), _Z)
+            expr = expr.replace(sp.im(_Z), 0)
+            expr = expr.replace(sp.Abs(sp.re(_Z)), sp.Abs(_Z))
+            expr = expr.replace(sp.Derivative(sp.re(_Z), _V), sp.Derivative(_Z, _V))
+            expr = expr.replace(sp.Derivative(sp.im(_Z), _V), 0)
+            
+            # Early exit if no change
+            if expr == old:
+                break
+            
+            # Try to evaluate derivatives
             try:
-                expr = sp.simplify(expr.doit())
+                expr = expr.doit()
             except Exception:
-                # wenn .doit() mal nicht evaluieren kann – okay, wir lassen es
                 pass
-
-        # abschließende Vereinfachung
-        expr = sp.simplify(expr)
+        
+        # Final simplification
+        return _apply_simplify(expr, simplify_func)
+    
     except Exception:
-        # konservativer Fallback
-        pass
+        # Conservative fallback
+        return expr
 
-    return expr
+
+def _simplify_derivative(deriv_expr, use_real=False, simplify_func="powsimp"):
+    """
+    Simplify a single derivative expression.
+    Factored out for potential parallelization.
+    """
+    if deriv_expr == 0:
+        return "0"
+    
+    if use_real:
+        result = _make_real_and_simplify(deriv_expr, simplify_func=simplify_func)
+    else:
+        result = _apply_simplify(deriv_expr, simplify_func)
+    
+    return str(result)
+
 
 # -----------------------------------------------------------------------------
-# Helper: Parse expressions and infer variables
+# Helper: Parse expressions and infer variables (optimized)
 # -----------------------------------------------------------------------------
+
 def _prepare_expressions(exprs, variables=None):
     """
     Parse expressions from strings (or dict) and infer variable symbols.
-
-    Parameters
-    ----------
-    exprs : dict or list of str
-        Either a dict {name: expression_string} or a list of expression strings.
-    variables : list of str or None, optional
-        If provided, use these variable names. Otherwise, infer them
-        automatically from all expressions' free symbols.
-
-    Returns
-    -------
-    tuple
-        (fnames, exprs_syms, vars_syms)
-        - fnames: list of expression names
-        - exprs_syms: list of sympy expressions
-        - vars_syms: list of sympy Symbols (sorted by name)
+    
+    Optimized: Creates symbols dict once and reuses it.
     """
     # Handle dict or list input
     if isinstance(exprs, dict):
@@ -246,8 +230,14 @@ def _prepare_expressions(exprs, variables=None):
     else:
         raise TypeError("exprs must be a dict or list of expression strings")
 
-    # Parse to SymPy using safe parsing
-    exprs_syms = [_safe_sympify(e) for e in expr_strs]
+    # Pre-create symbols if variables are provided
+    if variables is not None:
+        local_symbols = {v: sp.Symbol(v, real=True) for v in variables}
+    else:
+        local_symbols = None
+
+    # Parse all expressions with shared symbol dict
+    exprs_syms = [_safe_sympify(e, local_symbols) for e in expr_strs]
 
     # Determine variables
     if variables is None:
@@ -256,100 +246,185 @@ def _prepare_expressions(exprs, variables=None):
             key=lambda s: s.name
         )
     else:
-        # Create symbols for provided variable names
-        vars_syms = [sp.Symbol(v) for v in variables]
+        vars_syms = [local_symbols[v] for v in variables]
 
     return fnames, exprs_syms, vars_syms
 
 
 # -----------------------------------------------------------------------------
+# Optimized Jacobian computation
+# -----------------------------------------------------------------------------
+
+def _compute_jacobian_row(expr, vars_syms, use_real, simplify_func):
+    """Compute one row of the Jacobian (for parallelization)."""
+    row = []
+    for v in vars_syms:
+        d = sp.diff(expr, v)
+        row.append(_simplify_derivative(d, use_real, simplify_func))
+    return row
+
+
+def _compute_hessian_matrix(expr, vars_syms, use_real, simplify_func):
+    """Compute Hessian matrix for one expression."""
+    n = len(vars_syms)
+    H = []
+    
+    # Compute first derivatives once
+    first_derivs = [sp.diff(expr, v) for v in vars_syms]
+    
+    for i, v1 in enumerate(vars_syms):
+        row = []
+        for j, v2 in enumerate(vars_syms):
+            # Use symmetry: H[i,j] = H[j,i]
+            if j < i:
+                row.append(H[j][i])  # Reference already computed
+            else:
+                d2 = sp.diff(first_derivs[i], v2)
+                row.append(_simplify_derivative(d2, use_real, simplify_func))
+        H.append(row)
+    
+    return H
+
+
+# -----------------------------------------------------------------------------
 # Main function: Compute Jacobian and optional Hessians
 # -----------------------------------------------------------------------------
-def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False):
+
+def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False,
+                  parallel=False, n_workers=None, simplify_func="powsimp"):
     """
     Compute symbolic Jacobian and optionally Hessian for one or more expressions.
-
-    Differentiation is always performed without assumptions for stability.
-    If `real=True`, all resulting expressions are post-processed by
-    `_make_real_and_simplify()` to remove imaginary parts and simplify safely.
 
     Parameters
     ----------
     exprs : dict or list of str
         Dictionary or list of symbolic expressions.
-        Example: {"f1": "a*x**2 + b*y**2", "f2": "x*y + exp(2*c) + abs(max(x,y))"}
     variables : list of str or None, optional
-        Variable names to differentiate with respect to. If None, automatically
-        inferred using SymPy's free symbol detection.
+        Variable names to differentiate with respect to.
     fixed : list of str or None
         Variable names to treat as fixed (excluded from differentiation).
     deriv2 : bool, optional
-        If True, compute second derivatives (Hessians) for each expression. Default: False.
+        If True, compute second derivatives (Hessians). Default: False.
     real : bool, optional
-        If True, enforce real-valued simplification post-hoc. Default: False.
+        If True, enforce real-valued simplification. Default: False.
+    parallel : bool, optional
+        If True, use parallel processing for large models. Default: False.
+    n_workers : int or None, optional
+        Number of worker threads. Default: CPU count.
+    simplify_func : str, optional
+        Simplification method: "powsimp" (fast, default), "cancel", "ratsimp", 
+        or "simplify" (slow but thorough).
 
     Returns
     -------
     dict
-        A dictionary with:
-          - "jacobian": list[list[str]] — Jacobian entries as strings
-          - "hessian": list[list[list[str]]] or None — Hessians (if deriv2=True)
-          - "names": list[str] — expression names
-          - "vars": list[str] — variable names (in order)
-
-    Example
-    -------
-    >>> exprs = {
-    ...   "f1": "a*x**2 + b*y**2",
-    ...   "f2": "x*y + exp(2*c) + abs(max(x,y))"
-    ... }
-    >>> jac_hess_symb(exprs, real=True)
-    {
-        "jacobian": [
-            ["x**2", "2*a*x", "y**2", "2*b*y", "0"],
-            ["0", "y + Heaviside(x - y)", "0", "x - Heaviside(x - y)", "2*exp(2*c)"]
-        ],
-        "hessian": None,
-        "names": ["f1", "f2"],
-        "vars": ["a", "b", "c", "x", "y"]
-    }
+        {
+            "jacobian": dict[str, list[str]] — Jacobian rows keyed by expression name
+            "hessian": dict[str, list[list[str]]] or None — Hessians if deriv2=True
+            "names": list[str] — expression names
+            "vars": list[str] — variable names (in order)
+        }
     """
     fnames, exprs_syms, vars_syms = _prepare_expressions(exprs, variables)
 
-    # --- remove fixed symbols if any ---
+    # Remove fixed symbols if any
     if fixed is not None:
         fixed_set = set(fixed)
         vars_syms = [v for v in vars_syms if v.name not in fixed_set]
 
-    # --- Compute Jacobian ---
-    J = sp.Matrix(exprs_syms).jacobian(vars_syms)
-    jac = []
-    for i in range(len(exprs_syms)):
-        row = []
-        for j in range(len(vars_syms)):
-            d = J[i, j]
-            d = _make_real_and_simplify(d) if real else sp.simplify(d)
-            row.append(str(d))
-        jac.append(row)
+    n_exprs = len(exprs_syms)
+    n_vars = len(vars_syms)
+    
+    # Decide on parallelization
+    use_parallel = parallel and n_exprs * n_vars > 100
+    
+    if use_parallel:
+        n_workers = n_workers or os.cpu_count() or 4
+        jac = _compute_jacobian_parallel(fnames, exprs_syms, vars_syms, real, n_workers, simplify_func)
+    else:
+        jac = _compute_jacobian_serial(fnames, exprs_syms, vars_syms, real, simplify_func)
 
-    # --- Compute Hessian if requested ---
-    H = None
+    # Compute Hessian if requested
+    hess = None
     if deriv2:
-        H = []
-        for f_expr in exprs_syms:
-            Hi = []
-            for v1 in vars_syms:
-                row = []
-                for v2 in vars_syms:
-                    d2 = sp.diff(f_expr, v1, v2)
-                    d2 = _make_real_and_simplify(d2) if real else sp.simplify(d2)
-                    row.append(str(d2))
-                Hi.append(row)
-            H.append(Hi)
+        if use_parallel:
+            hess = _compute_hessian_parallel(fnames, exprs_syms, vars_syms, real, n_workers, simplify_func)
+        else:
+            hess = _compute_hessian_serial(fnames, exprs_syms, vars_syms, real, simplify_func)
 
     return {
         "jacobian": jac,
-        "hessian": H,
+        "hessian": hess,
         "names": fnames,
         "vars": [v.name for v in vars_syms]
+    }
+
+
+def _compute_jacobian_serial(fnames, exprs_syms, vars_syms, use_real, simplify_func):
+    """Compute Jacobian serially."""
+    jac = {}
+    for fname, expr in zip(fnames, exprs_syms):
+        jac[fname] = _compute_jacobian_row(expr, vars_syms, use_real, simplify_func)
+    return jac
+
+
+def _compute_jacobian_parallel(fnames, exprs_syms, vars_syms, use_real, n_workers, simplify_func):
+    """Compute Jacobian in parallel."""
+    jac = {}
+    
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {
+            executor.submit(_compute_jacobian_row, expr, vars_syms, use_real, simplify_func): fname
+            for fname, expr in zip(fnames, exprs_syms)
+        }
+        
+        for future in as_completed(futures):
+            fname = futures[future]
+            jac[fname] = future.result()
+    
+    return jac
+
+
+def _compute_hessian_serial(fnames, exprs_syms, vars_syms, use_real, simplify_func):
+    """Compute Hessians serially."""
+    hess = {}
+    for fname, expr in zip(fnames, exprs_syms):
+        hess[fname] = _compute_hessian_matrix(expr, vars_syms, use_real, simplify_func)
+    return hess
+
+
+def _compute_hessian_parallel(fnames, exprs_syms, vars_syms, use_real, n_workers, simplify_func):
+    """Compute Hessians in parallel."""
+    hess = {}
+    
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {
+            executor.submit(_compute_hessian_matrix, expr, vars_syms, use_real, simplify_func): fname
+            for fname, expr in zip(fnames, exprs_syms)
+        }
+        
+        for future in as_completed(futures):
+            fname = futures[future]
+            hess[fname] = future.result()
+    
+    return hess
+
+
+# -----------------------------------------------------------------------------
+# Convenience wrapper (original API compatibility)
+# -----------------------------------------------------------------------------
+
+def derivSymb(exprs, variables=None, fixed=None, deriv2=False, real=False, simplify_func="powsimp"):
+    """
+    Legacy wrapper for backward compatibility.
+    Returns jacobian/hessian in the format expected by generate_fun_cpp().
+    """
+    result = jac_hess_symb(exprs, variables, fixed, deriv2, real, simplify_func=simplify_func)
+    
+    # Return in format compatible with generate_fun_cpp
+    return {
+        "jacobian": result["jacobian"],
+        "hessian": result["hessian"],
+        "names": result["names"],
+        "vars": result["vars"]
     }
