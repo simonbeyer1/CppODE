@@ -112,8 +112,6 @@ sanitizeExprs <- function(exprs) {
 #' (which can cause recursion issues for non-analytic functions).
 #'
 #' @examples
-#' \dontrun{
-#' library(CppODE)
 #'
 #' eqs <- c(
 #'   f1 = "a*x^2 + b*y^2",
@@ -127,11 +125,7 @@ sanitizeExprs <- function(exprs) {
 #' # Compute Jacobian and Hessian
 #' result2 <- derivSymb(eqs, real = TRUE, deriv2 = TRUE)
 #' result2$hessian[[1]]  # Hessian of f1
-#' }
-#'
-#' @seealso
-#' \code{\link[reticulate]{import_from_path}} for Python imports,
-#' and \code{\link{ensurePythonEnv}} for ensuring a Python environment.
+#' result2$hessian[[2]]  # Hessian of f2
 #'
 #' @export
 derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, fixed = NULL, verbose = FALSE) {

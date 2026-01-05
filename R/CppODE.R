@@ -26,7 +26,7 @@
 #'
 #' If `deriv2 = TRUE` (which implies `deriv = TRUE`), nested dual numbers
 #' `F<F<double>>` are used. This allows the evaluation of \eqn{f} over the
-#' second-order dual algebra \eqn{\mathbb{D}^2}, providing **second-order
+#' second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing **second-order
 #' sensitivites** directly through nested automatic differentiation.
 #'
 #' Fixed initial conditions or parameters (listed in `fixed`) are created as plain scalars
@@ -459,21 +459,13 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  observer obs(result_times, y);",
                stepper_line, "",
                "  // --- Determine dt ---",
-               "  auto t_test = times.front();",
-               "  auto x_test = x;",
-               "  ",
-               sprintf("  %s dt0;", numType),
+               sprintf("  %s dt;", numType),
                "  if (hini == 0.0) {",
-               sprintf("    dt0 = odeint_utils::estimate_initial_dt_local(sys, jac, x_test, t_test, abstol, reltol);"),
+               sprintf("    dt = odeint_utils::estimate_initial_dt_local(sys, jac, x, times.front(), abstol, reltol);"),
                "  } else {",
-               "    dt0 = hini;",
+               "    dt = hini;",
                "  }",
-               "  auto dt = dt0;",
                "",
-               "  int attempts = 0;",
-               "  while (controlledStepper.try_step(std::make_pair(sys, jac), x_test, t_test, dt) == fail) {",
-               "    if (++attempts >= 10000) throw std::runtime_error(\"Unable to find valid initial stepsize after 10000 attempts\");",
-               "  }", "",
                "  // --- Integration ---",
                integrate_line,
                "",
@@ -746,9 +738,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # Warn if file already exists
   if (file.exists(filename)) {
-    if (verbose) {
-      message("⚠ Overwriting existing file: ", normalizePath(filename))
-    }
+    message("⚠ Overwriting existing file: ", normalizePath(filename))
   }
 
   sink(filename)

@@ -158,12 +158,14 @@ inline double weighted_sup_norm(
   return nrm;
 }
 
-/*==============================================================================
- Initial step-size selection for plain double (non-AD)
- Based on Hairer–Wanner NDF heuristics:
- dt1 = sqrt( η * |x| / |x'| )
- dt2 = cbrt( η * |x| / |x''| )
- ==============================================================================*/
+/**
+ * @brief Estimates the initial step size for an ODE solver (e.g., Rosenbrock-4).
+ *
+ * This implementation follows the heuristic approach by Hairer, Nørsett, and Wanner.
+ * It uses the first derivative (velocity) and second derivative (curvature) to
+ * find a dimensionally consistent time scale that respects the error tolerances.
+ * * Ref: Hairer, Nørsett, Wanner - "Solving Ordinary Differential Equations I", p. 169.
+ */
 
 inline double estimate_initial_dt_local(
     const std::function<void(const vector<double>&, vector<double>&, const double&)>& system,
@@ -172,7 +174,7 @@ inline double estimate_initial_dt_local(
     double t0,
     double atol,
     double rtol,
-    double eta = 5e-2)
+    double eta = 1e-2)
 {
   const std::size_t n = x0.size();
 
@@ -200,19 +202,24 @@ inline double estimate_initial_dt_local(
   double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
 
   // Heuristics
+  // dt1: Based on velocity (Order 1) -> dt ~ eta * ||x|| / ||x'||
+  // dt2: Based on curvature (Order 2) -> dt ~ sqrt(eta * ||x|| / ||x''||)
+
   double dt1 = std::numeric_limits<double>::infinity();
   double dt2 = std::numeric_limits<double>::infinity();
 
-  if (norm_dx > 0.0)
-    dt1 = std::sqrt(eta * norm_x / norm_dx);
+  if (norm_dx > 0.0) {
+    dt1 = norm_x / norm_dx;
+  }
 
-  if (norm_xdd > 0.0)
-    dt2 = std::cbrt(eta * norm_x / norm_xdd);
+  if (norm_xdd > 0.0) {
+    dt2 = std::sqrt(norm_x / norm_xdd);
+  }
 
-  double dt = std::min(dt1, dt2);
+  double dt = eta * std::min(dt1, dt2);
 
   if (!std::isfinite(dt) || dt <= 0.0)
-    dt = 1e-6;  // fallback
+    dt = atol;  // fallback
 
   return dt;
 }
@@ -228,7 +235,7 @@ inline double estimate_initial_dt_local(
     double t0,
     double atol,
     double rtol,
-    double eta = 5e-2)
+    double eta = 1e-2)
 {
   std::function<void(const vector<double>&, vector<double>&, const double&)> sys_f =
     [&system](const vector<double>& x, vector<double>& dxdt, const double& t) {
@@ -243,13 +250,9 @@ inline double estimate_initial_dt_local(
       return estimate_initial_dt_local(sys_f, jac_f, x0, t0, atol, rtol, eta);
 }
 
-/*==============================================================================
- Initial step-size selection for AD types (F<T>)
- Based on Hairer–Wanner NDF heuristics:
- dt1 = sqrt( η * |x| / |x'| )
- dt2 = cbrt( η * |x| / |x''| )
- ==============================================================================*/
-
+/**
+ * @brief Templated version of estimate_initial_dt_local() for Dual number types F<T>
+ */
 template<typename T>
 inline F<T> estimate_initial_dt_local(
     const std::function<void(vector<F<T>>&, vector<F<T>>&, const F<T>&)>& system,
@@ -258,7 +261,7 @@ inline F<T> estimate_initial_dt_local(
     const F<T> t0,
     double atol,
     double rtol,
-    double eta = 5e-2)
+    double eta = 1e-2)
 {
   const std::size_t n = x0.size();
 
@@ -286,21 +289,25 @@ inline F<T> estimate_initial_dt_local(
   double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
 
   // Heuristics
+  // dt1: Based on velocity (Order 1) -> dt ~ eta * ||x|| / ||x'||
+  // dt2: Based on curvature (Order 2) -> dt ~ sqrt(eta * ||x|| / ||x''||)
   double dt1 = std::numeric_limits<double>::infinity();
   double dt2 = std::numeric_limits<double>::infinity();
 
-  if (norm_dx > 0.0)
-    dt1 = std::sqrt(eta * norm_x / norm_dx);
+  if (norm_dx > 0.0) {
+    dt1 = norm_x / norm_dx;
+  }
 
-  if (norm_xdd > 0.0)
-    dt2 = std::cbrt(eta * norm_x / norm_xdd);
+  if (norm_xdd > 0.0) {
+    dt2 = std::sqrt(norm_x / norm_xdd);
+  }
 
-  double dt = std::min(dt1, dt2);
+  double dt = eta * std::min(dt1, dt2);
 
   if (!std::isfinite(dt) || dt <= 0.0)
-    dt = 1e-6;  // fallback
+    dt = atol;  // fallback
 
-  return F<T>(dt);
+  return dt;
 }
 
 /**
