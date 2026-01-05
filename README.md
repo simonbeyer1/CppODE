@@ -5,7 +5,7 @@
 This package provides a convenient R interface to generate, compile, and run C++ code for ODE models with optional automatic differentiation support.  
 Internally, it uses:
 
-- [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/) for stiff ODE integration with the Rosenbrock 3(4) method (error-controlled, dense output).
+- [Boost.Odeint](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html) for stiff ODE integration with the Rosenbrock4 method (adaptive stepsize control with Rosenbrock3, dense output).
 - [FADBAD++](https://uning.dk/fadbad.html) for forward- and backward-mode automatic differentiation.  
 
 ---
@@ -33,41 +33,59 @@ eqns <- c(
   B = "k1*A^2 * time - k2*B"
 )
 
+# Define an event
 events <- data.frame(
   var   = "A",
   time  = "t_e",
   value = 1,
   method= "add",
-  root = NA
+  root  = NA
 )
 
-# Generate and compile
-f <- CppODE::CppFun(eqns, events = events, modelname = "ABmodel")
+# Generate and compile solver
+f <- CppODE(eqns, events = events, modelname = "example", deriv2 = T)
 
-# Wrap in an R function
 solve <- function(times, params,
-                  abstol = 1e-8, reltol = 1e-6,
-                  maxattemps = 5000, maxsteps = 1e6,
-                  roottol = 1e-8, maxroot = 1) {
+                  abstol = 1e-6, reltol = 1e-6,
+                  maxattemps = 10L, maxsteps = 7e5L,
+                  hini = 0.0, roottol = 1e-10, maxroot = 1L) {
+
   paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
   missing <- setdiff(paramnames, names(params))
   if (length(missing) > 0) stop("Missing parameters: ", paste(missing, collapse = ", "))
   params <- params[paramnames]
-  .Call(paste0("solve_", as.character(f)),
-        as.numeric(times),
-        as.numeric(params),
-        as.numeric(abstol),
-        as.numeric(reltol),
-        as.integer(maxattemps),
-        as.integer(maxsteps),
-        as.numeric(roottol),
-        as.integer(maxroot))
+  out <- .Call(paste0("solve_", as.character(f)),
+               as.numeric(times),
+               as.numeric(params),
+               as.numeric(abstol),
+               as.numeric(reltol),
+               as.integer(maxattemps),
+               as.integer(maxsteps),
+               as.numeric(hini),
+               as.numeric(roottol),
+               as.integer(maxroot))
+
+  # Extract dimension names
+  dims <- attr(f, "dim_names")
+
+  # Add column names to state matrix
+  colnames(out$variable) <- dims$variable
+
+  # Add dimension names to sens1 array if present
+  if (!is.null(out$sens1)) {
+    dimnames(out$sens1) <- list(NULL, dims$variable, dims$sens)
+  }
+
+  if (!is.null(out$sens2)) {
+    dimnames(out$sens2) <- list(NULL, dims$variable, dims$sens, dims$sens)
+  }
+
+  return(out)
 }
-
-params <- c(A = 1, B=0, k1 = 0.1, k2= 0.2, t_e = 3)
+# Example run
+params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 3)
 times  <- seq(0, 10, length.out = 300)
-
-res <- solve(times, params, abstol = 1e-6, reltol = 1e-6) %>%
+res <- solve(times, params) %>%
   as.data.frame() %>%
   tidyr::pivot_longer(cols = -time, names_to = "name", values_to = "value")
 
@@ -81,7 +99,7 @@ ggplot(res, aes(x = time, y = value)) +
 ---
 
 ## Notes
-- Future work: extend support to additional solvers, including adaptive schemes with automatic stiffness detection.  
+- Potential future work: extend support to additional solvers, including adaptive schemes with automatic stiffness detection.  
 - Contributions, issues and feedback are welcome!  
 
 ---
