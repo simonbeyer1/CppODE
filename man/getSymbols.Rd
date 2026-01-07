@@ -18,12 +18,4 @@ Character vector with unique symbol names.
 Parses a character vector of expressions and returns all symbol names
 (variable identifiers).
 }
-\examples{
-getSymbols("a*b + c")
-getSymbols(c("x + y", "z"), exclude = "y")
-
-}
-\author{
-Daniel Kaschek
-}
 \keyword{internal}

@@ -7,11 +7,7 @@
 #' @param exclude Optional character vector of names to exclude.
 #'
 #' @return Character vector with unique symbol names.
-#' @examples
-#' getSymbols("a*b + c")
-#' getSymbols(c("x + y", "z"), exclude = "y")
 #'
-#' @author Daniel Kaschek
 #' @keywords internal
 getSymbols <- function(char, exclude = NULL) {
   if (is.null(char)) return(NULL)
@@ -35,8 +31,6 @@ getSymbols <- function(char, exclude = NULL) {
 #'
 #' @param exprs Character vector of expressions.
 #' @return Character vector with sanitized expressions.
-#' @examples
-#' sanitizeExprs("if + 1")   # becomes "if_ + 1"
 #'
 #' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
 #' @keywords internal
@@ -53,7 +47,7 @@ sanitizeExprs <- function(exprs) {
     pattern <- paste0("\\b", sym, "\\b")
     repl    <- paste0(sym, "_")
     if (any(grepl(pattern, sanitized))) {
-      warning(sprintf("Reserved keyword '%s' found in expression – replaced by '%s'.",
+      warning(sprintf("Reserved keyword '%s' found in expression - replaced by '%s'.",
                       sym, repl))
       sanitized <- gsub(pattern, repl, sanitized)
     }
@@ -64,13 +58,14 @@ sanitizeExprs <- function(exprs) {
 
 #' Symbolic differentiation (Jacobian and optional Hessian) via SymPy
 #'
+#' @description
 #' Computes symbolic first- and second-order derivatives of a system of
 #' algebraic expressions using Python's **SymPy** library via the
 #' \pkg{reticulate} interface.
 #'
-#' The Jacobian (first derivatives) is returned as a character matrix,
-#' and, if requested, the Hessian (second derivatives) as a list of
-#' 3D arrays — one per expression.
+#' The Jacobian (first derivatives) is returned as a character matrix of shape
+#' \eqn{(n_f, n_v)}, and, if requested, the Hessian (second derivatives) as a
+#' list of character matrices, each of shape \eqn{(n_v, n_v)}.
 #'
 #' The Python backend automatically infers all variables occurring in
 #' the expressions using SymPy's internal symbol detection.
@@ -88,17 +83,21 @@ sanitizeExprs <- function(exprs) {
 #'   are computed and returned. Default is \code{FALSE}.
 #' @param fixed Character vector of variable names that should be treated
 #'   as *fixed parameters* (no derivatives are computed with respect to them).
-#'   Default: `NULL`.
+#'   Default: \code{NULL}.
 #' @param verbose Logical; if \code{TRUE}, print diagnostic information
 #'   during backend setup and execution. Default is \code{FALSE}.
 #'
 #' @return
 #' A list with components:
 #' \describe{
-#'   \item{jacobian}{Character matrix \code{[n_functions × n_variables]}
-#'     containing first derivatives.}
-#'   \item{hessian}{List of character arrays \code{[n_variables × n_variables]},
-#'     one per function, or \code{NULL} if \code{deriv2 = FALSE}.}
+#'   \item{\code{jacobian}}{Character matrix of shape \eqn{(n_f, n_v)}
+#'     containing first derivatives \eqn{\partial f_i/\partial v_j}, where
+#'     \eqn{n_f} is the number of functions and \eqn{n_v} is the number of
+#'     differentiation variables (excluding fixed parameters).}
+#'   \item{\code{hessian}}{List of \eqn{n_f} character matrices, each of shape
+#'     \eqn{(n_v, n_v)}, containing second derivatives
+#'     \eqn{\partial^2 f_i/\partial v_j \partial v_k}. Returns \code{NULL}
+#'     if \code{deriv2 = FALSE}.}
 #' }
 #'
 #' @details
@@ -112,7 +111,7 @@ sanitizeExprs <- function(exprs) {
 #' (which can cause recursion issues for non-analytic functions).
 #'
 #' @examples
-#'
+#' \dontrun{
 #' eqs <- c(
 #'   f1 = "a*x^2 + b*y^2",
 #'   f2 = "x*y + exp(2*c) + abs(max(x,y))"
@@ -126,6 +125,7 @@ sanitizeExprs <- function(exprs) {
 #' result2 <- derivSymb(eqs, real = TRUE, deriv2 = TRUE)
 #' result2$hessian[[1]]  # Hessian of f1
 #' result2$hessian[[2]]  # Hessian of f2
+#' }
 #'
 #' @export
 derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, fixed = NULL, verbose = FALSE) {

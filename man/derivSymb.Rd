@@ -31,25 +31,29 @@ during backend setup and execution. Default is \code{FALSE}.}
 \value{
 A list with components:
 \describe{
-\item{jacobian}{Character matrix \code{[n_functions × n_variables]}
-    containing first derivatives.}
-\item{hessian}{List of character arrays \code{[n_variables × n_variables]},
-one per function, or \code{NULL} if \code{deriv2 = FALSE}.}
+\item{\code{jacobian}}{Character matrix of shape \eqn{(n_f, n_v)}
+containing first derivatives \eqn{\partial f_i/\partial v_j}, where
+\eqn{n_f} is the number of functions and \eqn{n_v} is the number of
+differentiation variables (excluding fixed parameters).}
+\item{\code{hessian}}{List of \eqn{n_f} character matrices, each of shape
+\eqn{(n_v, n_v)}, containing second derivatives
+\eqn{\partial^2 f_i/\partial v_j \partial v_k}. Returns \code{NULL}
+if \code{deriv2 = FALSE}.}
 }
 }
 \description{
 Computes symbolic first- and second-order derivatives of a system of
 algebraic expressions using Python's \strong{SymPy} library via the
 \pkg{reticulate} interface.
-}
-\details{
-The Jacobian (first derivatives) is returned as a character matrix,
-and, if requested, the Hessian (second derivatives) as a list of
-3D arrays — one per expression.
+
+The Jacobian (first derivatives) is returned as a character matrix of shape
+\eqn{(n_f, n_v)}, and, if requested, the Hessian (second derivatives) as a
+list of character matrices, each of shape \eqn{(n_v, n_v)}.
 
 The Python backend automatically infers all variables occurring in
 the expressions using SymPy's internal symbol detection.
-
+}
+\details{
 This function calls the Python module \code{derivSymb.py} (shipped with the
 \pkg{CppODE} package) using \pkg{reticulate}. The Python side performs
 symbolic differentiation using SymPy. If \code{variables = NULL},
@@ -60,7 +64,7 @@ that all variables are real, without invoking SymPy's \code{refine()}
 (which can cause recursion issues for non-analytic functions).
 }
 \examples{
-
+\dontrun{
 eqs <- c(
   f1 = "a*x^2 + b*y^2",
   f2 = "x*y + exp(2*c) + abs(max(x,y))"
@@ -74,5 +78,6 @@ result$jacobian
 result2 <- derivSymb(eqs, real = TRUE, deriv2 = TRUE)
 result2$hessian[[1]]  # Hessian of f1
 result2$hessian[[2]]  # Hessian of f2
+}
 
 }

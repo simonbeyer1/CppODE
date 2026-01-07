@@ -1,5 +1,9 @@
 # CppODE
 
+<!-- badges: start -->
+[![R-CMD-check](https://github.com/simonbeyer1/CppODE/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/simonbeyer1/CppODE/actions/workflows/R-CMD-check.yaml)
+<!-- badges: end -->
+
 **Automated C++ code generation for ODE integration with Boost.Odeint solvers and sensitivity calculation using FADBAD++.**
 
 This package provides a convenient R interface to generate, compile, and run C++ code for ODE models with optional automatic differentiation support.  
@@ -106,5 +110,5 @@ ggplot(res, aes(x = time, y = value)) +
 
 ## License
 
-This package is licensed under the MIT License – see the [LICENSE.md](LICENSE.md) file for details.
+This package is licensed under the MIT License
 

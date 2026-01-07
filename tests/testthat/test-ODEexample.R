@@ -1,6 +1,7 @@
 test_that("example ODE model runs", {
 
-  skip_on_cran()  # sehr empfohlen für C++ Codegen
+  skip_if_not(reticulate::py_available(initialize = FALSE),
+              "Python not available")
 
   oldwd <- getwd()
   setwd(tempdir())
@@ -20,7 +21,13 @@ test_that("example ODE model runs", {
   )
 
   f <- expect_silent(
-    CppODE(eqns, events = events, modelname = "example_test", deriv2 = TRUE)
+    CppODE(
+      eqns,
+      events    = events,
+      modelname = "example_test",
+      deriv2    = TRUE,
+      compile   = TRUE
+    )
   )
 
   solve <- function(times, params) {
@@ -58,6 +65,9 @@ test_that("example ODE model runs", {
 
   expect_type(res$time, "double")
   expect_true(is.matrix(res$variable))
+  expect_equal(colnames(res$variable), c("A", "B"))
+
+  ## ---- Sensitivity checks ----
 
   expect_true(!is.null(res$sens1))
   expect_true(!is.null(res$sens2))

@@ -22,10 +22,6 @@ left untouched, since they are valid in SymPy.
 
 A warning is emitted for each replacement performed.
 }
-\examples{
-sanitizeExprs("if + 1")   # becomes "if_ + 1"
-
-}
 \author{
 Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
 }

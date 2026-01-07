@@ -6,7 +6,7 @@
 #'
 #' \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' using [**Boost.Odeint’s**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
+#' using [**Boost.Odeint's**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
 #' stiff Rosenbrock 4(3) method with dense output and error control.
 #' The solver supports **time-based** and **root-triggered events** and can, optionally,
 #' compute **first- and second-order sensitivities** by evaluating the *same system* with
@@ -80,6 +80,7 @@
 #' @param modelname Optional base name for the generated C++ file. If `NULL`, a random identifier is used.
 #' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
 #' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers; requires `deriv = TRUE`.
+#' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector including derivatives. If `FALSE`, use only the value components for error control.
 #' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
@@ -103,7 +104,8 @@
 #'
 #' @author Simon Beyer, <simon.beyer@@fdm.uni-freiburg.de>
 #' @example inst/examples/example_ODE.R
-#' @importFrom reticulate import source_python
+#' @importFrom reticulate source_python
+#' @importFrom stats setNames
 #' @export
 CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                    compile = TRUE, modelname = NULL,
@@ -187,7 +189,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   jac_matrix_str <- codegen_result$jac_matrix
   time_derivs_str <- codegen_result$time_derivs
 
-  if (verbose) message("  ✓ ODE and Jacobian generated")
+  if (verbose) message("  \u2713 ODE and Jacobian generated")
 
   # --- Generate event code if needed ---
   event_code <- ""
@@ -738,7 +740,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # Warn if file already exists
   if (file.exists(filename)) {
-    message("⚠ Overwriting existing file: ", normalizePath(filename))
+    message("Overwriting existing file: ", normalizePath(filename))
   }
 
   sink(filename)
@@ -788,7 +790,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 }
 
 
-#' Generate a fast R/C++ evaluator for algebraic models with optional Jacobian/Hessian
+#' Generate a R/C++ evaluator for algebraic models with optional Jacobian/Hessian
 #'
 #' @description
 #' `funCpp()` takes a named vector/list of algebraic expressions and returns an evaluation
@@ -803,13 +805,13 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' - Normalizes derivative arrays so that their row/column orders match the internal
 #'   differentiation order used throughout the evaluator.
 #'
-#' @param x Named character vector or list of expressions (e.g. `c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")`).
-#'           Names become output column names. If `names(x)` is `NULL`, default names `f1, f2, ...` are used.
-#' @param variables Character vector of variable names that appear in `x` and are supplied per observation.
+#' @param eqns Named character vector or list of expressions (e.g. `c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")`).
+#'           Names become output column names. If `names(eqns)` is `NULL`, default names `f1, f2, ...` are used.
+#' @param variables Character vector of variable names that appear in `eqns` and are supplied per observation.
 #'                  If `NULL` or length 0, the model is treated as purely parametric (no per-row variables).
 #' @param parameters Character vector of parameter names used by the model.
 #' @param fixed Optional character vector of symbols that should be treated as parameters at evaluation time,
-#'              even if they originally appear in `variables`. Useful for “fixing” variables temporarily.
+#'              even if they originally appear in `variables`. Useful for "fixing" variables temporarily.
 #' @param compile Logical; if `TRUE`, compile the generated C++ code immediately via `CppODE:::compile()`.
 #' @param modelname Optional string used as the base name for the generated C++ symbols and files.
 #'                  Defaults to a random `fXXXXXXXX` if not supplied.
@@ -832,9 +834,9 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' - `deriv`, `deriv2`: request derivatives at call time (must be compatible with how `f` was created).
 #'
 #' The returned list has elements:
-#' - `out`: numeric matrix of outputs with columns named as in `x`.
-#' - `jacobian`: 3D array `[n_out, n_diff_syms, n_obs]` if `deriv=TRUE`.
-#' - `hessian`: 4D array `[n_out, n_diff_syms, n_diff_syms, n_obs]` if `deriv2=TRUE`.
+#' - `out`: numeric matrix of outputs with columns named as in `eqns`.
+#' - `jacobian`: 3D array `[n_obs, n_out, n_diff_syms]` if `deriv=TRUE`.
+#' - `hessian`: 4D array `[n_obs, n_out, n_diff_syms, n_diff_syms]` if `deriv2=TRUE`.
 #'
 #' Attributes on the returned function include:
 #' - `equations`, `variables`, `parameters`, `fixed`, `modelname`
@@ -845,6 +847,12 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' Derivative dimensions always follow `diff_syms = c(variables, setdiff(parameters, fixed))`.
 #' Internally, the symbolic Jacobian/Hessian matrices returned by `derivSymb()` are reindexed
 #' to this order to ensure compiled and R-fallback paths produce consistent layouts.
+#'
+#' @section Array layout:
+#' Arrays are stored with observations in the first dimension for better memory locality:
+#' - Jacobian: `[n_obs, n_out, n_diff_syms]`
+#' - Hessian: `[n_obs, n_out, n_diff_syms, n_diff_syms]`
+#' This allows efficient subsetting like `jacobian[1:10, , ]` for the first 10 observations.
 #'
 #' @example inst/examples/example_fun.R
 #' @importFrom reticulate import source_python
@@ -1083,19 +1091,26 @@ funCpp <- function(eqns,
 
     result[["out"]] <- res
 
+    # ===================================================================
+    # JACOBIAN: Array layout [n_obs, n_out, n_symbols]
+    # ===================================================================
     if (deriv && !is.null(sym_jac)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
+
       if (compiled_available && is.loaded(funsym_jac)) {
+        # Compiled C++ path
         xvec <- as.double(as.vector(M))
-        jac_vec <- double(n_out * n_sym * n_obs)
+        jac_vec <- double(n_obs * n_out * n_sym)
         n <- as.integer(n_obs); k <- as.integer(length(innames)); l <- as.integer(n_out)
         out_jac <- .C(funsym_jac, x = xvec, jac = jac_vec, p = as.double(p),
                       n = n, k = k, l = l)
-        jac_arr <- array(out_jac$jac, dim = c(n_out, n_sym, n_obs),
-                         dimnames = list(outnames, diff_syms, NULL))
+        # New layout: [n_obs, n_out, n_symbols]
+        jac_arr <- array(out_jac$jac, dim = c(n_obs, n_out, n_sym),
+                         dimnames = list(NULL, outnames, diff_syms))
       } else {
-        jac_arr <- array(0, dim = c(n_out, n_sym, n_obs),
-                         dimnames = list(outnames, diff_syms, NULL))
+        # R fallback path
+        jac_arr <- array(0, dim = c(n_obs, n_out, n_sym),
+                         dimnames = list(NULL, outnames, diff_syms))
         for (obs_i in seq_len(n_obs)) {
           env <- as.list(c(as.numeric(M[, obs_i]), p))
           names(env) <- c(innames, parameters)
@@ -1103,35 +1118,42 @@ funCpp <- function(eqns,
             for (sym_i in seq_len(n_sym)) {
               sym <- diff_syms[sym_i]
               if (sym %in% fixed_runtime) {
-                jac_arr[out_i, sym_i, obs_i] <- 0
+                jac_arr[obs_i, out_i, sym_i] <- 0
                 next
               }
               expr <- parsed_jac[[outnames[out_i], sym]][[1]]
-              jac_arr[out_i, sym_i, obs_i] <-
+              jac_arr[obs_i, out_i, sym_i] <-
                 if (is.null(expr)) 0 else eval(expr, envir = env)
             }
           }
         }
       }
 
-      jac_arr <- jac_arr[, diff_syms_dyn, , drop = FALSE]
+      # Subset to dynamic symbols (excluding runtime-fixed)
+      jac_arr <- jac_arr[, , diff_syms_dyn, drop = FALSE]
       result[["jacobian"]] <- jac_arr
     }
 
+    # ===================================================================
+    # HESSIAN: Array layout [n_obs, n_out, n_symbols, n_symbols]
+    # ===================================================================
     if (deriv2 && !is.null(sym_hess)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
 
       if (compiled_available && is.loaded(funsym_hess)) {
+        # Compiled C++ path
         xvec <- as.double(as.vector(M))
-        hess_vec <- double(n_out * n_sym * n_sym * n_obs)
+        hess_vec <- double(n_obs * n_out * n_sym * n_sym)
         n <- as.integer(n_obs); k <- as.integer(length(innames)); l <- as.integer(n_out)
         out_hess <- .C(funsym_hess, x = xvec, hess = hess_vec, p = as.double(p),
                        n = n, k = k, l = l)
-        hes_arr <- array(out_hess$hess, dim = c(n_out, n_sym, n_sym, n_obs),
-                         dimnames = list(outnames, diff_syms, diff_syms, NULL))
+        # New layout: [n_obs, n_out, n_symbols, n_symbols]
+        hes_arr <- array(out_hess$hess, dim = c(n_obs, n_out, n_sym, n_sym),
+                         dimnames = list(NULL, outnames, diff_syms, diff_syms))
       } else {
-        hes_arr <- array(0, dim = c(n_out, n_sym, n_sym, n_obs),
-                         dimnames = list(outnames, diff_syms, diff_syms, NULL))
+        # R fallback path
+        hes_arr <- array(0, dim = c(n_obs, n_out, n_sym, n_sym),
+                         dimnames = list(NULL, outnames, diff_syms, diff_syms))
         for (obs_i in seq_len(n_obs)) {
           env <- as.list(c(as.numeric(M[, obs_i]), p))
           names(env) <- c(innames, parameters)
@@ -1141,11 +1163,11 @@ funCpp <- function(eqns,
               for (sym_j in seq_len(n_sym)) {
                 si <- diff_syms[sym_i]; sj <- diff_syms[sym_j]
                 if (si %in% fixed_runtime || sj %in% fixed_runtime) {
-                  hes_arr[out_i, sym_i, sym_j, obs_i] <- 0
+                  hes_arr[obs_i, out_i, sym_i, sym_j] <- 0
                   next
                 }
                 expr <- Hmat[[si, sj]][[1]]
-                hes_arr[out_i, sym_i, sym_j, obs_i] <-
+                hes_arr[obs_i, out_i, sym_i, sym_j] <-
                   if (is.null(expr)) 0 else eval(expr, envir = env)
               }
             }
@@ -1153,7 +1175,8 @@ funCpp <- function(eqns,
         }
       }
 
-      hes_arr <- hes_arr[, diff_syms_dyn, diff_syms_dyn, , drop = FALSE]
+      # Subset to dynamic symbols (excluding runtime-fixed)
+      hes_arr <- hes_arr[, , diff_syms_dyn, diff_syms_dyn, drop = FALSE]
       result[["hessian"]] <- hes_arr
     }
 
@@ -1232,7 +1255,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
       if (length(candidates))
         files <- union(files, candidates)
       else if (verbose)
-        message("⚠ No source file found for model: ", mdl)
+        message("No source file found for model: ", mdl)
     }
   }
 
@@ -1283,7 +1306,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
       cmd <- paste0(R.home("bin"), "/R CMD SHLIB ", shQuote(files[i]), " ", args)
       system(cmd, intern = !verbose)
       dyn.load(paste0(root, .so))
-      if (verbose) message("✔ Loaded ", root, .so)
+      if (verbose) message("\u2713 Loaded ", root, .so)
       invisible(root)
     }, mc.cores = cores, mc.silent = !verbose)
   } else {
@@ -1313,7 +1336,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
     system(cmd, intern = !verbose)
     dyn.load(output_so)
     if (verbose)
-      message("✔ Loaded ", output, .so)
+      message("\u2713 Loaded ", output, .so)
   }
 
   invisible(TRUE)

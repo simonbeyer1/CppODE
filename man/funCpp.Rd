@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{funCpp}
 \alias{funCpp}
-\title{Generate a fast R/C++ evaluator for algebraic models with optional Jacobian/Hessian}
+\title{Generate a R/C++ evaluator for algebraic models with optional Jacobian/Hessian}
 \usage{
 funCpp(
   eqns,
@@ -19,13 +19,16 @@ funCpp(
 )
 }
 \arguments{
-\item{variables}{Character vector of variable names that appear in \code{x} and are supplied per observation.
+\item{eqns}{Named character vector or list of expressions (e.g. \code{c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")}).
+Names become output column names. If \code{names(eqns)} is \code{NULL}, default names \verb{f1, f2, ...} are used.}
+
+\item{variables}{Character vector of variable names that appear in \code{eqns} and are supplied per observation.
 If \code{NULL} or length 0, the model is treated as purely parametric (no per-row variables).}
 
 \item{parameters}{Character vector of parameter names used by the model.}
 
 \item{fixed}{Optional character vector of symbols that should be treated as parameters at evaluation time,
-even if they originally appear in \code{variables}. Useful for “fixing” variables temporarily.}
+even if they originally appear in \code{variables}. Useful for "fixing" variables temporarily.}
 
 \item{compile}{Logical; if \code{TRUE}, compile the generated C++ code immediately via \code{CppODE:::compile()}.}
 
@@ -43,9 +46,6 @@ manually assembling matrices/vectors.}
 \item{deriv}{Logical; if \code{TRUE}, compute and return the Jacobian. Required if \code{deriv2 = TRUE}.}
 
 \item{deriv2}{Logical; if \code{TRUE}, compute and return the Hessian in addition to the Jacobian.}
-
-\item{x}{Named character vector or list of expressions (e.g. \code{c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")}).
-Names become output column names. If \code{names(x)} is \code{NULL}, default names \verb{f1, f2, ...} are used.}
 }
 \value{
 A function with signature
@@ -62,9 +62,9 @@ where:
 
 The returned list has elements:
 \itemize{
-\item \code{out}: numeric matrix of outputs with columns named as in \code{x}.
-\item \code{jacobian}: 3D array \verb{[n_out, n_diff_syms, n_obs]} if \code{deriv=TRUE}.
-\item \code{hessian}: 4D array \verb{[n_out, n_diff_syms, n_diff_syms, n_obs]} if \code{deriv2=TRUE}.
+\item \code{out}: numeric matrix of outputs with columns named as in \code{eqns}.
+\item \code{jacobian}: 3D array \verb{[n_obs, n_out, n_diff_syms]} if \code{deriv=TRUE}.
+\item \code{hessian}: 4D array \verb{[n_obs, n_out, n_diff_syms, n_diff_syms]} if \code{deriv2=TRUE}.
 }
 
 Attributes on the returned function include:
@@ -98,25 +98,50 @@ Internally, the symbolic Jacobian/Hessian matrices returned by \code{derivSymb()
 to this order to ensure compiled and R-fallback paths produce consistent layouts.
 }
 
+\section{Array layout}{
+
+Arrays are stored with observations in the first dimension for better memory locality:
+\itemize{
+\item Jacobian: \verb{[n_obs, n_out, n_diff_syms]}
+\item Hessian: \verb{[n_obs, n_out, n_diff_syms, n_diff_syms]}
+This allows efficient subsetting like \code{jacobian[1:10, , ]} for the first 10 observations.
+}
+}
+
 \examples{
-setwd(tempdir())
-trafo <- c(A="k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
+\dontrun{
+  oldwd <- getwd()
+  on.exit(setwd(oldwd), add = TRUE)
+  setwd(tempdir())
 
-f <- funCpp(trafo,
-            variables  = NULL,
-            parameters = c("k_p","k1", "k2", "k_d"),
-            fixed = NULL,
-            deriv = TRUE,
-            deriv2 = TRUE,
-            compile = FALSE,
-            modelname = "obsfn",
-            convenient = TRUE,
-            verbose = TRUE)
+  trafo <- c(A = "k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
 
-res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = T)
-res$out
-res$jacobian[,,1]
-attributes(f)$jacobian.symb
-res$hessian["A",,,1]
-attributes(f)$hessian.symb$A
+  f <- funCpp(trafo,
+              variables  = NULL,
+              parameters = c("k_p", "k1", "k2", "k_d"),
+              fixed      = NULL,
+              deriv      = TRUE,
+              deriv2     = TRUE,
+              compile    = TRUE,
+              modelname  = "obsfn",
+              convenient = TRUE,
+              verbose    = FALSE)
+
+  res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = TRUE)
+
+  # Output values
+  res$out
+
+  # Jacobian for first (and only) observation
+  res$jacobian[1, , ]
+
+  # Symbolic Jacobian (unchanged)
+  attributes(f)$jacobian.symb
+
+  # Hessian for output "A" at first observation
+  res$hessian[1, "A", , ]
+
+  # Symbolic Hessian (unchanged)
+  attributes(f)$hessian.symb$A
+}
 }

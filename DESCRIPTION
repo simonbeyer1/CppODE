@@ -1,15 +1,21 @@
 Package: CppODE
 Title: Automated C++ Code Generation for ODE Integration and Sensitivity Analysis Using Boost.Odeint and the FADBAD++ Automatic Differentiation Library
-Version: 0.0.0.9000
+Version: 1.0.0
 Authors@R: 
     person("Simon", "Beyer", , "simon.beyer@fdm.uni-freiburg.de", role = c("aut", "cre"))
-Description: This package provides a convenient R interface to generate, compile, and remember run C++ code for ODE models, with optional automatic differentiation support for first- and second-order sensitivity analysis. It includes an event handling framework that allows parameterized events (event parameters are included in the sensitivity calculation) to be specified using deSolve-style event logic, and supports both adaptive step size control and dense output for numerical integration.
-License: `use_mit_license()`
+Description: Generates and compiles C++ code for solving systems of 
+    ordinary differential equations (ODEs) with automatic differentiation
+    for sensitivity analysis. Uses Boost.Odeint for numerical integration
+    and FADBAD++ for dual number arithmetic. Supports event handling
+    via deSolve-style logic.
+Language: en-US
+License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Imports: 
     reticulate
 Suggests: 
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    Rcpp
 Config/testthat/edition: 3
