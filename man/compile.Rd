@@ -7,27 +7,38 @@
 compile(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
 }
 \arguments{
-\item{...}{One or more model functions that have a \code{"modelname"} attribute
-corresponding to a C++ source file (e.g. \code{"funCpp0_ab12cd"}).}
+\item{...}{One or more model functions that have a \code{"modelname"}
+attribute corresponding to a C++ source file
+(e.g. \code{"funCpp0_ab12cd"}).}
 
 \item{output}{Optional base name for the combined shared object.
-If provided, all source files are compiled and linked into a single library.}
+If provided, all source files are compiled and linked into a single
+shared library.}
 
-\item{args}{Optional compiler/linker arguments (e.g. \code{"-lm"}).}
+\item{args}{Optional compiler or linker arguments (e.g. \code{"-lm"}).}
 
 \item{cores}{Number of parallel compilation jobs (ignored on Windows).}
 
 \item{verbose}{Logical; if \code{TRUE}, show compiler output.}
 }
 \description{
-Compiles one or more generated C++ source files (from \code{funCpp0()} or \code{CppFun()})
-into shared libraries (*.so / *.dll) using \code{R CMD SHLIB}.
-This is an internal helper and not intended for direct user calls.
+Compiles one or more generated C++ source files (from \code{funCpp()} or
+\code{CppFun()}) into shared libraries (*.so / *.dll) using
+\code{R CMD SHLIB}. This is an internal helper and not intended for
+direct user calls.
 }
 \details{
-The function automatically sets platform-appropriate compiler flags
-(\code{-std=c++20 -O2 -DNDEBUG -fPIC}) and includes the CppODE headers.
-Each object must have a valid \code{modelname} attribute referring
-to an existing \code{.cpp} or \code{.c} file.
+The function applies platform-appropriate C++ compiler flags
+(e.g. C++20 standard, optimization, and position-independent code where
+required) and includes headers shipped with the package itself.
+
+Boost headers are provided via the BH package (declared in
+\code{LinkingTo: BH}) and no system-installed Boost libraries are required.
+
+On Windows, compilation is always performed sequentially since
+fork-based parallelism is unavailable.
+
+Each object must have a valid \code{modelname} attribute referring to an
+existing \code{.cpp} or \code{.c} source file.
 }
 \keyword{internal}

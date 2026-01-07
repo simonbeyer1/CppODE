@@ -84,7 +84,7 @@ in a single pass.
 If \code{deriv2 = TRUE} (which implies \code{deriv = TRUE}), nested dual numbers
 \verb{F<F<double>>} are used. This allows the evaluation of \eqn{f} over the
 second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing \strong{second-order
-sensitivites} directly through nested automatic differentiation.
+sensitivities} directly through nested automatic differentiation.
 
 Fixed initial conditions or parameters (listed in \code{fixed}) are created as plain scalars
 and therefore do \strong{not} contribute sensitivity components.
@@ -139,9 +139,6 @@ variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initial
 }
 \examples{
 \dontrun{
-  oldwd <- getwd()
-  on.exit(setwd(oldwd), add = TRUE)
-  setwd(tempdir())
   # Define ODE system
   eqns <- c(
     A = "-k1*A^2 * time",

@@ -1,7 +1,4 @@
 \dontrun{
-  oldwd <- getwd()
-  on.exit(setwd(oldwd), add = TRUE)
-  setwd(tempdir())
   # Define ODE system
   eqns <- c(
     A = "-k1*A^2 * time",

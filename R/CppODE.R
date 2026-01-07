@@ -27,7 +27,7 @@
 #' If `deriv2 = TRUE` (which implies `deriv = TRUE`), nested dual numbers
 #' `F<F<double>>` are used. This allows the evaluation of \eqn{f} over the
 #' second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing **second-order
-#' sensitivites** directly through nested automatic differentiation.
+#' sensitivities** directly through nested automatic differentiation.
 #'
 #' Fixed initial conditions or parameters (listed in `fixed`) are created as plain scalars
 #' and therefore do **not** contribute sensitivity components.
@@ -215,7 +215,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     "#include <algorithm>",
     "#include <vector>",
     "#include <cmath>",
-    "#include <boost_rosenbrock34_ad.hpp>"
+    "#include <cppode/cppode.hpp>"
   )
 
   # --- Using declarations ---
@@ -415,22 +415,22 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     # Dense output version (WITH Interpolation)
     if (deriv2) {
       stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
-        "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
+        "  auto denseStepper = rosenbrock4_dense_output_pi_ad<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else if (deriv) {
       stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
-        "  auto denseStepper = rosenbrock4_dense_output_ad<decltype(controlledStepper)>(controlledStepper);",
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
+        "  auto denseStepper = rosenbrock4_dense_output_pi_ad<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else {
       stepper_line <- paste(
-        "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);",
-        "  auto denseStepper = rosenbrock4_dense_output<decltype(controlledStepper)>(controlledStepper);",
+        "  auto controlledStepper = rosenbrock4_controller_pi<rosenbrock4<double>>(abstol, reltol);",
+        "  auto denseStepper = rosenbrock4_dense_output_pi<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
@@ -438,13 +438,13 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   } else {
     # Controlled stepper version (WITHOUT Interpolation)
     if (deriv2) {
-      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
+      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else if (deriv) {
-      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_ad_pi<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
+      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else {
-      stepper_line <- "  auto controlledStepper = rosenbrock4_controller<rosenbrock4<double>>(abstol, reltol);"
+      stepper_line <- "  auto controlledStepper = rosenbrock4_controller_pi<rosenbrock4<double>>(abstol, reltol);"
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     }
   }
@@ -1220,26 +1220,37 @@ funCpp <- function(eqns,
 
 #' @title Internal C++ model compiler
 #' @description
-#' Compiles one or more generated C++ source files (from \code{funCpp0()} or \code{CppFun()})
-#' into shared libraries (*.so / *.dll) using \code{R CMD SHLIB}.
-#' This is an internal helper and not intended for direct user calls.
+#' Compiles one or more generated C++ source files (from \code{funCpp()} or
+#' \code{CppFun()}) into shared libraries (*.so / *.dll) using
+#' \code{R CMD SHLIB}. This is an internal helper and not intended for
+#' direct user calls.
 #'
-#' @param ... One or more model functions that have a \code{"modelname"} attribute
-#'   corresponding to a C++ source file (e.g. \code{"funCpp0_ab12cd"}).
+#' @param ... One or more model functions that have a \code{"modelname"}
+#'   attribute corresponding to a C++ source file
+#'   (e.g. \code{"funCpp0_ab12cd"}).
 #' @param output Optional base name for the combined shared object.
-#'   If provided, all source files are compiled and linked into a single library.
-#' @param args Optional compiler/linker arguments (e.g. \code{"-lm"}).
+#'   If provided, all source files are compiled and linked into a single
+#'   shared library.
+#' @param args Optional compiler or linker arguments (e.g. \code{"-lm"}).
 #' @param verbose Logical; if \code{TRUE}, show compiler output.
 #' @param cores Number of parallel compilation jobs (ignored on Windows).
 #'
 #' @details
-#' The function automatically sets platform-appropriate compiler flags
-#' (\code{-std=c++20 -O2 -DNDEBUG -fPIC}) and includes the CppODE headers.
-#' Each object must have a valid \code{modelname} attribute referring
-#' to an existing \code{.cpp} or \code{.c} file.
+#' The function applies platform-appropriate C++ compiler flags
+#' (e.g. C++20 standard, optimization, and position-independent code where
+#' required) and includes headers shipped with the package itself.
 #'
-#' @importFrom parallel mclapply
+#' Boost headers are provided via the BH package (declared in
+#' \code{LinkingTo: BH}) and no system-installed Boost libraries are required.
+#'
+#' On Windows, compilation is always performed sequentially since
+#' fork-based parallelism is unavailable.
+#'
+#' Each object must have a valid \code{modelname} attribute referring to an
+#' existing \code{.cpp} or \code{.c} source file.
+#'
 #' @keywords internal
+#' @import BH
 compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE) {
   objects <- list(...)
   obj.names <- as.character(substitute(list(...)))[-1]
@@ -1269,11 +1280,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   for (root in roots) {
     so_file <- paste0(root, .so)
     o_file <- paste0(root, ".o")
-
-    # Unload shared library if loaded
     try(dyn.unload(so_file), silent = TRUE)
-
-    # Delete old .so and .o files
     if (file.exists(so_file)) {
       if (verbose) message("Removing old: ", so_file)
       unlink(so_file)
@@ -1286,36 +1293,57 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
 
   # --- Compiler flags ---
   if (Sys.info()[["sysname"]] == "Windows") cores <- 1
-  include_flags <- paste0("-I", shQuote(system.file("include", package = "CppODE")))
-  cxxflags <- if (Sys.info()[["sysname"]] == "Windows") {
-    "-std=c++20 -O2 -DNDEBUG"
-  } else {
-    "-std=c++20 -O2 -DNDEBUG -fPIC -fno-var-tracking-assignments"
-  }
 
-  Sys.setenv(
-    PKG_CPPFLAGS = include_flags,
-    PKG_CXXFLAGS = cxxflags
+  include_flags <- paste(
+    paste0("-I", system.file("include", package = "CppODE")),
+    paste0("-I", system.file("include", package = "BH"))
   )
 
+  cxxflags <- if (Sys.info()[["sysname"]] == "Windows") {
+    "-std=c++20 -O2 -DNDEBUG -w"
+  } else {
+    "-std=c++20 -O2 -DNDEBUG -fPIC -fno-var-tracking-assignments -w"
+  }
+
   # --- Compilation ---
+  compile_one <- function(file, root) {
+    # Set environment for THIS compilation
+    old_cppflags <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
+    old_cxxflags <- Sys.getenv("PKG_CXXFLAGS", unset = NA)
+
+    Sys.setenv(
+      PKG_CPPFLAGS = include_flags,
+      PKG_CXXFLAGS = cxxflags
+    )
+
+    on.exit({
+      if (is.na(old_cppflags)) Sys.unsetenv("PKG_CPPFLAGS") else Sys.setenv(PKG_CPPFLAGS = old_cppflags)
+      if (is.na(old_cxxflags)) Sys.unsetenv("PKG_CXXFLAGS") else Sys.setenv(PKG_CXXFLAGS = old_cxxflags)
+    })
+
+    cmd <- paste0(R.home("bin"), "/R CMD SHLIB ", shQuote(file), " ", args)
+    result <- system(cmd, intern = !verbose)
+
+    if (!file.exists(paste0(root, .so))) {
+      stop("Compilation failed for ", file)
+    }
+
+    dyn.load(paste0(root, .so))
+    if (verbose) message("\u2713 Loaded ", root, .so)
+    invisible(root)
+  }
+
   if (is.null(output)) {
     if (verbose) message("Compiling ", length(files), " model(s)...")
     parallel::mclapply(seq_along(files), function(i) {
-      root <- roots[i]
-      cmd <- paste0(R.home("bin"), "/R CMD SHLIB ", shQuote(files[i]), " ", args)
-      system(cmd, intern = !verbose)
-      dyn.load(paste0(root, .so))
-      if (verbose) message("\u2713 Loaded ", root, .so)
-      invisible(root)
+      compile_one(files[i], roots[i])
     }, mc.cores = cores, mc.silent = !verbose)
   } else {
     # --- Combine all into one shared object ---
     output <- sub("\\.so$", "", output)
-
-    # Clean up output file too
     output_so <- paste0(output, .so)
     output_o <- paste0(output, ".o")
+
     try(dyn.unload(output_so), silent = TRUE)
     if (file.exists(output_so)) {
       if (verbose) message("Removing old: ", output_so)
@@ -1326,14 +1354,35 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
       unlink(output_o)
     }
 
+    # Set environment
+    old_cppflags <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
+    old_cxxflags <- Sys.getenv("PKG_CXXFLAGS", unset = NA)
+
+    Sys.setenv(
+      PKG_CPPFLAGS = include_flags,
+      PKG_CXXFLAGS = cxxflags
+    )
+
+    on.exit({
+      if (is.na(old_cppflags)) Sys.unsetenv("PKG_CPPFLAGS") else Sys.setenv(PKG_CPPFLAGS = old_cppflags)
+      if (is.na(old_cxxflags)) Sys.unsetenv("PKG_CXXFLAGS") else Sys.setenv(PKG_CXXFLAGS = old_cxxflags)
+    })
+
     cmd <- paste0(
       R.home("bin"), "/R CMD SHLIB ",
       paste(shQuote(files), collapse = " "),
-      " -o ", shQuote(output_so), " ", args
+      " -o ", shQuote(output_so), " ",
+      args
     )
     if (verbose)
       message("Linking into shared library: ", output, .so)
-    system(cmd, intern = !verbose)
+
+    result <- system(cmd, intern = !verbose)
+
+    if (!file.exists(output_so)) {
+      stop("Compilation failed for combined output")
+    }
+
     dyn.load(output_so)
     if (verbose)
       message("\u2713 Loaded ", output, .so)
@@ -1341,4 +1390,3 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
 
   invisible(TRUE)
 }
-

@@ -1,8 +1,4 @@
 \dontrun{
-  oldwd <- getwd()
-  on.exit(setwd(oldwd), add = TRUE)
-  setwd(tempdir())
-
   trafo <- c(A = "k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
 
   f <- funCpp(trafo,
