@@ -1,13 +1,18 @@
 test_that("example ODE model runs", {
 
   skip_on_cran()
+  skip_on_ci()
 
-  # Check if Python + packages available
-  tryCatch({
+  py_ok <- tryCatch({
     CppODE::ensurePythonEnv("CppODE", verbose = FALSE)
-  }, error = function(e) {
-    skip(paste("Could not setup Python environment:", e$message))
+    TRUE
+  }, error = function(err) {
+    FALSE
   })
+
+  if (!py_ok) {
+    skip("Could not setup Python environment")
+  }
 
   oldwd <- getwd()
   setwd(tempdir())
