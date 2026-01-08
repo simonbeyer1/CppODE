@@ -7,7 +7,7 @@
 #' \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
 #' using [**Boost.Odeint's**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
-#' stiff Rosenbrock 4(3) method with dense output and error control.
+#' stiff Rosenbrock4 method with dense output and error control (using third order in combination).
 #' The solver supports **time-based** and **root-triggered events** and can, optionally,
 #' compute **first- and second-order sensitivities** by evaluating the *same system* with
 #' **dual number** types provided by

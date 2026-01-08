@@ -375,8 +375,8 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     """
     Generate Jacobian evaluation function (sparse: only non-zero entries).
     
-    Array layout: jac[n_obs, n_out, n_symbols]
-    Linear index: obs * (n_out * n_symbols) + output * n_symbols + symbol
+    Array layout for R (column-major): jac[n_obs, n_out, n_symbols]
+    Linear index: obs + n_obs * (output + n_out * symbol)
     """
     first_fn = next(iter(jacobian))
     n_symbols = len(jacobian[first_fn])
@@ -393,7 +393,8 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     buf.write("    // Zero-initialize\n")
     buf.write("    std::fill(jac, jac + n_obs * n_out * n_symbols, 0.0);\n\n")
     
-    buf.write("    // Layout: jac[obs, output, symbol]\n")
+    buf.write("    // Layout: jac[obs, output, symbol] (R column-major)\n")
+    buf.write("    // Linear index: obs + n_obs * (output + n_out * symbol)\n")
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
@@ -407,12 +408,11 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
         has_nonzero = False
         for j, expr in enumerate(jac_exprs):
             cpp_code = ctx.to_cpp(expr)
-            # Skip zero entries
             if cpp_code == "0.0" or cpp_code == "0":
                 continue
             has_nonzero = True
-            # New indexing: obs * (n_out * n_symbols) + output * n_symbols + symbol
-            buf.write(f"        jac[obs * (n_out * n_symbols) + {i} * n_symbols + {j}] = {cpp_code};\n")
+            # R column-major: obs + n_obs * (output + n_out * symbol)
+            buf.write(f"        jac[obs + n_obs * ({i} + n_out * {j})] = {cpp_code};\n")
         
         if has_nonzero:
             buf.write("\n")
@@ -424,8 +424,8 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     """
     Generate Hessian evaluation function (sparse: only non-zero entries).
     
-    Array layout: hess[n_obs, n_out, n_symbols, n_symbols]
-    Linear index: obs * (n_out * n_symbols * n_symbols) + output * (n_symbols * n_symbols) + sym1 * n_symbols + sym2
+    Array layout for R (column-major): hess[n_obs, n_out, n_symbols, n_symbols]
+    Linear index: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
     """
     first_fn = next(iter(hessian))
     n_symbols = len(hessian[first_fn])
@@ -438,11 +438,11 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     buf.write(f"    const int n_out = {n_out};\n")
     buf.write(f"    const int n_symbols = {n_symbols};\n\n")
     
-    # Zero-initialize entire hessian array
     buf.write("    // Zero-initialize\n")
     buf.write("    std::fill(hess, hess + n_obs * n_out * n_symbols * n_symbols, 0.0);\n\n")
     
-    buf.write("    // Layout: hess[obs, output, sym1, sym2]\n")
+    buf.write("    // Layout: hess[obs, output, sym1, sym2] (R column-major)\n")
+    buf.write("    // Linear index: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))\n")
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
@@ -457,14 +457,12 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
         for j, hess_row in enumerate(hess_matrix):
             for k, expr in enumerate(hess_row):
                 cpp_code = ctx.to_cpp(expr)
-                # Skip zero entries
                 if cpp_code == "0.0" or cpp_code == "0":
                     continue
                 has_nonzero = True
-                # New indexing: obs * (n_out * n_symbols * n_symbols) + output * (n_symbols * n_symbols) + sym1 * n_symbols + sym2
+                # R column-major: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
                 buf.write(
-                    f"        hess[obs * (n_out * n_symbols * n_symbols) + {i} * (n_symbols * n_symbols) + "
-                    f"{j} * n_symbols + {k}] = {cpp_code};\n"
+                    f"        hess[obs + n_obs * ({i} + n_out * ({j} + n_symbols * {k}))] = {cpp_code};\n"
                 )
         
         if has_nonzero:
