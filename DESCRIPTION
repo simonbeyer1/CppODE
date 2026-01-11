@@ -1,10 +1,10 @@
 Package: CppODE
-Title: Automated C++ Code Generation for Integration Ordinary Differential Equations and Sensitivity Analysis
+Title: Automated 'C++' Code Generation for Ordinary Differential Equations
 Version: 1.0.0
 Authors@R:
     person("Simon", "Beyer", , "simon.beyer@fdm.uni-freiburg.de",
            role = c("aut", "cre"))
-Description: Generates and compiles C++ code for solving systems of ordinary
+Description: Generates and compiles 'C++' code for solving systems of ordinary
     differential equations. Sensitivity analysis is supported via
     automatic differentiation using the 'FADBAD++' library. Numerical
     integration relies on the Boost C++ library. Event handling follows
