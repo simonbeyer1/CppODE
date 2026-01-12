@@ -164,6 +164,218 @@ def _safe_sympify(expr_str, local_symbols=None):
 
 
 # =====================================================================
+# Helper functions
+# =====================================================================
+
+
+def _to_cpp(expr, states, params, n_states, num_type):
+    """
+    Convert a SymPy expression into a C++ expression string.
+
+    This uses SymPy's cxxcode generator and then rewrites symbolic
+    names into the solver's C++ memory layout:
+
+    - parameters:  params[n_states + j]
+    - states:      x[i]
+    - initial values (state_0): params[i]
+    - time:        t
+
+    The order of replacements is important to avoid accidental
+    partial matches (e.g. "A" inside "A0").
+
+    Parameters
+    ----------
+    expr : sp.Expr
+        SymPy expression to convert.
+    states : list of str
+        State variable names.
+    params : list of str
+        Parameter names.
+    n_states : int
+        Number of states.
+    num_type : str
+        Numeric type ("double", "AD", or "AD2") for namespace selection.
+
+    Returns
+    -------
+    str
+        C++ expression string.
+    """
+    cpp_code = sp.cxxcode(expr, standard="c++17", strict=False)
+    cpp_code = str(cpp_code)
+    
+    # Remove newlines from SymPy's multi-line output (e.g., Piecewise/ternary)
+    cpp_code = cpp_code.replace("\n", " ")
+
+    if "Not supported in C++" in cpp_code:
+        raise ValueError(f"Expression contains C++-unsupported constructs: {expr}")
+
+    if num_type in ("AD", "AD2"):
+        for fn in [
+            # Trigonometric
+            "sin", "cos", "tan",
+            "asin", "acos", "atan",
+            # Hyperbolic (provided by cppode_fadiff_extensions.hpp)
+            "sinh", "cosh", "tanh",
+            "asinh", "acosh", "atanh",
+            # Exponential/logarithmic
+            "exp", "log", "sqrt", "pow",
+            # Other (provided by cppode_fadiff_extensions.hpp)
+            "abs", "min", "max"
+        ]:
+            cpp_code = cpp_code.replace(f"std::{fn}", f"fadbad::{fn}")
+
+    # 1) Replace parameters first
+    for j, param in enumerate(params):
+        cpp_code = _safe_replace(cpp_code, param, f"params[{n_states + j}]")
+
+    # 2) Replace state variables (A, B, ...) with x[i]
+    for i, state in enumerate(states):
+        cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
+
+    # 3) Replace initial values (A_0, B_0, ...) with params[i]
+    for i, state in enumerate(states):
+        cpp_code = _safe_replace(cpp_code, f"{state}_0", f"params[{i}]")
+
+    # 4) Replace time
+    cpp_code = _safe_replace(cpp_code, "time", "t")
+
+    # Normalize whitespace: collapse whitespace and remove spaces for compact C++
+    cpp_code = re.sub(r'\s+', ' ', cpp_code)  # Collapse all whitespace to single space
+    cpp_code = cpp_code.replace(" ", "")       # Remove spaces for compact output
+
+    return cpp_code
+
+
+def _safe_replace(text, symbol, replacement):
+    """
+    Replace `symbol` in `text` only when it appears as a full token.
+
+    Implemented via a word-boundary regular expression:
+    - avoids replacing substrings inside other identifiers.
+    """
+    text = str(text)
+    pattern = r"\b" + re.escape(symbol) + r"\b"
+    return re.sub(pattern, replacement, text)
+
+
+def _get_list_value(dict_or_df, key, index, n_events):
+    """
+    Extract a value from a dict-of-lists that mirrors an R data frame.
+
+    Parameters
+    ----------
+    dict_or_df : dict
+        Typically events_df.to_dict('list') from pandas, or a plain dict.
+    key : str
+        Column name.
+    index : int
+        Row index (0-based).
+    n_events : int
+        Total number of events.
+
+    Returns
+    -------
+    Any or None
+        The value at (key, index), or None if not present.
+    """
+    if key not in dict_or_df:
+        return None
+
+    value = dict_or_df[key]
+
+    # True list-like column
+    if isinstance(value, (list, tuple)):
+        if index < len(value):
+            return value[index]
+        return None
+
+    # Scalar column: same for all events
+    return value
+
+
+def _is_valid_value(value):
+    """
+    Check whether a value from the events table is a meaningful numeric
+    or expression, as opposed to NA/None/boolean placeholders.
+
+    Returns False for:
+    - None
+    - booleans (True/False)
+    - textual NA-like markers ("NA", "NaN", "")
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+
+    # If it's a numeric type, accept unless NaN
+    if isinstance(value, numbers.Number):
+        try:
+            # NaN check: NaN != NaN
+            if value != value:
+                return False
+        except Exception:
+            pass
+        return True
+
+    # String-like handling
+    str_val = str(value).lower().strip()
+    if str_val in {"none", "nan", "na", ""}:
+        return False
+    if str_val in {"true", "false"}:
+        return False
+
+    return True
+
+
+def _parse_value_or_expression(value, local_symbols, states_list, params_list, n_states, num_type):
+    """
+    Interpret a value from the events data as either a numeric literal
+    or a symbolic expression.
+
+    Parameters
+    ----------
+    value : Any
+        Source value (string, numeric, etc.) from events_df.
+    local_symbols : dict
+        Symbol table for SymPy parsing (states, params, time).
+    states_list : list of str
+        State variable names.
+    params_list : list of str
+        Parameter names.
+    n_states : int
+        Number of states.
+    num_type : str
+        Numeric type ("double", "AD", or "AD2").
+
+    Returns
+    -------
+    str or None
+        C++ expression as a string, or None if value is not valid.
+    """
+    if not _is_valid_value(value):
+        return None
+
+    value_str = str(value).strip()
+
+    # Fast-path: numeric literal (including scientific notation)
+    try:
+        float(value_str)
+        return value_str
+    except (ValueError, TypeError):
+        pass
+
+    # Otherwise treat as expression
+    try:
+        value_expr = _safe_sympify(value_str, local_symbols)
+        value_code = _to_cpp(value_expr, states_list, params_list, n_states, num_type)
+        return str(value_code)
+    except Exception as e:
+        raise ValueError(f"Failed to parse expression '{value_str}': {e}")
+
+
+# =====================================================================
 # Main ODE generation
 # =====================================================================
 
@@ -260,7 +472,7 @@ def generate_ode_cpp(
     ]
 
     for i, expr in enumerate(exprs):
-        cpp_code = _to_cpp(expr, states_list, params_list, n_states)
+        cpp_code = _to_cpp(expr, states_list, params_list, n_states, num_type)
         ode_cpp_lines.append(f"    dxdt[{i}] = {cpp_code};")
 
     ode_cpp_lines.extend(["  }", "};"])
@@ -282,12 +494,12 @@ def generate_ode_cpp(
     # Fill Jacobian entries
     for i in range(n_states):
         for j in range(n_states):
-            cpp_code = _to_cpp(jac_matrix[i][j], states_list, params_list, n_states)
+            cpp_code = _to_cpp(jac_matrix[i][j], states_list, params_list, n_states, num_type)
             jac_cpp_lines.append(f"    J({i},{j}) = {cpp_code};")
 
     # Fill df/dt
     for i in range(n_states):
-        cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states)
+        cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type)
         jac_cpp_lines.append(f"    dfdt[{i}] = {cpp_code};")
 
     jac_cpp_lines.extend(["  }", "};"])
@@ -301,179 +513,6 @@ def generate_ode_cpp(
         "states": states_list,
         "params": params_list,
     }
-
-
-# =====================================================================
-# Helper functions
-# =====================================================================
-
-
-def _to_cpp(expr, states, params, n_states):
-    """
-    Convert a SymPy expression into a C++ expression string.
-
-    This uses SymPy's cxxcode generator and then rewrites symbolic
-    names into the solver's C++ memory layout:
-
-    - parameters:  params[n_states + j]
-    - states:      x[i]
-    - initial values (state_0): params[i]
-    - time:        t
-
-    The order of replacements is important to avoid accidental
-    partial matches (e.g. "A" inside "A0").
-    """
-    cpp_code = sp.cxxcode(expr, standard="c++17", strict=False)
-    cpp_code = str(cpp_code)
-
-    if "Not supported in C++" in cpp_code:
-        raise ValueError(f"Expression contains C++-unsupported constructs: {expr}")
-
-    # 1) Replace parameters first
-    for j, param in enumerate(params):
-        cpp_code = _safe_replace(cpp_code, param, f"params[{n_states + j}]")
-
-    # 2) Replace state variables (A, B, ...) with x[i]
-    for i, state in enumerate(states):
-        cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
-
-    # 3) Replace initial values (A_0, B_0, ...) with params[i]
-    for i, state in enumerate(states):
-        cpp_code = _safe_replace(cpp_code, f"{state}_0", f"params[{i}]")
-
-    # 4) Replace time
-    cpp_code = _safe_replace(cpp_code, "time", "t")
-
-    # Remove superfluous spaces
-    cpp_code = cpp_code.replace(" ", "")
-
-    return cpp_code
-
-
-def _safe_replace(text, symbol, replacement):
-    """
-    Replace `symbol` in `text` only when it appears as a full token.
-
-    Implemented via a word-boundary regular expression:
-    - avoids replacing substrings inside other identifiers.
-    """
-    text = str(text)
-    pattern = r"\b" + re.escape(symbol) + r"\b"
-    return re.sub(pattern, replacement, text)
-
-
-def _get_list_value(dict_or_df, key, index, n_events):
-    """
-    Extract a value from a dict-of-lists that mirrors an R data frame.
-
-    Parameters
-    ----------
-    dict_or_df : dict
-        Typically events_df.to_dict('list') from pandas, or a plain dict.
-    key : str
-        Column name.
-    index : int
-        Row index (0-based).
-    n_events : int
-        Total number of events.
-
-    Returns
-    -------
-    Any or None
-        The value at (key, index), or None if not present.
-    """
-    if key not in dict_or_df:
-        return None
-
-    value = dict_or_df[key]
-
-    # True list-like column
-    if isinstance(value, (list, tuple)):
-        if index < len(value):
-            return value[index]
-        return None
-
-    # Scalar column: same for all events
-    return value
-
-
-def _is_valid_value(value):
-    """
-    Check whether a value from the events table is a meaningful numeric
-    or expression, as opposed to NA/None/boolean placeholders.
-
-    Returns False for:
-    - None
-    - booleans (True/False)
-    - textual NA-like markers ("NA", "NaN", "")
-    """
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return False
-
-    # If it's a numeric type, accept unless NaN
-    if isinstance(value, numbers.Number):
-        try:
-            # NaN check: NaN != NaN
-            if value != value:
-                return False
-        except Exception:
-            pass
-        return True
-
-    # String-like handling
-    str_val = str(value).lower().strip()
-    if str_val in {"none", "nan", "na", ""}:
-        return False
-    if str_val in {"true", "false"}:
-        return False
-
-    return True
-
-
-def _parse_value_or_expression(value, local_symbols, states_list, params_list, n_states):
-    """
-    Interpret a value from the events data as either a numeric literal
-    or a symbolic expression.
-
-    Parameters
-    ----------
-    value : Any
-        Source value (string, numeric, etc.) from events_df.
-    local_symbols : dict
-        Symbol table for SymPy parsing (states, params, time).
-    states_list : list of str
-        State variable names.
-    params_list : list of str
-        Parameter names.
-    n_states : int
-        Number of states.
-
-    Returns
-    -------
-    str or None
-        C++ expression as a string, or None if value is not valid.
-    """
-    if not _is_valid_value(value):
-        return None
-
-    value_str = str(value).strip()
-
-    # Fast-path: numeric literal (including scientific notation)
-    try:
-        float(value_str)
-        return value_str
-    except (ValueError, TypeError):
-        pass
-
-    # Otherwise treat as expression
-    try:
-        value_expr = _safe_sympify(value_str, local_symbols)
-        value_code = _to_cpp(value_expr, states_list, params_list, n_states)
-        return str(value_code)
-    except Exception as e:
-        raise ValueError(f"Failed to parse expression '{value_str}': {e}")
 
 
 # =====================================================================
@@ -563,7 +602,7 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
         # --------------------------------------------------------------
         value_raw = _get_list_value(events_dict, "value", i, n_events)
         value_code = _parse_value_or_expression(
-            value_raw, local_symbols, states_list, params_list, n_states
+            value_raw, local_symbols, states_list, params_list, n_states, num_type
         )
         if value_code is None:
             raise ValueError(f"Event {i}: 'value' is required but is NA/None")
@@ -588,7 +627,7 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
         # --------------------------------------------------------------
         time_raw = _get_list_value(events_dict, "time", i, n_events)
         time_code = _parse_value_or_expression(
-            time_raw, local_symbols, states_list, params_list, n_states
+            time_raw, local_symbols, states_list, params_list, n_states, num_type
         )
         if time_raw is not None and time_code is None:
             # A column existed but contained NA/boolean/empty -> treat as absent
@@ -596,7 +635,7 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
 
         root_raw = _get_list_value(events_dict, "root", i, n_events)
         root_code = _parse_value_or_expression(
-            root_raw, local_symbols, states_list, params_list, n_states
+            root_raw, local_symbols, states_list, params_list, n_states, num_type
         )
         if root_raw is not None and root_code is None:
             root_code = None
