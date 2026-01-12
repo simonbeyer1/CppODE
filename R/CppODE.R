@@ -1326,10 +1326,12 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
     paste0("-I", system.file("include", package = "BH"))
   )
 
-  cxxflags <- if (Sys.info()[["sysname"]] == "Windows") {
+  cxxflags <- if (sys == "Windows") {
     "-std=c++20 -O3 -DNDEBUG -w"
-  } else {
+  } else if (sys == "Linux") {
     "-std=c++20 -O3 -DNDEBUG -fPIC -fno-var-tracking-assignments -w"
+  } else if (sys == "Darwin") {
+    "-std=c++20 -O3 -DNDEBUG -fPIC -w"
   }
 
   # --- compile one file ---
