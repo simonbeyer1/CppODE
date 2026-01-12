@@ -1326,6 +1326,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
     paste0("-I", system.file("include", package = "BH"))
   )
 
+  sys <- Sys.info()[["sysname"]]
   cxxflags <- if (sys == "Windows") {
     "-std=c++20 -O3 -DNDEBUG -w"
   } else if (sys == "Linux") {
