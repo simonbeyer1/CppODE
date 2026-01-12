@@ -9,8 +9,9 @@ funCpp(
   variables = getSymbols(eqns, exclude = parameters),
   parameters = NULL,
   fixed = NULL,
-  compile = FALSE,
   modelname = NULL,
+  outdir = tempdir(),
+  compile = FALSE,
   verbose = FALSE,
   warnings = TRUE,
   convenient = TRUE,
@@ -30,10 +31,14 @@ If \code{NULL} or length 0, the model is treated as purely parametric (no per-ro
 \item{fixed}{Optional character vector of symbols that should be treated as parameters at evaluation time,
 even if they originally appear in \code{variables}. Useful for "fixing" variables temporarily.}
 
-\item{compile}{Logical; if \code{TRUE}, compile the generated C++ code immediately via \code{CppODE:::compile()}.}
+\item{modelname}{Optional base name for the generated C++ source file
+\emph{and} for all generated C/C++ symbols (e.g. \code{modelname_eval},
+\code{modelname_jacobian}) and the resulting shared library.
+If \code{NULL}, a random identifier is used.}
 
-\item{modelname}{Optional string used as the base name for the generated C++ symbols and files.
-Defaults to a random \code{fXXXXXXXX} if not supplied.}
+\item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
+
+\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
 \item{verbose}{Logical; if \code{TRUE}, prints progress messages.}
 
@@ -109,35 +114,29 @@ This allows efficient subsetting like \code{jacobian[1:10, , ]} for the first 10
 }
 
 \examples{
-\dontrun{
-  trafo <- c(A = "k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
+eqns <- c(A = "k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
 
-  f <- funCpp(trafo,
-              variables  = NULL,
-              parameters = c("k_p", "k1", "k2", "k_d"),
-              fixed      = NULL,
-              deriv      = TRUE,
-              deriv2     = TRUE,
-              compile    = TRUE,
-              modelname  = "obsfn",
-              convenient = TRUE,
-              verbose    = FALSE)
+f <- funCpp(eqns,
+            parameters = c("k_p", "k1", "k2", "k_d"),
+            deriv      = TRUE,
+            deriv2     = TRUE,
+            compile    = TRUE,
+            convenient = TRUE)
 
-  res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = TRUE)
+res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = TRUE)
 
-  # Output values
-  res$out
+# Output values
+res$out
 
-  # Jacobian for first (and only) observation
-  res$jacobian[1, , ]
+# Jacobian for first (and only) observation
+res$jacobian[1, , ]
 
-  # Symbolic Jacobian (unchanged)
-  attributes(f)$jacobian.symb
+# Symbolic Jacobian
+attributes(f)$jacobian.symb
 
-  # Hessian for output "A" at first observation
-  res$hessian[1, "A", , ]
+# Hessian for output "A" at first observation
+res$hessian[1, "A", , ]
 
-  # Symbolic Hessian (unchanged)
-  attributes(f)$hessian.symb$A
-}
+# Symbolic Hessian
+attributes(f)$hessian.symb$A
 }

@@ -11,6 +11,7 @@ CppODE(
   includeTimeZero = TRUE,
   compile = TRUE,
   modelname = NULL,
+  outdir = tempdir(),
   deriv = TRUE,
   deriv2 = FALSE,
   fullErr = TRUE,
@@ -29,7 +30,12 @@ CppODE(
 
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
-\item{modelname}{Optional base name for the generated C++ file. If \code{NULL}, a random identifier is used.}
+\item{modelname}{Optional base name for the generated C++ source file
+\emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
+as well as the resulting shared library.
+If \code{NULL}, a random identifier is used.}
+
+\item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
 
 \item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
 
@@ -138,8 +144,6 @@ variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initial
 }
 }
 \examples{
-\donttest{
-setwd(tempdir())
 # Define ODE system
 eqns <- c(
   A = "-k1*A^2 * time",
@@ -156,7 +160,7 @@ events <- data.frame(
 )
 
 # Generate and compile solver
-f <- CppODE(eqns, events = events, modelname = "example", deriv2 = TRUE)
+f <- CppODE(eqns, events = events, deriv2 = TRUE)
 
 solve <- function(times, params,
                   abstol = 1e-6, reltol = 1e-6,
@@ -204,7 +208,6 @@ head(res$time)             # time vector
 head(res$variable)         # variables
 head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
-}
 }
 \author{
 Simon Beyer, \href{mailto:simon.beyer@fdm.uni-freiburg.de}{simon.beyer@fdm.uni-freiburg.de}

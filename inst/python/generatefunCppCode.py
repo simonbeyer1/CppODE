@@ -218,7 +218,8 @@ class CodeGenContext:
 # =====================================================================
 
 def generate_fun_cpp(exprs, variables, parameters=None,
-                     jacobian=None, hessian=None, modelname="model"):
+                     jacobian=None, hessian=None,
+                     modelname="model", outdir=None):
     """
     Generate C++ source code for algebraic model evaluation.
 
@@ -267,8 +268,11 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     cpp_code = _generate_cpp_code(
         parsed_exprs, ctx, jacobian, hessian, modelname
     )
-
-    filename = f"{modelname}.cpp"
+    
+    if outdir is None:
+        raise ValueError("outdir must be provided explicitly")
+    os.makedirs(outdir, exist_ok=True)
+    filename = os.path.join(outdir, f"{modelname}.cpp")
     
     # Check if file exists and warn
     if os.path.exists(filename):
