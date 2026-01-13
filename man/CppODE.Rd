@@ -144,6 +144,8 @@ variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initial
 }
 }
 \examples{
+\dontrun{
+# CppODE() makes use of the Python module 'sympy'
 # Define ODE system
 eqns <- c(
   A = "-k1*A^2 * time",
@@ -156,7 +158,8 @@ events <- data.frame(
   time  = "t_e",
   value = 1,
   method= "add",
-  root  = NA
+  root  = NA,
+  stringsAsFactors = FALSE
 )
 
 # Generate and compile solver
@@ -209,6 +212,4 @@ head(res$variable)         # variables
 head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }
-\author{
-Simon Beyer, \href{mailto:simon.beyer@fdm.uni-freiburg.de}{simon.beyer@fdm.uni-freiburg.de}
 }

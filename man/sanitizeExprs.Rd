@@ -22,7 +22,4 @@ left untouched, since they are valid in SymPy.
 
 A warning is emitted for each replacement performed.
 }
-\author{
-Simon Beyer, \email{simon.beyer@fdm.uni-freiburg.de}
-}
 \keyword{internal}

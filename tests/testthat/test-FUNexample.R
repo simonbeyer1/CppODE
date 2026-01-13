@@ -1,42 +1,24 @@
 test_that("Example for funCpp() works", {
 
-  skip_on_cran()
-  skip_on_ci()
-
-  py_ok <- tryCatch({
-    CppODE::ensurePythonEnv("CppODE", verbose = FALSE)
-    TRUE
-  }, error = function(err) {
-    FALSE
-  })
-
-  if (!py_ok) {
-    skip("Could not setup Python environment")
-  }
-
-  oldwd <- getwd()
-  setwd(tempdir())
-  on.exit(setwd(oldwd), add = TRUE)
+  skip_if_not(reticulate::py_module_available("sympy"), "Python Module 'Sympy' not available")
 
   trafo <- c(
     A = "k_p * (k2 + k_d) / (k1 * k_d)",
     B = "k_p / k_d"
   )
 
-  f <- expect_silent(
-    funCpp(
-      trafo,
-      variables  = NULL,
-      parameters = c("k_p", "k1", "k2", "k_d"),
-      fixed      = NULL,
-      deriv      = TRUE,
-      deriv2     = TRUE,
-      compile    = TRUE,
-      modelname  = "obsfn_test",
-      convenient = TRUE,
-      verbose    = FALSE
-    )
+  f <- funCpp(
+    trafo,
+    variables  = NULL,
+    parameters = c("k_p", "k1", "k2", "k_d"),
+    fixed      = NULL,
+    deriv      = TRUE,
+    deriv2     = TRUE,
+    compile    = TRUE,
+    modelname  = "funCpp_test",
+    convenient = TRUE
   )
+
 
   res <- expect_silent(
     f(

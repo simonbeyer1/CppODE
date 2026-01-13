@@ -1,24 +1,25 @@
+/*
+ Extensions for FADBAD++ fadiff.h to work with Boost.Odeint
+
+ This header provides additional functionality for fadbad::F<T> types:
+ - abs() function for F<T> types
+ - Hyperbolic functions (sinh, cosh, tanh, asinh, acosh, atanh)
+ - Safe comparison operators for nested F<F<T>> types
+ - std::min/max overloads for F<T>
+
+ Copyright (C) 2026 Simon Beyer
+ */
+
 #ifndef CPPODE_FADIFF_EXTENSIONS_HPP
 #define CPPODE_FADIFF_EXTENSIONS_HPP
-/**
- * @file cppode_fadiff_extensions.hpp
- * @brief Extensions for FADBAD++ fadiff.h to work with Boost.Odeint
- *
- * This header provides additional functionality for fadbad::F<T> types:
- *   - abs() function for F<T> types
- *   - Hyperbolic functions (sinh, cosh, tanh, asinh, acosh, atanh)
- *   - Safe comparison operators for nested F<F<T>> types
- *   - std::min/max overloads for F<T>
- *
- * @author Simon Beyer <simon.beyer@fdm.uni-freiburg.de>
- */
+
 #include <fadbad++/fadiff.h>
 #include <type_traits>
 #include <cmath>
 
-// ============================================================================
+// =========================================================================================
 //  FADBAD namespace extensions
-// ============================================================================
+// =========================================================================================
 namespace fadbad {
 
 // ----------------------------------------------------------------------------

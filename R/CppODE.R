@@ -106,7 +106,6 @@
 #' | `deriv2` | `logical` | Indicates whether nested dual numbers were used for second-order sensitivities |
 #' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
 #'
-#' @author Simon Beyer, <simon.beyer@@fdm.uni-freiburg.de>
 #' @example inst/examples/example_ODE.R
 #' @importFrom reticulate source_python
 #' @importFrom stats setNames
@@ -162,12 +161,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     modelname <- paste(c("x", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
   }
 
-  # --- CALL PYTHON CODE GENERATOR (single call!) ---
-  ensurePythonEnv("CppODE", verbose = verbose)
-
-  # Source Python module
-  py_file <- system.file("python", "codegen.py", package = "CppODE")
-  reticulate::source_python(py_file)
+  # Lazy import
+  codegen <- get_codegenCppODE_py()
 
   if (verbose) message("Generating ODE and Jacobian code...")
 
@@ -180,7 +175,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     numType <- "double"
   }
 
-  codegen_result <- reticulate::py$generate_ode_cpp(
+  codegen_result <- codegen$generate_ode_cpp(
     rhs_dict = as.list(setNames(rhs, variables)),
     params_list = params,
     num_type = numType,
@@ -200,7 +195,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   if (!is.null(events)) {
     if (verbose) message("Generating event code...")
 
-    event_lines <- reticulate::py$generate_event_code(
+    event_lines <- codegen$generate_event_code(
       events_df = events,
       states_list = variables,
       params_list = params,
@@ -874,10 +869,10 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' @example inst/examples/example_fun.R
 #' @importFrom reticulate import_from_path
 #' @export
-funCpp <- function(eqns, variables  = getSymbols(eqns, exclude = parameters),
+funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
                    parameters = NULL, fixed = NULL,
                    modelname = NULL, outdir = tempdir(),
-                   compile    = FALSE, verbose = FALSE, warnings = TRUE,
+                   compile = FALSE, verbose = FALSE, warnings = TRUE,
                    convenient = TRUE, deriv = TRUE, deriv2 = FALSE) {
 
   if (deriv2 && !deriv) {
@@ -1019,43 +1014,41 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, exclude = parameters),
     warning("R fallback not available. Please compile the function.")
 
   cppfile <- NULL
-  if (!is.null(modelname)) {
-    ensurePythonEnv(envname = "CppODE", verbose = verbose)
-    pytools <- reticulate::import_from_path(
-      "generatefunCppCode",
-      path = system.file("python", package = "CppODE")
-    )
 
-    exprs_list <- as.list(eqns)
-    names(exprs_list) <- outnames
+  # Lazy import
+  codegen <- get_codegenfunCpp_py()
 
-    py_jac <- if (!is.null(sym_jac))
-      lapply(seq_len(nrow(sym_jac)), function(i) as.list(as.character(sym_jac[i, ])))
-    else NULL
-    if (!is.null(py_jac)) names(py_jac) <- rownames(sym_jac)
+  exprs_list <- as.list(eqns)
+  names(exprs_list) <- outnames
 
-    py_hess <- if (!is.null(sym_hess))
-      lapply(seq_len(length(sym_hess)), function(i)
-        lapply(seq_len(nrow(sym_hess[[i]])), function(j)
-          as.list(as.character(sym_hess[[i]][j, ]))))
-    else NULL
-    if (!is.null(py_hess)) names(py_hess) <- names(sym_hess)
-
-    gen_variables  <- variables
-    gen_parameters <- parameters
-
-    pytools$generate_fun_cpp(
-      exprs      = exprs_list,
-      variables  = if (length(gen_variables)  > 0) gen_variables  else list(),
-      parameters = if (length(gen_parameters) > 0) gen_parameters else list(),
-      jacobian   = py_jac,
-      hessian    = py_hess,
-      modelname  = modelname,
-      outdir     = normalizePath(outdir, winslash = "/", mustWork = FALSE)
-    )
+  py_jac <- if (!is.null(sym_jac)) {
+    lapply(seq_len(nrow(sym_jac)), function(i)
+      as.list(as.character(sym_jac[i, ])))
+  } else {
+    NULL
   }
+  if (!is.null(py_jac)) names(py_jac) <- rownames(sym_jac)
 
-  myRfun <- function(vars, params = numeric(0),
+  py_hess <- if (!is.null(sym_hess)) {
+    lapply(seq_len(length(sym_hess)), function(i)
+      lapply(seq_len(nrow(sym_hess[[i]])), function(j)
+        as.list(as.character(sym_hess[[i]][j, ]))))
+  } else {
+    NULL
+  }
+  if (!is.null(py_hess)) names(py_hess) <- names(sym_hess)
+
+  codegen$generate_fun_cpp(
+    exprs      = exprs_list,
+    variables  = if (length(variables)  > 0) variables  else list(),
+    parameters = if (length(parameters) > 0) parameters else list(),
+    jacobian   = py_jac,
+    hessian    = py_hess,
+    modelname  = modelname,
+    outdir     = normalizePath(outdir, winslash = "/", mustWork = FALSE)
+  )
+
+  outRfn <- function(vars, params = numeric(0),
                      attach.input = FALSE,
                      deriv = TRUE, deriv2 = FALSE,
                      fixed = NULL,
@@ -1198,7 +1191,7 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, exclude = parameters),
     return(result)
   }
 
-  outfn <- myRfun
+  outfn <- outRfn
 
   if (convenient) {
     outfn <- function(..., attach.input = FALSE,
@@ -1209,7 +1202,7 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, exclude = parameters),
         do.call(cbind, arglist[innames]) else NULL
       p <- if (!is.null(parameters) && length(parameters) > 0)
         do.call(c, arglist[parameters]) else numeric(0)
-      myRfun(M, p, attach.input = attach.input,
+      outRfn(M, p, attach.input = attach.input,
              deriv = deriv, deriv2 = deriv2,
              fixed = fixed)
     }
@@ -1231,206 +1224,4 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, exclude = parameters),
   }
 
   outfn
-}
-
-
-#' Compile generated C++ model code
-#'
-#' @description
-#' Compiles one or more C++ source files generated by \code{CppODE()} or
-#' \code{funCpp()} into shared libraries (\code{.so}, \code{.dll}) using
-#' \command{R CMD SHLIB}. Source files are located via the \code{"srcfile"}
-#' attribute attached to the supplied objects.
-#'
-#' Compilation is performed in the directory of each source file and does
-#' not write to the user's home directory or working directory unless
-#' explicitly requested by the user via the \code{outdir} argument when
-#' generating the model code.
-#'
-#' The function automatically applies platform-appropriate compiler flags
-#' (e.g. C++20 standard, optimization, position-independent code where
-#' required) and includes headers shipped with the package itself as well as
-#' Boost headers provided by the \pkg{BH} package.
-#'
-#' On Windows, compilation is always performed sequentially since
-#' fork-based parallelism is unavailable.
-#'
-#' @param ... One or more objects returned by \code{CppODE()} or
-#'   \code{funCpp()} that carry a \code{"srcfile"} attribute pointing to an
-#'   existing C or C++ source file.
-#' @param output Optional base name for a combined shared library. If
-#'   supplied, all provided source files are compiled and linked into a
-#'   single shared object.
-#' @param args Optional additional compiler or linker arguments passed to
-#'   \command{R CMD SHLIB}.
-#' @param cores Number of parallel compilation jobs on Unix-like systems.
-#'   Ignored on Windows.
-#' @param verbose Logical; if \code{TRUE}, show compiler commands and output.
-#'
-#' @return
-#' Invisibly returns \code{TRUE} on successful compilation.
-#'
-#' @keywords internal
-#' @import BH
-compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE) {
-  objects <- list(...)
-
-  # --- collect all source files via srcfile attribute ---
-  files <- character()
-  for (obj in objects) {
-    src <- attr(obj, "srcfile")
-    if (!is.null(src) && file.exists(src)) {
-      files <- union(files, normalizePath(src, winslash = "/", mustWork = FALSE))
-    } else if (verbose) {
-      message("No valid srcfile attribute found.")
-    }
-  }
-
-  if (length(files) == 0)
-    stop("No valid C/C++ source files found for compilation.")
-
-  # Roots and directories
-  roots <- sub("\\.[^.]+$", "", basename(files))
-  dirs  <- dirname(files)
-  .so   <- .Platform$dynlib.ext
-
-  # --- Clean up old compiled files (same directories as sources) ---
-  for (i in seq_along(files)) {
-    so_file <- file.path(dirs[i], paste0(roots[i], .so))
-    o_file  <- file.path(dirs[i], paste0(roots[i], ".o"))
-
-    # ALWAYS try to unload first (before checking file existence)
-    tryCatch(
-      dyn.unload(so_file),
-      error = function(e) {
-        if (verbose) message("Note: Could not unload ", so_file, ": ", e$message)
-      }
-    )
-
-    # Then delete old files
-    if (file.exists(o_file)) {
-      unlink(o_file, force = TRUE)
-    }
-    if (file.exists(so_file)) {
-      unlink(so_file, force = TRUE)
-      if (file.exists(so_file))
-        stop("Could not delete old shared library: ", so_file)
-    }
-  }
-
-  # --- Compiler flags ---
-  if (Sys.info()[["sysname"]] == "Windows") cores <- 1
-
-  include_flags <- paste(
-    paste0("-I", system.file("include", package = "CppODE")),
-    paste0("-I", system.file("include", package = "BH"))
-  )
-
-  sys <- Sys.info()[["sysname"]]
-  cxxflags <- if (sys == "Windows") {
-    "-std=c++20 -O3 -DNDEBUG -w"
-  } else if (sys == "Linux") {
-    "-std=c++20 -O3 -DNDEBUG -fPIC -fno-var-tracking-assignments -w"
-  } else if (sys == "Darwin") {
-    "-std=c++20 -O3 -DNDEBUG -fPIC -w"
-  }
-
-  # --- compile one file ---
-  compile_one <- function(src, root, dir) {
-    old_cppflags <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
-    old_cxxflags <- Sys.getenv("PKG_CXXFLAGS", unset = NA)
-
-    Sys.setenv(
-      PKG_CPPFLAGS = include_flags,
-      PKG_CXXFLAGS = cxxflags
-    )
-
-    on.exit({
-      if (is.na(old_cppflags)) Sys.unsetenv("PKG_CPPFLAGS")
-      else Sys.setenv(PKG_CPPFLAGS = old_cppflags)
-      if (is.na(old_cxxflags)) Sys.unsetenv("PKG_CXXFLAGS")
-      else Sys.setenv(PKG_CXXFLAGS = old_cxxflags)
-    })
-
-    oldwd <- getwd()
-    on.exit(setwd(oldwd), add = TRUE)
-    setwd(dir)
-
-    cmd <- paste0(
-      shQuote(file.path(R.home("bin"), "R")),
-      " CMD SHLIB ",
-      shQuote(basename(src)),
-      if (!is.null(args)) paste(" ", args) else ""
-    )
-
-    if (verbose) message(cmd)
-    system(cmd, intern = !verbose)
-
-    so_file <- file.path(dir, paste0(root, .so))
-    if (!file.exists(so_file))
-      stop("Compilation failed for ", src)
-
-    dyn.load(so_file)
-    if (verbose) message("\u2713 Loaded ", so_file)
-    invisible(root)
-  }
-
-  # --- Compilation ---
-  if (is.null(output)) {
-    if (verbose) message("Compiling ", length(files), " model(s)...")
-    parallel::mclapply(
-      seq_along(files),
-      function(i) compile_one(files[i], roots[i], dirs[i]),
-      mc.cores = cores,
-      mc.silent = !verbose
-    )
-  } else {
-    # --- Combine all into one shared library ---
-    output <- sub("\\.so$", "", output)
-    outdir <- dirname(files[1])
-    output_so <- file.path(outdir, paste0(output, .so))
-
-    try(dyn.unload(output_so), silent = TRUE)
-    if (file.exists(output_so)) unlink(output_so)
-
-    old_cppflags <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
-    old_cxxflags <- Sys.getenv("PKG_CXXFLAGS", unset = NA)
-
-    Sys.setenv(
-      PKG_CPPFLAGS = include_flags,
-      PKG_CXXFLAGS = cxxflags
-    )
-
-    on.exit({
-      if (is.na(old_cppflags)) Sys.unsetenv("PKG_CPPFLAGS")
-      else Sys.setenv(PKG_CPPFLAGS = old_cppflags)
-      if (is.na(old_cxxflags)) Sys.unsetenv("PKG_CXXFLAGS")
-      else Sys.setenv(PKG_CXXFLAGS = old_cxxflags)
-    })
-
-    oldwd <- getwd()
-    on.exit(setwd(oldwd), add = TRUE)
-    setwd(outdir)
-
-    cmd <- paste0(
-      shQuote(file.path(R.home("bin"), "R")),
-      " CMD SHLIB ",
-      paste(shQuote(basename(files)), collapse = " "),
-      " -o ",
-      shQuote(basename(output_so)),
-      if (!is.null(args)) paste(" ", args) else ""
-    )
-
-    if (verbose) message(cmd)
-    system(cmd, intern = !verbose)
-
-    if (!file.exists(output_so))
-      stop("Compilation failed for combined output")
-
-    dyn.unload(output_so)
-    dyn.load(output_so)
-    if (verbose) message("\u2713 Loaded ", output_so)
-  }
-
-  invisible(TRUE)
 }

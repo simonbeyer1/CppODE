@@ -1,23 +1,30 @@
-#' Extract symbols from expressions
+#' Extract symbol names from R expressions
 #'
-#' Parses a character vector of expressions and returns all symbol names
-#' (variable identifiers).
+#' Returns the unique names of all symbols occurring in a character vector
+#' of R expressions.
 #'
-#' @param char Character vector of expressions.
-#' @param exclude Optional character vector of names to exclude.
+#' @param expr Character vector of R expressions.
+#' @param omit Optional character vector of symbol names to remove.
 #'
-#' @return Character vector with unique symbol names.
+#' @return Character vector of unique symbol names.
 #'
 #' @keywords internal
-getSymbols <- function(char, exclude = NULL) {
-  if (is.null(char)) return(NULL)
-  char <- char[char!="0"]
-  out <- parse(text=char, keep.source = TRUE)
-  out <- utils::getParseData(out)
-  names <- unique(out$text[out$token == "SYMBOL"])
-  if(!is.null(exclude)) names <- names[!names%in%exclude]
-  return(names)
+getSymbols <- function(expr, omit = NULL) {
+  if (is.null(expr)) return(character(0))
+
+  expr <- expr[expr != "0"]
+  if (!length(expr)) return(character(0))
+
+  parsed <- tryCatch(parse(text = expr), error = function(e) NULL)
+  if (is.null(parsed)) return(character(0))
+
+  pd <- utils::getParseData(parsed)
+  syms <- unique(pd[pd$token == "SYMBOL", "text"])
+
+  if (!is.null(omit)) syms <- setdiff(syms, omit)
+  syms
 }
+
 
 #' Sanitize expressions for SymPy compatibility
 #'
@@ -32,7 +39,6 @@ getSymbols <- function(char, exclude = NULL) {
 #' @param exprs Character vector of expressions.
 #' @return Character vector with sanitized expressions.
 #'
-#' @author Simon Beyer, \email{simon.beyer@@fdm.uni-freiburg.de}
 #' @keywords internal
 sanitizeExprs <- function(exprs) {
   sanitized <- exprs
@@ -129,14 +135,9 @@ sanitizeExprs <- function(exprs) {
 #'
 #' @export
 derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, fixed = NULL, verbose = FALSE) {
-  # --- ensure environment ---
-  ensurePythonEnv(envname = "CppODE", verbose = verbose)
 
-  # --- import Python backend ---
-  sympy_tools <- reticulate::import_from_path(
-    "derivSymb",
-    path = system.file("python", package = "CppODE")
-  )
+  # Lazy import
+  py_deriv <- get_derivSymb_py()
 
   # --- prepare input ---
   if (is.null(names(exprs))) {
@@ -145,7 +146,7 @@ derivSymb <- function(exprs, real = FALSE, deriv2 = FALSE, fixed = NULL, verbose
   expr_dict <- as.list(exprs)
 
   # --- call Python backend ---
-  result <- sympy_tools$jac_hess_symb(
+  result <- py_deriv$jac_hess_symb(
     exprs = expr_dict,
     variables = NULL,
     fixed = fixed,

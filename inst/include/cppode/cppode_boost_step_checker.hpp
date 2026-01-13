@@ -3,13 +3,13 @@
  Extended version of Boost.Odeint's max_step_checker.
 
  Original work:
- Copyright 2015 Mario Mulansky
+ Copyright (C) 2015 Mario Mulansky
  Distributed under the Boost Software License, Version 1.0.
  (See accompanying file LICENSE_1_0.txt or
  copy at http://www.boost.org/LICENSE_1_0.txt)
 
  Modified work:
- Copyright 2026 Simon Beyer
+ Copyright (C) 2026 Simon Beyer
 
  Modifications:
  - Combined no-progress and total step checking

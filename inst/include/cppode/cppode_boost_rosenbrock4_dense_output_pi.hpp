@@ -2,22 +2,20 @@
  Dense output wrapper for Rosenbrock4 with PI controller and event support.
 
  Original work:
- Copyright 2011-2012 Karsten Ahnert
- Copyright 2011-2015 Mario Mulansky
- Copyright 2012 Christoph Koke
+ Copyright (C) 2011-2012 Karsten Ahnert
+ Copyright (C) 2011-2015 Mario Mulansky
+ Copyright (C) 2012 Christoph Koke
  Distributed under the Boost Software License, Version 1.0.
  (See accompanying file LICENSE_1_0.txt or
  copy at http://www.boost.org/LICENSE_1_0.txt)
 
  Modified work:
- Copyright 2025 Simon Beyer
+ Copyright (C) 2026 Simon Beyer
 
  Modifications:
  - Added reinitialize_at_event() for event-driven integration
  - Implemented SFINAE-based controller reset detection
  - Extended double-buffering for stable event handling
- - Added support for both PI and classical controllers
- - Improved interpolation stability across event boundaries
  */
 
 #ifndef CPPODE_ROSENBROCK4_DENSE_OUTPUT_PI_HPP_INCLUDED

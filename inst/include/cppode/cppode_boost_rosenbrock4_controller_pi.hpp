@@ -2,28 +2,26 @@
  Controller for the Rosenbrock4 method with PI step-size control.
 
  Original work:
- Copyright 2011-2012 Karsten Ahnert
- Copyright 2011-2012 Mario Mulansky
- Copyright 2012 Christoph Koke
+ Copyright (C) 2011–2012 Karsten Ahnert
+ Copyright (C) 2011–2012 Mario Mulansky
+ Copyright (C) 2012 Christoph Koke
  Distributed under the Boost Software License, Version 1.0.
- (See accompanying file LICENSE_1_0.txt or
- copy at http://www.boost.org/LICENSE_1_0.txt)
 
  Modified work:
- Copyright 2026 Simon Beyer
+ Copyright (C) 2026 Simon Beyer
 
  Modifications:
  - Replaced classical step-size control with PI controller
  - Added reset_after_event() for event-driven integration
- - Implemented Gustafsson-Söderlind PI control algorithm
+ - Implemented Gustafsson–Söderlind PI control algorithm
  - Added diagnostic accessors (first_step, last_rejected, dt_old)
- - Improved step-size stability after rejections
+
+ This file remains distributed under the Boost Software License, Version 1.0.
 
  PI controller based on:
- - Gustafsson, K. (1991). "Control theoretic techniques for stepsize selection
- in explicit Runge-Kutta methods". ACM Trans. Math. Softw. 17(4), 533-554.
- - Söderlind, G. (2002). "Automatic control and adaptive time-stepping".
- Numer. Algorithms 31(1-4), 281-310.
+ Gustafsson, K., Lundh, M. & Söderlind, G. (1988).
+ "A PI stepsize control for the numerical solution of ordinary differential equations".
+ BIT 28, 270–287. https://doi.org/10.1007/BF01934091
  */
 
 #ifndef CPPODE_ROSENBROCK4_CONTROLLER_PI_HPP_INCLUDED
@@ -59,28 +57,19 @@ namespace odeint {
  * dt_new = dt * safety * (err_old / err)^beta * (1 / err)^alpha
  * @endcode
  *
- * where:
- * - alpha = 0.14 (proportional gain, tuned for order 4)
- * - beta = 0.08 (integral gain, provides smoothness)
+ * where (defaults):
+ * - alpha = 0.175 (proportional gain)
+ * - beta = 0.1 (integral gain)
  * - safety = 0.9 (safety factor)
  *
  * **Features:**
- * - Smooth step-size evolution (reduces oscillations)
+ * - Smooth step-size evolution
  * - Conservative behavior after step rejections
  * - Event reset support via reset_after_event()
- * - Compatible with standard Boost.Odeint integration routines
+ * - Configurable PI controller parameters
  *
  * @tparam Stepper The underlying Rosenbrock4 stepper type
  *
- * @par Usage Example
- * @code
- * using stepper_t = rosenbrock4<double>;
- * rosenbrock4_controller_pi<stepper_t> controlled(1e-6, 1e-6);
- *
- * integrate_adaptive(controlled, system, x, t0, t1, dt, observer);
- * @endcode
- *
- * @see Gustafsson (1991), Söderlind (2002)
  * @see boost::numeric::odeint::rosenbrock4
  */
 template< class Stepper >
@@ -100,11 +89,23 @@ public:
 
   typedef rosenbrock4_controller_pi< Stepper > controller_type;
 
-  /// Proportional gain for PI controller (tuned for order 4)
-  static constexpr value_type pi_alpha = 0.7 / 5.0;  // ~0.14
+  /// Method order (used in step-size formula)
+  static constexpr value_type order = 3.0;
 
-  /// Integral gain for PI controller (provides smoothness)
-  static constexpr value_type pi_beta  = 0.4 / 5.0;  // ~0.08
+  /// Default proportional gain: alpha = 0.7 / (order + 1)
+  static constexpr value_type default_alpha = 0.7 / (order + 1.0);  // ~0.175
+
+  /// Default integral gain: beta = 0.4 / (order + 1)
+  static constexpr value_type default_beta  = 0.4 / (order + 1.0);  // ~0.1
+
+  /// Default safety factor for step-size selection
+  static constexpr value_type default_safety = 0.9;
+
+  /// Default maximum step increase factor
+  static constexpr value_type default_max_factor = 5.0;
+
+  /// Default minimum step decrease factor
+  static constexpr value_type default_min_factor = 0.2;
 
   /**
    * @brief Construct controller with tolerances
@@ -120,6 +121,9 @@ public:
                              const stepper_type &stepper = stepper_type() )
     : m_stepper( stepper ) , m_atol( atol ) , m_rtol( rtol ) ,
       m_max_dt( static_cast<time_type>(0) ) ,
+      m_alpha( default_alpha ) , m_beta( default_beta ) ,
+      m_safety( default_safety ) , m_max_factor( default_max_factor ) ,
+      m_min_factor( default_min_factor ) ,
       m_first_step( true ) , m_err_old( 1.0 ) , m_dt_old( 1.0 ) ,
       m_last_rejected( false )
   { }
@@ -135,6 +139,41 @@ public:
   rosenbrock4_controller_pi( value_type atol, value_type rtol, time_type max_dt,
                              const stepper_type &stepper = stepper_type() )
     : m_stepper( stepper ) , m_atol( atol ) , m_rtol( rtol ) , m_max_dt( max_dt ) ,
+      m_alpha( default_alpha ) , m_beta( default_beta ) ,
+      m_safety( default_safety ) , m_max_factor( default_max_factor ) ,
+      m_min_factor( default_min_factor ) ,
+      m_first_step( true ) , m_err_old( 1.0 ) , m_dt_old( 1.0 ) ,
+      m_last_rejected( false )
+  { }
+
+  /**
+   * @brief Construct controller with full tuning control
+   *
+   * @param atol Absolute tolerance
+   * @param rtol Relative tolerance
+   * @param max_dt Maximum allowed step size (0 = unlimited)
+   * @param alpha PI proportional gain (default: ~0.175)
+   * @param beta PI integral gain (default: ~0.1)
+   * @param safety Safety factor (default: 0.9)
+   * @param max_factor Maximum step increase (default: 5.0)
+   * @param min_factor Minimum step decrease (default: 0.2)
+   * @param stepper The underlying Rosenbrock4 stepper instance
+   *
+   * @par Tuning Guidelines
+   * - **Increase alpha/beta**: Smoother step-size evolution, slower adaptation
+   * - **Decrease alpha/beta**: Faster adaptation, more oscillations
+   * - **Increase safety**: More conservative, smaller steps
+   * - **Narrow min/max_factor**: Limits step-size variation
+   */
+  rosenbrock4_controller_pi( value_type atol, value_type rtol, time_type max_dt,
+                             value_type alpha, value_type beta,
+                             value_type safety = default_safety,
+                             value_type max_factor = default_max_factor,
+                             value_type min_factor = default_min_factor,
+                             const stepper_type &stepper = stepper_type() )
+    : m_stepper( stepper ) , m_atol( atol ) , m_rtol( rtol ) , m_max_dt( max_dt ) ,
+      m_alpha( alpha ) , m_beta( beta ) ,
+      m_safety( safety ) , m_max_factor( max_factor ) , m_min_factor( min_factor ) ,
       m_first_step( true ) , m_err_old( 1.0 ) , m_dt_old( 1.0 ) ,
       m_last_rejected( false )
   { }
@@ -246,15 +285,15 @@ public:
    *
    * @par PI Control Strategy
    * - **First step or after rejection**: Pure P-control (no history)
-   *   - factor = 0.9 * (1/err)^0.25
+   *   - factor = safety * (1/err)^(1/(order+1))
    * - **Normal steps**: Full PI control
-   *   - factor = 0.9 * (err_old/err)^0.08 * (1/err)^0.14
+   *   - factor = safety * (err_old/err)^beta * (1/err)^alpha
    * - **After rejection**: Limit growth to prevent oscillations
    *   - factor <= 1.0
    *
    * @par Step Size Limits
-   * - Minimum decrease: factor >= 0.2 (max 80% reduction)
-   * - Maximum increase: factor <= 5.0 (max 400% growth)
+   * - Minimum decrease: factor >= min_factor (default: max 80% reduction)
+   * - Maximum increase: factor <= max_factor (default: max 400% growth)
    * - Absolute limit: dt <= max_dt (if set)
    */
   template< class System >
@@ -272,11 +311,6 @@ public:
     using std::pow;
     using std::abs;
 
-    // Safety and limiting factors
-    static const value_type safe = 0.9;
-    static const value_type max_factor = 5.0;
-    static const value_type min_factor = 0.2;
-
     m_xerr_resizer.adjust_size( x , detail::bind( &controller_type::template resize_m_xerr< state_type > , detail::ref( *this ) , detail::_1 ) );
 
     m_stepper.do_step( sys , x , t , xout , dt , m_xerr.m_v );
@@ -293,14 +327,14 @@ public:
       if( m_first_step || m_last_rejected )
       {
         // Pure P-control for first step or after rejection
-        factor = safe * pow( 1.0 / err, 0.25 );
+        factor = m_safety * pow( 1.0 / err, 1.0 / (order + 1.0) );
       }
       else
       {
         // PI control: use both current and previous error
-        factor = safe
-        * pow( m_err_old / err, pi_beta )
-        * pow( 1.0 / err, pi_alpha );
+        factor = m_safety
+        * pow( m_err_old / err, m_beta )
+        * pow( 1.0 / err, m_alpha );
       }
 
       // Limit growth after rejection
@@ -310,8 +344,8 @@ public:
       }
 
       // Clamp factor
-      factor = max BOOST_PREVENT_MACRO_SUBSTITUTION ( min_factor,
-                                                      min BOOST_PREVENT_MACRO_SUBSTITUTION ( max_factor, factor ) );
+      factor = max BOOST_PREVENT_MACRO_SUBSTITUTION ( m_min_factor,
+                                                      min BOOST_PREVENT_MACRO_SUBSTITUTION ( m_max_factor, factor ) );
 
       // Update controller state
       m_dt_old = dt;
@@ -340,10 +374,10 @@ public:
     else
     {
       // === Step rejected ===
-      value_type factor = safe * pow( 1.0 / err, 0.25 );
+      value_type factor = m_safety * pow( 1.0 / err, 1.0 / (order + 1.0) );
 
       // Clamp decrease (ensure we decrease but not too aggressively)
-      factor = max BOOST_PREVENT_MACRO_SUBSTITUTION ( min_factor,
+      factor = max BOOST_PREVENT_MACRO_SUBSTITUTION ( m_min_factor,
                                                       min BOOST_PREVENT_MACRO_SUBSTITUTION ( static_cast<value_type>(0.9), factor ) );
 
       m_last_rejected = true;
@@ -402,6 +436,84 @@ public:
    */
   value_type dt_old() const { return m_dt_old; }
 
+  // Tolerance accessors
+
+  /**
+   * @brief Get absolute tolerance
+   * @return Current absolute tolerance
+   */
+  value_type atol() const { return m_atol; }
+
+  /**
+   * @brief Get relative tolerance
+   * @return Current relative tolerance
+   */
+  value_type rtol() const { return m_rtol; }
+
+  /**
+   * @brief Update error tolerances
+   * @param atol New absolute tolerance
+   * @param rtol New relative tolerance
+   */
+  void set_tolerances(value_type atol, value_type rtol) { m_atol = atol; m_rtol = rtol; }
+
+  // PI controller parameter accessors
+
+  /**
+   * @brief Get proportional gain
+   * @return Current alpha value
+   */
+  value_type alpha() const { return m_alpha; }
+
+  /**
+   * @brief Get integral gain
+   * @return Current beta value
+   */
+  value_type beta() const { return m_beta; }
+
+  /**
+   * @brief Get safety factor
+   * @return Current safety value
+   */
+  value_type safety() const { return m_safety; }
+
+  /**
+   * @brief Get maximum step increase factor
+   * @return Current max_factor value
+   */
+  value_type max_factor() const { return m_max_factor; }
+
+  /**
+   * @brief Get minimum step decrease factor
+   * @return Current min_factor value
+   */
+  value_type min_factor() const { return m_min_factor; }
+
+  /**
+   * @brief Update PI controller gains
+   * @param alpha New proportional gain
+   * @param beta New integral gain
+   */
+  void set_pi_gains(value_type alpha, value_type beta) { m_alpha = alpha; m_beta = beta; }
+
+  /**
+   * @brief Update all PI controller parameters
+   * @param alpha Proportional gain
+   * @param beta Integral gain
+   * @param safety Safety factor
+   * @param max_factor Maximum step increase
+   * @param min_factor Minimum step decrease
+   */
+  void set_pi_parameters(value_type alpha, value_type beta, value_type safety,
+                         value_type max_factor, value_type min_factor)
+  {
+    m_alpha = alpha;
+    m_beta = beta;
+    m_safety = safety;
+    m_max_factor = max_factor;
+    m_min_factor = min_factor;
+  }
+
 protected:
 
   template< class StateIn >
@@ -423,6 +535,15 @@ protected:
   wrapped_state_type m_xnew;          ///< New state buffer
   value_type m_atol , m_rtol;         ///< Absolute and relative tolerances
   time_type m_max_dt;                 ///< Maximum step size (0 = unlimited)
+
+  // PI controller parameters (configurable)
+  value_type m_alpha;                 ///< Proportional gain
+  value_type m_beta;                  ///< Integral gain
+  value_type m_safety;                ///< Safety factor
+  value_type m_max_factor;            ///< Maximum step increase factor
+  value_type m_min_factor;            ///< Minimum step decrease factor
+
+  // Controller state
   bool m_first_step;                  ///< First step flag
   value_type m_err_old , m_dt_old;    ///< Error and step-size history for PI control
   bool m_last_rejected;               ///< Rejection flag

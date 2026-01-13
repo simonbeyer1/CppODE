@@ -7,7 +7,6 @@ simplifications. Non-analytic expressions like abs(), max(), or
 sign() are supported.
 
 Author: Simon Beyer
-Updated: 2025-12-16
 """
 
 import sympy as sp

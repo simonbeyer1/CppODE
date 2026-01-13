@@ -1,16 +1,13 @@
 Package: CppODE
-Title: Automated 'C++' Code Generation for Ordinary Differential Equations
+Title: Automated 'C++' Code Generation for Ordinary Differential Equation Models
 Version: 1.0.0
 Authors@R:
-    person("Simon", "Beyer", , "simon.beyer@fdm.uni-freiburg.de",
-           role = c("aut", "cre"))
-Description: Generates and compiles 'C++' code for solving systems of ordinary
-    differential equations. Sensitivity analysis is supported via
-    automatic differentiation using the 'FADBAD++' library. Numerical
-    integration relies on the Boost C++ library. Event handling follows
-    logic compatible with the 'deSolve' R package.
+    person("Simon", "Beyer", , "simon.beyer@fdm.uni-freiburg.de", role = c("aut", "cre"))
+Description: Generates and compiles 'C++' code for forward simulation of ordinary differential equation models.
+    Numerical integration 'C++' library 'Boost.Numeric.Odeint'. First annd second order sensitivity computation is supported via automatic differentiation using the 'FADBAD++' library.
+    For algebraic models, derivatives up to second order can be calculated analytically during the code generation process.
 Language: en-US
-License: MIT + file LICENSE
+License: GPL-3
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
@@ -18,6 +15,5 @@ Imports:
     reticulate,
     BH
 Suggests:
-    testthat (>= 3.0.0)
-Config/testthat/edition: 3
+    testthat
 

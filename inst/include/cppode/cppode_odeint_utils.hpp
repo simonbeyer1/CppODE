@@ -1,21 +1,18 @@
+/*
+ Utility functions for ODE integration and sensitivity calculation with automatic differentiation
+
+ This header provides:
+ - Safe scalar extraction from nested FADBAD types (F<F<T>>)
+ - Recursive maximum absolute value extraction (including derivatives)
+ - Weighted norms for adaptive step-size control
+ - Initial step-size estimation for stiff solvers (Hairer-Nørsett-Wanner heuristic)
+ - uBLAS identity_matrix multiplication operators for F<T>
+
+ Copyright (C) 2026 Simon Beyer
+ */
+
 #ifndef CPPODE_ODEINT_UTILS_HPP
 #define CPPODE_ODEINT_UTILS_HPP
-
-/**
- * @file cppode_odeint_utils.hpp
- * @brief Utility functions for ODE integration and sensitivity calculation with automatic differentiation
- *
- * This header provides:
- *   - Safe scalar extraction from nested FADBAD types (F<F<T>>)
- *   - Recursive maximum absolute value extraction (including derivatives)
- *   - Weighted norms for adaptive step-size control
- *   - Initial step-size estimation for stiff solvers (Hairer-Nørsett-Wanner heuristic)
- *   - uBLAS identity_matrix multiplication operators for F<T>
- *
- * @note Requires cppode_fadiff_extensions.hpp to be included first.
- *
- * @author Simon Beyer <simon.beyer@fdm.uni-freiburg.de>
- */
 
 #include <algorithm>
 #include <cmath>
@@ -27,9 +24,9 @@
 
 #include <fadbad++/fadiff.h>
 
-// ============================================================================
+// =========================================================================================
 //  Boost.uBLAS extensions for fadbad::F<T> types
-// ============================================================================
+// =========================================================================================
 
 namespace boost { namespace numeric { namespace ublas {
 
@@ -76,9 +73,9 @@ operator*(const identity_matrix< fadbad::F<T> >& I,
 
 }}} // namespace boost::numeric::ublas
 
-// ============================================================================
+// =========================================================================================
 //  odeint_utils namespace — helper functions for AD and initial step-size selection
-// ============================================================================
+// =========================================================================================
 
 namespace odeint_utils {
 
@@ -86,9 +83,9 @@ using boost::numeric::ublas::vector;
 using boost::numeric::ublas::matrix;
 using fadbad::F;
 
-// ============================================================================
+// =========================================================================================
 //  Scalar extraction — full recursive unwrapping of nested F<F<...>>
-// ============================================================================
+// =========================================================================================
 
 /**
  * @brief Base case: extract scalar from double.
@@ -106,9 +103,9 @@ inline double scalar_value(const F<T>& v)
   return scalar_value(const_cast<F<T>&>(v).x());
 }
 
-// ============================================================================
+// =========================================================================================
 //  Maximum absolute value including all derivative components
-// ============================================================================
+// =========================================================================================
 
 /**
  * @brief Base case: max abs for double is just abs.
@@ -137,9 +134,9 @@ inline double max_abs_with_derivatives(const F<T>& v)
   return maxv;
 }
 
-// ============================================================================
+// =========================================================================================
 //  Weighted infinity norms
-// ============================================================================
+// =========================================================================================
 
 /**
  * @brief Weighted sup-norm for double vectors.
@@ -189,9 +186,9 @@ inline double weighted_sup_norm(
   return nrm;
 }
 
-// ============================================================================
+// =========================================================================================
 //  Initial step-size estimation (Hairer-Nørsett-Wanner heuristic)
-// ============================================================================
+// =========================================================================================
 
 /**
  * @brief Estimates the initial step size for an ODE solver (e.g., Rosenbrock-4).
@@ -218,7 +215,7 @@ inline double estimate_initial_dt_local(
     double t0,
     double atol,
     double rtol,
-    double eta = 1e-2)
+    double eta = 5e-2)
 {
   const std::size_t n = x0.size();
 
@@ -278,7 +275,7 @@ inline double estimate_initial_dt_local(
     double t0,
     double atol,
     double rtol,
-    double eta = 1e-2)
+    double eta = 5e-2)
 {
   std::function<void(const vector<double>&, vector<double>&, const double&)> sys_f =
     [&system](const vector<double>& x, vector<double>& dxdt, const double& t) {
@@ -306,7 +303,7 @@ inline F<T> estimate_initial_dt_local(
     const F<T> t0,
     double atol,
     double rtol,
-    double eta = 1e-2)
+    double eta = 5e-2)
 {
   const std::size_t n = x0.size();
 

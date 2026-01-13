@@ -6,7 +6,7 @@
 \usage{
 funCpp(
   eqns,
-  variables = getSymbols(eqns, exclude = parameters),
+  variables = getSymbols(eqns, omit = parameters),
   parameters = NULL,
   fixed = NULL,
   modelname = NULL,
@@ -114,6 +114,8 @@ This allows efficient subsetting like \code{jacobian[1:10, , ]} for the first 10
 }
 
 \examples{
+\dontrun{
+# funCpp() makes use of the Python module 'sympy'
 eqns <- c(A = "k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
 
 f <- funCpp(eqns,
@@ -139,4 +141,7 @@ res$hessian[1, "A", , ]
 
 # Symbolic Hessian
 attributes(f)$hessian.symb$A
+}
+
+
 }

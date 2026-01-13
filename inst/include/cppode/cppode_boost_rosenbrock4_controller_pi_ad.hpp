@@ -3,29 +3,26 @@
  AD-aware version for automatic differentiation types.
 
  Original work:
- Copyright 2011-2012 Karsten Ahnert
- Copyright 2011-2012 Mario Mulansky
- Copyright 2012 Christoph Koke
+ Copyright (C) 2011–2012 Karsten Ahnert
+ Copyright (C) 2011–2012 Mario Mulansky
+ Copyright (C) 2012 Christoph Koke
  Distributed under the Boost Software License, Version 1.0.
- (See accompanying file LICENSE_1_0.txt or
- copy at http://www.boost.org/LICENSE_1_0.txt)
 
  Modified work:
- Copyright 2026 Simon Beyer
+ Copyright (C) 2026 Simon Beyer
 
  Modifications:
- - Extended for FADBAD++ automatic differentiation types (fadbad::F<T>)
- - Implemented derivative-aware error control (optional)
- - Added scalar extraction for nested AD types (F<F<...>>)
  - Replaced classical step-size control with PI controller
  - Added reset_after_event() for event-driven integration
- - Improved numerical stability for AD computations
+ - Implemented Gustafsson–Söderlind PI control algorithm
+ - Added diagnostic accessors (first_step, last_rejected, dt_old)
+
+ This file remains distributed under the Boost Software License, Version 1.0.
 
  PI controller based on:
- - Gustafsson, K. (1991). "Control theoretic techniques for stepsize selection
- in explicit Runge-Kutta methods". ACM Trans. Math. Softw. 17(4), 533-554.
- - Söderlind, G. (2002). "Automatic control and adaptive time-stepping".
- Numer. Algorithms 31(1-4), 281-310.
+ Gustafsson, K., Lundh, M. & Söderlind, G. (1988).
+ "A PI stepsize control for the numerical solution of ordinary differential equations".
+ BIT 28, 270–287. https://doi.org/10.1007/BF01934091
  */
 
 #ifndef CPPODE_ROSENBROCK4_CONTROLLER_AD_PI_HPP_INCLUDED
@@ -127,33 +124,27 @@ inline double max_abs_with_derivs(const fadbad::F<T>& v) {
  * **Derivative-aware mode** (use_derivs_in_error_control = true):
  * - Error includes maximum over all derivative components
  * - More conservative (ensures derivative accuracy)
- * - Recommended for sensitivity analysis and optimization
  *
  * @tparam Stepper The underlying Rosenbrock4 stepper (AD-compatible)
  * @tparam use_derivs_in_error_control Include derivatives in error (default: false)
  *
- * @par PI Control Formula
+ * **PI Control Formula:**
  * @code
  * dt_new = dt * safety * (err_old / err)^beta * (1 / err)^alpha
  * @endcode
  *
- * where alpha ≈ 0.14, beta ≈ 0.08 (tuned for order 4)
+ * where:
+ * - alpha = 0.175 (proportional gain)
+ * - beta = 0.1 (integral gain)
+ * - safety = 0.9 (safety factor)
  *
- * @par Usage Example
- * @code
- * using ad_type = fadbad::F<double>;
- * using state_t = vector<ad_type>;
- * using stepper_t = rosenbrock4<state_t>;
+ * **Features:**
+ * - Smooth step-size evolution
+ * - Conservative behavior after step rejections
+ * - Event reset support via reset_after_event()
  *
- * // Value-only error control
- * rosenbrock4_controller_pi_ad<stepper_t, false> ctrl_val(1e-6, 1e-6);
- *
- * // Derivative-aware error control
- * rosenbrock4_controller_pi_ad<stepper_t, true> ctrl_deriv(1e-6, 1e-6);
- * @endcode
- *
- * @see rosenbrock4_controller_pi (non-AD version)
- * @see Gustafsson (1991), Söderlind (2002)
+ * @see Gustafsson, K., Lundh, M. & Söderlind, G. "A PI stepsize control for the numerical solution of
+ *      ordinary differential equations". BIT 28, 270–287 (1988). https://doi.org/10.1007/BF01934091
  */
 template<class Stepper, bool use_derivs_in_error_control = false>
 class rosenbrock4_controller_pi_ad
@@ -169,13 +160,13 @@ public:
   using stepper_category = controlled_stepper_tag;
 
   /// Method order (used in step-size formula)
-  static constexpr double order = 4.0;
+  static constexpr double order = 3.0;
 
   /// Proportional gain: alpha = 0.7 / (order + 1)
-  static constexpr double default_alpha = 0.7 / (order + 1.0);  // ~0.14
+  static constexpr double default_alpha = 0.7 / (order + 1.0);  // = 0.175
 
   /// Integral gain: beta = 0.4 / (order + 1)
-  static constexpr double default_beta  = 0.4 / (order + 1.0);  // ~0.08
+  static constexpr double default_beta  = 0.4 / (order + 1.0);  // = 0.1
 
   /// Safety factor for step-size selection
   static constexpr double default_safety     = 0.9;

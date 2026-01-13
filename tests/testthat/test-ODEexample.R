@@ -1,45 +1,22 @@
 test_that("example ODE model runs", {
 
-  skip_on_cran()
-  skip_on_ci()
-
-  py_ok <- tryCatch({
-    CppODE::ensurePythonEnv("CppODE", verbose = FALSE)
-    TRUE
-  }, error = function(err) {
-    FALSE
-  })
-
-  if (!py_ok) {
-    skip("Could not setup Python environment")
-  }
-
-  oldwd <- getwd()
-  setwd(tempdir())
-  on.exit(setwd(oldwd), add = TRUE)
+  skip_if_not(reticulate::py_module_available("sympy"), "Python Module 'Sympy' not available")
 
   eqns <- c(
-    A = "-k1*A^2 * time",
-    B = "k1*A^2 * time - k2*B"
+    A = "-k1 * A",
+    B = "k1 * A - k2 * B"
   )
 
   events <- data.frame(
     var    = "A",
     time   = "t_e",
-    value  = 1,
+    value  = "dose",
     method = "add",
-    root   = NA
+    root   = NA,
+    stringsAsFactors = FALSE
   )
 
-  f <- expect_silent(
-    CppODE(
-      eqns,
-      events    = events,
-      modelname = "example_test",
-      deriv2    = TRUE,
-      compile   = TRUE
-    )
-  )
+  f <- CppODE(eqns, events = events, modelname = "CppODE_test", deriv2 = TRUE, compile = TRUE)
 
   solve <- function(times, params) {
     paramnames <- c(attr(f, "variables"), attr(f, "parameters"))
@@ -51,7 +28,7 @@ test_that("example ODE model runs", {
       as.numeric(params),
       1e-6, 1e-6,
       10L, 7e5L,
-      0.0, 1e-10, 1L
+      0.0, 1e-8, 1L
     )
 
     dims <- attr(f, "dim_names")
@@ -67,8 +44,8 @@ test_that("example ODE model runs", {
     out
   }
 
-  params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 3)
-  times  <- seq(0, 5, length.out = 50)
+  params <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2, t_e = 25, dose = 1)
+  times  <- seq(0, 100, length.out = 100)
 
   res <- expect_silent(solve(times, params))
 

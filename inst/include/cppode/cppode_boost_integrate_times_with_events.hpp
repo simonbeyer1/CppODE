@@ -2,28 +2,24 @@
  Event-aware integration at specified times with root-finding support.
 
  Original work (basic integrate_times structure):
- Copyright 2011-2015 Mario Mulansky
- Copyright 2012 Karsten Ahnert
- Copyright 2012 Christoph Koke
+ Copyright (C) 2011-2015 Mario Mulansky
+ Copyright (C) 2012 Karsten Ahnert
+ Copyright (C) 2012 Christoph Koke
  Distributed under the Boost Software License, Version 1.0.
  (See accompanying file LICENSE_1_0.txt or
  copy at http://www.boost.org/LICENSE_1_0.txt)
 
  Modified work (event handling, root-finding, AD support):
- Copyright 2025 Simon Beyer
+ Copyright (C) 2026 Simon Beyer
 
  Major extensions:
  - Event system (fixed-time and root-finding events)
- - Bisection-based root localization with adaptive tolerance
+ - Bisection-based root localization with tolerance
  - Event application methods (Replace/Add/Multiply)
- - Stepper reinitialization after discontinuous events
+ - Stepper reinitialization after events
  - FADBAD++ automatic differentiation support
  - Root tracking and fire count management
  - Dense output optimization for root-finding
-
- This implementation extends the basic integrate_times concept from
- Boost.Odeint with comprehensive event handling capabilities for
- pharmacokinetic/pharmacodynamic modeling and sensitivity analysis.
  */
 
 #ifndef CPPODE_INTEGRATE_TIMES_WITH_EVENTS_HPP_INCLUDED
@@ -209,15 +205,6 @@ enum class EventMethod {
  *     {12.0, 0, 100.0, EventMethod::Add}    // Second dose
  * };
  * @endcode
- *
- * @par Example: Periodic Reset
- * @code{.cpp}
- * // Reset state[1] to zero every 24 hours
- * std::vector<FixedEvent<double>> resets;
- * for (int day = 1; day <= 7; ++day) {
- *     resets.push_back({24.0 * day, 1, 0.0, EventMethod::Replace});
- * }
- * @endcode
  */
 template<class value_type>
 struct FixedEvent {
@@ -242,34 +229,6 @@ struct FixedEvent {
  *
  * @tparam state_type The ODE state vector type
  * @tparam time_type The time variable type
- *
- * @par Example: Threshold Detection
- * @code{.cpp}
- * // Trigger when drug concentration drops below threshold
- * RootEvent<state_type, double> below_threshold = {
- *     [](const state_type& x, double t) {
- *         return x[0] - 0.5;  // Root at x[0] = 0.5
- *     },
- *     0,                      // Modify state[0]
- *     10.0,                   // Add rescue dose
- *     EventMethod::Add
- * };
- * @endcode
- *
- * @par Example: Peak Detection
- * @code{.cpp}
- * // Detect local maximum of x[0] by finding where dx[0]/dt = 0
- * RootEvent<state_type, double> peak_detector = {
- *     [&system](const state_type& x, double t) {
- *         state_type dxdt(x.size());
- *         system(x, dxdt, t);
- *         return dxdt[0].x();  // Root when derivative = 0
- *     },
- *     1,                      // Record peak in state[1]
- *     0.0,                    // Will be replaced with x[0] at peak
- *     EventMethod::Replace
- * };
- * @endcode
  */
 template<class state_type, class time_type>
 struct RootEvent {
@@ -346,16 +305,6 @@ inline void apply_event(
  * @return true if at least one event was applied, false otherwise
  *
  * @note Multiple events at the same time are applied in order
- *
- * @par Example: Multiple Simultaneous Events
- * @code
- * // At t=10: Add dose to state[0] AND reset state[1]
- * std::vector<FixedEvent<double>> events = {
- *     {10.0, 0, 100.0, EventMethod::Add},
- *     {10.0, 1,   0.0, EventMethod::Replace}
- * };
- * // Both events fire when t reaches 10.0
- * @endcode
  */
 template<class state_type, class Time>
 bool apply_fixed_events_at_time(
@@ -401,18 +350,6 @@ bool apply_fixed_events_at_time(
  * @return Sorted vector of unique time points
  *
  * @note Duplicates are removed to avoid redundant observer calls
- *
- * @par Example
- * @code
- * std::vector<double> user_times = {0, 1, 2, 3};
- * std::vector<FixedEvent<double>> events = {
- *     {1.5, 0, 100.0, EventMethod::Add},
- *     {2.0, 0,  50.0, EventMethod::Add}  // Duplicate with user time
- * };
- * auto merged = merge_user_and_event_times<double>(
- *     user_times.begin(), user_times.end(), events);
- * // Result: {0, 1, 1.5, 2, 3}  (2.0 appears once)
- * @endcode
  */
 template<class Time, class It, class V>
 std::vector<Time> merge_user_and_event_times(
@@ -551,7 +488,7 @@ inline void reset_stepper_unified(S& st, State& x, Time t, Time& dt)
  *
  * @note The dense output mode is generally more efficient for root-finding
  *       as it can use interpolation instead of re-integration during bisection.
- *       For a root tolerance of 1e-8, interpolation can be 10-100x faster.
+ *       For a root tolerance of 1e-8, interpolation can be 10x faster.
  */
 template<class Stepper, class System, class State, class Time>
 class EventEngine {
@@ -624,18 +561,6 @@ public:
    * - Root localization requires re-integration, which can be expensive
    * - For tight tolerances (< 1e-10), consider using dense output mode
    * - Multiple roots in one step are handled sequentially
-   *
-   * @par Example: Chattering Prevention
-   * @code
-   * // Prevent infinite triggering near equilibrium
-   * RootEvent<state_type, double> threshold = {
-   *     [](auto& x, auto t) { return x[0] - 1.0; },
-   *     0, 0.0, EventMethod::Replace
-   * };
-   *
-   * // Allow max 10 triggers (stops chattering)
-   * process_controlled(x, times, dt, obs, checker, 1e-8, 10);
-   * @endcode
    */
   template<class Obs, class Checker>
   size_t process_controlled(
@@ -828,19 +753,6 @@ public:
    *
    * For sparse output (few times per step), controlled mode may be faster
    * due to overhead of dense output coefficient computation.
-   *
-   * @par Example: Dense Output with Events
-   * @code
-   * // Many output times (every 0.1 time units)
-   * std::vector<double> times;
-   * for (double t = 0; t <= 100; t += 0.1) times.push_back(t);
-   *
-   * // Dense output takes large steps (dt ~ 1.0)
-   * // but interpolates at all output times efficiently
-   * dense_stepper.initialize(x, 0.0, 1.0);
-   * process_dense(x, times, 1.0, obs, checker, 1e-10, 10);
-   * // Much faster than controlled mode for this scenario
-   * @endcode
    */
   template<class Obs, class Checker>
   size_t process_dense(
@@ -1094,18 +1006,6 @@ private:
    * @param x Current state (post-event)
    * @param t Current time (event time)
    *
-   * @note This is necessary because fixed events may fundamentally change
-   *       system dynamics, making previous root function evaluations meaningless
-   *
-   * @par Example
-   * @code
-   * // Fixed event changes parameter that affects root function
-   * FixedEvent: Replace state[2] with 10.0  // Changes system behavior
-   * RootEvent: x[0] - state[2]  // Root location depends on state[2]
-   *
-   * // After fixed event, must reset root tracking
-   * // because root function behavior has changed
-   * @endcode
    */
   void reset_memory(
       std::vector<size_t>& fired,
@@ -1161,17 +1061,6 @@ private:
    *
    * @note Each bisection iteration requires ~10 integration sub-steps,
    *       making this expensive for tight tolerances
-   *
-   * @par Convergence Rate
-   * Bisection has linear convergence: each iteration reduces the
-   * uncertainty by a factor of 2. To reach tolerance tol from
-   * initial interval width dt:
-   * @code
-   * iterations = ceil(log2(dt / tol))
-   * // For dt=1, tol=1e-8: ~27 iterations
-   * // Each iteration: ~10 integration steps
-   * // Total: ~270 integration steps per root
-   * @endcode
    */
   template<class Checker>
   void localize_root_controlled(
@@ -1250,28 +1139,6 @@ private:
    * @param fb Function value at upper bound
    * @param tol Tolerance (stop when |tb - ta| < tol)
    *
-   * @pre ta and tb must be within the current interpolation interval
-   *      [previous_time(), current_time()]
-   * @pre fa and fb must have opposite signs (fa * fb < 0)
-   * @post tb contains the root time to within tol, xb contains state at root
-   *
-   * @par Performance Comparison
-   * @code
-   * Scenario: Root in [0, 1], tolerance 1e-8
-   *
-   * Controlled (re-integration):
-   *   27 iterations × 10 steps = 270 integration steps
-   *   Time: ~10 ms (typical)
-   *
-   * Dense output (interpolation):
-   *   27 iterations × 1 interpolation = 27 interpolations
-   *   Time: ~0.1 ms (typical)
-   *
-   * Speedup: 100x
-   * @endcode
-   *
-   * @note Interpolation accuracy is typically better than re-integration
-   *       due to higher-order polynomial interpolation (cubic Hermite)
    */
   void localize_root_dense(
       size_t idx,
@@ -1352,33 +1219,6 @@ private:
  *
  * @return Number of integration steps taken
  *
- * @par Example: PK Model with Dosing and Threshold Events
- * @code
- * // One-compartment PK model
- * auto pk_system = [](const state_type& x, state_type& dxdt, double t) {
- *     double ka = 1.0, ke = 0.1;
- *     dxdt[0] = -ka * x[0];           // Absorption compartment
- *     dxdt[1] = ka * x[0] - ke * x[1]; // Central compartment
- * };
- *
- * // Oral dose at t=0 and t=12
- * std::vector<FixedEvent<double>> doses = {
- *     {0.0,  0, 100.0, EventMethod::Add},
- *     {12.0, 0, 100.0, EventMethod::Add}
- * };
- *
- * // Rescue dose when concentration drops below 5
- * std::vector<RootEvent<state_type, double>> rescue = {
- *     {[](auto& x, auto t) { return x[1] - 5.0; },
- *      0, 50.0, EventMethod::Add}
- * };
- *
- * // Integrate
- * rosenbrock4_controller_pi<rosenbrock4<double>> stepper(1e-6, 1e-6);
- * StepChecker checker;
- * integrate_times(stepper, pk_system, x, times.begin(), times.end(),
- *                 0.1, observer, doses, rescue, checker);
- * @endcode
  */
 template<class Stepper, class System, class State,
          class TimeIterator, class Time, class Observer>
@@ -1450,51 +1290,6 @@ size_t integrate_times(
  * @param tag Stepper category tag (default: dense_output_stepper_tag)
  *
  * @return Number of integration steps taken
- *
- * @note This version is preferred when:
- *       - Output times are dense relative to integration steps
- *       - Root events are expected and need precise localization
- *       - The ODE system is expensive to evaluate
- *
- * @par Example: Dense Output with High Precision Root Finding
- * @code
- * // System with expensive RHS evaluation
- * auto expensive_system = [...];
- *
- * // Dense output times (every 0.01 time units)
- * std::vector<double> times;
- * for (double t = 0; t <= 100; t += 0.01) times.push_back(t);
- *
- * // Root event with very tight tolerance
- * std::vector<RootEvent<state_type, double>> roots = {
- *     {[](auto& x, auto t) { return x[0] - 1.0; },
- *      0, 0.0, EventMethod::Replace}
- * };
- *
- * // Dense output: Large steps with interpolation
- * rosenbrock4_dense_output_pi<controller_t> stepper;
- * StepChecker checker;
- * integrate_times_dense(stepper, expensive_system, x,
- *                       times.begin(), times.end(), 1.0,
- *                       observer, fixed_events, roots, checker,
- *                       1e-12);  // Very tight root tolerance
- *
- * // Typical result:
- * // - 100 integration steps (dt ~ 1.0)
- * // - 10,000 interpolations (cheap!)
- * // - Root found to 1e-12 accuracy in ~30 interpolations
- * // Much faster than controlled mode
- * @endcode
- *
- * @par Performance Tip
- * Choose dt based on natural step size, not output spacing:
- * @code
- * // Good: Let stepper take large steps
- * integrate_times_dense(stepper, system, x, times, 1.0, ...);
- *
- * // Bad: Forces tiny steps (defeats purpose of dense output)
- * integrate_times_dense(stepper, system, x, times, 0.01, ...);
- * @endcode
  */
 template<class Stepper, class System, class State,
          class TimeIterator, class Time, class Observer>

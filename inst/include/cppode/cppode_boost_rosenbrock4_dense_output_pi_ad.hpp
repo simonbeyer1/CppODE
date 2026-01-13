@@ -1,18 +1,16 @@
 /*
- [begin_description]
  Dense output wrapper for AD-aware Rosenbrock4 with PI controller.
- [end_description]
 
  Original work:
- Copyright 2011-2012 Karsten Ahnert
- Copyright 2011-2015 Mario Mulansky
- Copyright 2012 Christoph Koke
+ Copyright (C) 2011-2012 Karsten Ahnert
+ Copyright (C) 2011-2015 Mario Mulansky
+ Copyright (C) 2012 Christoph Koke
  Distributed under the Boost Software License, Version 1.0.
  (See accompanying file LICENSE_1_0.txt or
  copy at http://www.boost.org/LICENSE_1_0.txt)
 
  Modified work:
- Copyright 2025 Simon Beyer
+ Copyright (C) 2026 Simon Beyer
 
  Modifications:
  - Extended for FADBAD++ automatic differentiation types

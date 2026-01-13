@@ -2,20 +2,20 @@
 % Please edit documentation in R/symbolics.R
 \name{getSymbols}
 \alias{getSymbols}
-\title{Extract symbols from expressions}
+\title{Extract symbol names from R expressions}
 \usage{
-getSymbols(char, exclude = NULL)
+getSymbols(expr, omit = NULL)
 }
 \arguments{
-\item{char}{Character vector of expressions.}
+\item{expr}{Character vector of R expressions.}
 
-\item{exclude}{Optional character vector of names to exclude.}
+\item{omit}{Optional character vector of symbol names to remove.}
 }
 \value{
-Character vector with unique symbol names.
+Character vector of unique symbol names.
 }
 \description{
-Parses a character vector of expressions and returns all symbol names
-(variable identifiers).
+Returns the unique names of all symbols occurring in a character vector
+of R expressions.
 }
 \keyword{internal}
