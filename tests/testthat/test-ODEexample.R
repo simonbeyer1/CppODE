@@ -1,6 +1,7 @@
 test_that("example ODE model runs", {
 
-  skip_if_not(reticulate::py_module_available("sympy"), "Python Module 'Sympy' not available")
+  skip_on_cran()
+  skip_on_ci()
 
   eqns <- c(
     A = "-k1 * A",

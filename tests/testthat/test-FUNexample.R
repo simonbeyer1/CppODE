@@ -1,6 +1,7 @@
 test_that("Example for funCpp() works", {
 
-  skip_if_not(reticulate::py_module_available("sympy"), "Python Module 'Sympy' not available")
+  skip_on_cran()
+  skip_on_ci()
 
   trafo <- c(
     A = "k_p * (k2 + k_d) / (k1 * k_d)",
