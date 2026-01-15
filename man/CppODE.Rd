@@ -8,13 +8,14 @@ CppODE(
   rhs,
   events = NULL,
   fixed = NULL,
-  includeTimeZero = TRUE,
+  forcings = NULL,
   compile = TRUE,
   modelname = NULL,
   outdir = tempdir(),
   deriv = TRUE,
   deriv2 = FALSE,
   fullErr = TRUE,
+  includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   verbose = FALSE
 )
@@ -26,7 +27,7 @@ CppODE(
 
 \item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
+\item{forcings}{Character vector of forcing function names used in \code{rhs}.}
 
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
@@ -42,6 +43,8 @@ If \code{NULL}, a random identifier is used.}
 \item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers; requires \code{deriv = TRUE}.}
 
 \item{fullErr}{Logical. If \code{TRUE}, compute error estimates using full state vector including derivatives. If \code{FALSE}, use only the value components for error control.}
+
+\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
 
 \item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
 
@@ -212,4 +215,7 @@ head(res$variable)         # variables
 head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }
+}
+\seealso{
+\code{\link[=solveODE]{solveODE()}} for a solver interface of compiled models
 }
