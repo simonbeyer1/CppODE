@@ -228,4 +228,93 @@ max(const U& a, const fadbad::F<T>& b) {
 
 } // namespace fadbad
 
+// =========================================================================================
+//  Steady-State Detection Utilities
+// =========================================================================================
+namespace cppode {
+namespace detail {
+
+/**
+ * @brief Recursively extract max absolute value from all AD levels
+ *
+ * This function traverses all levels of nested fadbad::F types and returns
+ * the maximum absolute value found at any level. This is essential for
+ * steady-state detection where we need ALL derivatives (including sensitivities)
+ * to be near zero.
+ *
+ * For F<F<double>> (second-order sensitivities):
+ *   - Level 0: x.x().x()           (the scalar value)
+ *   - Level 1: x.x().d(j)          (first-order sensitivities of value)
+ *   - Level 2: x.d(i).x()          (second-order: d/dp_i of value)
+ *   - Level 3: x.d(i).d(j)         (second-order: d²/dp_i dp_j)
+ *
+ * @section algorithm Algorithm
+ * Base case (arithmetic type): return |v|
+ * Recursive case (F<T>): return max(recurse(x()), max_i(recurse(d(i))))
+ */
+
+// Base case: arithmetic types (double, float, int, ...)
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
+max_abs_all_levels(const T& v)
+{
+  return std::abs(static_cast<double>(v));
+}
+
+// Recursive case: fadbad::F<T>
+template<class T>
+inline double max_abs_all_levels(const fadbad::F<T>& v)
+{
+  // Get max from the main value
+  double m = max_abs_all_levels(const_cast<fadbad::F<T>&>(v).x());
+
+  // Get max from all derivative components
+  unsigned n = const_cast<fadbad::F<T>&>(v).size();
+  for (unsigned i = 0; i < n; ++i) {
+    m = std::max(m, max_abs_all_levels(const_cast<fadbad::F<T>&>(v).d(i)));
+  }
+
+  return m;
+}
+
+/**
+ * @brief Compute max absolute value across all elements and all AD levels of a vector
+ *
+ * Applies max_abs_all_levels to each element of a state vector and returns
+ * the overall maximum. This gives the infinity norm (sup norm) over both
+ * state dimensions and AD derivative levels.
+ *
+ * @tparam State Vector type (e.g., ublas::vector<F<F<double>>>)
+ * @param v The state vector
+ * @return max_{i,levels} |v[i]|
+ *
+ * @par Example
+ * @code
+ * ublas::vector<F<F<double>>> dxdt(3);
+ * // ... compute derivatives ...
+ * double max_rate = max_abs_all_levels_vec(dxdt);
+ * // max_rate contains the largest |value| across:
+ * //   - all 3 state components
+ * //   - all first-order sensitivities
+ * //   - all second-order sensitivities
+ * @endcode
+ */
+template<class State>
+inline double max_abs_all_levels_vec(const State& v)
+{
+  double m = 0.0;
+  for (size_t i = 0; i < v.size(); ++i) {
+    m = std::max(m, max_abs_all_levels(v[i]));
+  }
+  return m;
+}
+
+} // namespace detail
+
+// Export to cppode namespace
+using detail::max_abs_all_levels;
+using detail::max_abs_all_levels_vec;
+
+} // namespace cppode
+
 #endif // CPPODE_FADIFF_EXTENSIONS_HPP

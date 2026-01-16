@@ -12,8 +12,7 @@ This module provides two main entry points:
     Generates C++ code for fixed-time and root-triggered events,
     based on an R-style events data frame (converted to a dict).
 
-Both functions are used from the R side by CppODE to generate
-self-contained C++ solvers with Boost.Odeint and FADBAD++.
+Author: Simon Beyer
 """
 
 import re
@@ -29,24 +28,13 @@ from sympy.parsing.sympy_parser import (
 # Safe parsing configuration
 # =====================================================================
 
+# =====================================================================
+# Safe parsing configuration
+# =====================================================================
 
 def _get_safe_parse_dict():
-    """
-    Construct a local dictionary for SymPy parsing that avoids conflicts
-    with SymPy singletons and exposes a controlled set of functions.
-
-    This ensures that expression strings originating from R are parsed
-    into SymPy expressions in a predictable and safe way.
-    """
+    """Construct a local dictionary for SymPy parsing."""
     safe_local_dict = {
-        # Override problematic SymPy singletons: treat as ordinary symbols
-        "S": sp.Symbol("S"),
-        "I": sp.Symbol("I"),
-        "N": sp.Symbol("N"),
-        "O": sp.Symbol("O"),
-        "Q": sp.Symbol("Q"),
-        "C": sp.Symbol("C"),
-        # Exponential and logarithmic functions
         "exp": sp.exp,
         "exp10": lambda x: sp.Pow(10, x),
         "exp2": lambda x: sp.Pow(2, x),
@@ -54,98 +42,33 @@ def _get_safe_parse_dict():
         "ln": sp.log,
         "log10": lambda x: sp.log(x, 10),
         "log2": lambda x: sp.log(x, 2),
-        # Trigonometric functions
-        "sin": sp.sin,
-        "cos": sp.cos,
-        "tan": sp.tan,
-        "cot": sp.cot,
-        "sec": sp.sec,
-        "csc": sp.csc,
-        # Inverse trigonometric functions
-        "asin": sp.asin,
-        "acos": sp.acos,
-        "atan": sp.atan,
-        "acot": sp.acot,
-        "asec": sp.asec,
-        "acsc": sp.acsc,
+        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
+        "cot": sp.cot, "sec": sp.sec, "csc": sp.csc,
+        "asin": sp.asin, "acos": sp.acos, "atan": sp.atan,
+        "acot": sp.acot, "asec": sp.asec, "acsc": sp.acsc,
         "atan2": sp.atan2,
-        # Hyperbolic functions
-        "sinh": sp.sinh,
-        "cosh": sp.cosh,
-        "tanh": sp.tanh,
-        "coth": sp.coth,
-        "sech": sp.sech,
-        "csch": sp.csch,
-        # Inverse hyperbolic functions
-        "asinh": sp.asinh,
-        "acosh": sp.acosh,
-        "atanh": sp.atanh,
-        "acoth": sp.acoth,
-        "asech": sp.asech,
-        "acsch": sp.acsch,
-        # Power and root functions
-        "sqrt": sp.sqrt,
-        "cbrt": sp.cbrt,
-        "root": sp.root,
-        "pow": sp.Pow,
-        # Absolute value and sign
-        "abs": sp.Abs,
-        "sign": sp.sign,
-        # Rounding functions
-        "floor": sp.floor,
-        "ceiling": sp.ceiling,
-        # Min/Max
-        "min": sp.Min,
-        "max": sp.Max,
-        # Factorial and gamma functions
-        "factorial": sp.factorial,
-        "gamma": sp.gamma,
-        "loggamma": sp.loggamma,
-        "digamma": sp.digamma,
-        # Error functions
-        "erf": sp.erf,
-        "erfc": sp.erfc,
-        # Bessel functions
-        "besselj": sp.besselj,
-        "bessely": sp.bessely,
-        "besseli": sp.besseli,
-        "besselk": sp.besselk,
-        # Special functions
-        "Heaviside": sp.Heaviside,
-        "DiracDelta": sp.DiracDelta,
-        # Piecewise
+        "sinh": sp.sinh, "cosh": sp.cosh, "tanh": sp.tanh,
+        "coth": sp.coth, "sech": sp.sech, "csch": sp.csch,
+        "asinh": sp.asinh, "acosh": sp.acosh, "atanh": sp.atanh,
+        "acoth": sp.acoth, "asech": sp.asech, "acsch": sp.acsch,
+        "sqrt": sp.sqrt, "cbrt": sp.cbrt, "root": sp.root, "pow": sp.Pow,
+        "abs": sp.Abs, "sign": sp.sign,
+        "floor": sp.floor, "ceiling": sp.ceiling,
+        "min": sp.Min, "max": sp.Max,
+        "factorial": sp.factorial, "gamma": sp.gamma,
+        "loggamma": sp.loggamma, "digamma": sp.digamma,
+        "erf": sp.erf, "erfc": sp.erfc,
+        "besselj": sp.besselj, "bessely": sp.bessely,
+        "besseli": sp.besseli, "besselk": sp.besselk,
+        "Heaviside": sp.Heaviside, "DiracDelta": sp.DiracDelta,
         "Piecewise": sp.Piecewise,
-        # Constants
-        "pi": sp.pi,
-        "E": sp.E,
-        "oo": sp.oo,
+        "pi": sp.pi, "E": sp.E, "oo": sp.oo,
     }
     return safe_local_dict
 
 
 def _safe_sympify(expr_str, local_symbols=None):
-    """
-    Safely parse a string expression into a SymPy expression.
-
-    This uses a restricted local dictionary to prevent conflicts with
-    SymPy singletons and applies a standard set of transformations
-    (e.g. handling "^" vs "**").
-
-    Parameters
-    ----------
-    expr_str : str
-        Expression string from R.
-    local_symbols : dict, optional
-        Additional symbols (states, parameters, time).
-
-    Returns
-    -------
-    sp.Expr
-        Parsed expression.
-    """
     expr_str = str(expr_str).strip()
-
-    # Fast-path for the zero literal
     if expr_str == "0":
         return sp.Integer(0)
 
@@ -154,7 +77,6 @@ def _safe_sympify(expr_str, local_symbols=None):
         safe_local = {**safe_local, **local_symbols}
 
     transformations = standard_transformations + (convert_xor,)
-
     return parse_expr(
         expr_str,
         local_dict=safe_local,
@@ -163,222 +85,53 @@ def _safe_sympify(expr_str, local_symbols=None):
     )
 
 
+def _safe_replace(text, symbol, replacement):
+    pattern = r"\b" + re.escape(symbol) + r"\b"
+    return re.sub(pattern, replacement, str(text))
+
+
 # =====================================================================
-# Helper functions
+# _to_cpp
 # =====================================================================
 
+def _to_cpp(expr, states, params, n_states, num_type, forcings=None):
+    if forcings is None:
+        forcings = []
 
-def _to_cpp(expr, states, params, n_states, num_type):
-    """
-    Convert a SymPy expression into a C++ expression string.
-
-    This uses SymPy's cxxcode generator and then rewrites symbolic
-    names into the solver's C++ memory layout:
-
-    - parameters:  params[n_states + j]
-    - states:      x[i]
-    - initial values (state_0): params[i]
-    - time:        t
-
-    The order of replacements is important to avoid accidental
-    partial matches (e.g. "A" inside "A0").
-
-    Parameters
-    ----------
-    expr : sp.Expr
-        SymPy expression to convert.
-    states : list of str
-        State variable names.
-    params : list of str
-        Parameter names.
-    n_states : int
-        Number of states.
-    num_type : str
-        Numeric type ("double", "AD", or "AD2") for namespace selection.
-
-    Returns
-    -------
-    str
-        C++ expression string.
-    """
-    cpp_code = sp.cxxcode(expr, standard="c++17", strict=False)
-    cpp_code = str(cpp_code)
-    
-    # Remove newlines from SymPy's multi-line output (e.g., Piecewise/ternary)
-    cpp_code = cpp_code.replace("\n", " ")
-
-    if "Not supported in C++" in cpp_code:
-        raise ValueError(f"Expression contains C++-unsupported constructs: {expr}")
+    cpp_code = str(sp.cxxcode(expr, standard="c++17", strict=False)).replace("\n", " ")
 
     if num_type in ("AD", "AD2"):
         for fn in [
-            # Trigonometric
-            "sin", "cos", "tan",
-            "asin", "acos", "atan",
-            # Hyperbolic (provided by cppode_fadiff_extensions.hpp)
-            "sinh", "cosh", "tanh",
-            "asinh", "acosh", "atanh",
-            # Exponential/logarithmic
-            "exp", "log", "sqrt", "pow",
-            # Other (provided by cppode_fadiff_extensions.hpp)
-            "abs", "min", "max"
+            "sin", "cos", "tan", "asin", "acos", "atan",
+            "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
+            "exp", "log", "sqrt", "pow", "abs", "min", "max"
         ]:
             cpp_code = cpp_code.replace(f"std::{fn}", f"fadbad::{fn}")
 
-    # 1) Replace parameters first
+    # forcings
+    for i, forcing in enumerate(forcings):
+        cpp_code = _safe_replace(cpp_code, forcing, f"(*F[{i}])(t)")
+
+    # params
     for j, param in enumerate(params):
         cpp_code = _safe_replace(cpp_code, param, f"params[{n_states + j}]")
 
-    # 2) Replace state variables (A, B, ...) with x[i]
+    # states
     for i, state in enumerate(states):
         cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
 
-    # 3) Replace initial values (A_0, B_0, ...) with params[i]
     for i, state in enumerate(states):
         cpp_code = _safe_replace(cpp_code, f"{state}_0", f"params[{i}]")
 
-    # 4) Replace time
     cpp_code = _safe_replace(cpp_code, "time", "t")
-
-    # Normalize whitespace: collapse whitespace and remove spaces for compact C++
-    cpp_code = re.sub(r'\s+', ' ', cpp_code)  # Collapse all whitespace to single space
-    cpp_code = cpp_code.replace(" ", "")       # Remove spaces for compact output
+    cpp_code = re.sub(r"\s+", "", cpp_code)
 
     return cpp_code
 
 
-def _safe_replace(text, symbol, replacement):
-    """
-    Replace `symbol` in `text` only when it appears as a full token.
-
-    Implemented via a word-boundary regular expression:
-    - avoids replacing substrings inside other identifiers.
-    """
-    text = str(text)
-    pattern = r"\b" + re.escape(symbol) + r"\b"
-    return re.sub(pattern, replacement, text)
-
-
-def _get_list_value(dict_or_df, key, index, n_events):
-    """
-    Extract a value from a dict-of-lists that mirrors an R data frame.
-
-    Parameters
-    ----------
-    dict_or_df : dict
-        Typically events_df.to_dict('list') from pandas, or a plain dict.
-    key : str
-        Column name.
-    index : int
-        Row index (0-based).
-    n_events : int
-        Total number of events.
-
-    Returns
-    -------
-    Any or None
-        The value at (key, index), or None if not present.
-    """
-    if key not in dict_or_df:
-        return None
-
-    value = dict_or_df[key]
-
-    # True list-like column
-    if isinstance(value, (list, tuple)):
-        if index < len(value):
-            return value[index]
-        return None
-
-    # Scalar column: same for all events
-    return value
-
-
-def _is_valid_value(value):
-    """
-    Check whether a value from the events table is a meaningful numeric
-    or expression, as opposed to NA/None/boolean placeholders.
-
-    Returns False for:
-    - None
-    - booleans (True/False)
-    - textual NA-like markers ("NA", "NaN", "")
-    """
-    if value is None:
-        return False
-    if isinstance(value, bool):
-        return False
-
-    # If it's a numeric type, accept unless NaN
-    if isinstance(value, numbers.Number):
-        try:
-            # NaN check: NaN != NaN
-            if value != value:
-                return False
-        except Exception:
-            pass
-        return True
-
-    # String-like handling
-    str_val = str(value).lower().strip()
-    if str_val in {"none", "nan", "na", ""}:
-        return False
-    if str_val in {"true", "false"}:
-        return False
-
-    return True
-
-
-def _parse_value_or_expression(value, local_symbols, states_list, params_list, n_states, num_type):
-    """
-    Interpret a value from the events data as either a numeric literal
-    or a symbolic expression.
-
-    Parameters
-    ----------
-    value : Any
-        Source value (string, numeric, etc.) from events_df.
-    local_symbols : dict
-        Symbol table for SymPy parsing (states, params, time).
-    states_list : list of str
-        State variable names.
-    params_list : list of str
-        Parameter names.
-    n_states : int
-        Number of states.
-    num_type : str
-        Numeric type ("double", "AD", or "AD2").
-
-    Returns
-    -------
-    str or None
-        C++ expression as a string, or None if value is not valid.
-    """
-    if not _is_valid_value(value):
-        return None
-
-    value_str = str(value).strip()
-
-    # Fast-path: numeric literal (including scientific notation)
-    try:
-        float(value_str)
-        return value_str
-    except (ValueError, TypeError):
-        pass
-
-    # Otherwise treat as expression
-    try:
-        value_expr = _safe_sympify(value_str, local_symbols)
-        value_code = _to_cpp(value_expr, states_list, params_list, n_states, num_type)
-        return str(value_code)
-    except Exception as e:
-        raise ValueError(f"Failed to parse expression '{value_str}': {e}")
-
-
 # =====================================================================
-# Main ODE generation
+# Main generator
 # =====================================================================
-
 
 def generate_ode_cpp(
     rhs_dict,
@@ -386,180 +139,260 @@ def generate_ode_cpp(
     num_type="AD",
     fixed_states=None,
     fixed_params=None,
+    forcings_list=None,
 ):
-    """
-    Generate C++ code for the ODE system and its Jacobian.
 
-    Parameters
-    ----------
-    rhs_dict : dict
-        Mapping from state names to RHS strings, e.g.
-        {"A": "-k1*A + k2*B", "B": "k1*A - k2*B"}.
-    params_list : list of str
-        Names of model parameters (order matches R).
-    num_type : str
-        Numeric type used in C++ code: "double", "AD", or "AD2".
-        The caller chooses consistent with how the solver is generated.
-    fixed_states : list of str, optional
-        Names of states excluded from sensitivity seeding (not used
-        directly here, but passed in for potential future extensions).
-    fixed_params : list of str, optional
-        Names of parameters excluded from sensitivities.
-
-    Returns
-    -------
-    dict
-        {
-          "ode_code": C++ code for the ODE struct,
-          "jac_code": C++ code for the Jacobian struct,
-          "jac_matrix": [[str, ...], ...] symbolic Jacobian entries,
-          "time_derivs": [str, ...] time derivatives of each RHS,
-          "states": [state names],
-          "params": [parameter names],
-        }
-    """
     if fixed_states is None:
         fixed_states = []
     if fixed_params is None:
         fixed_params = []
+    if forcings_list is None:
+        forcings_list = []
+
+    # --- Ensure all list arguments are proper lists (not strings) ---
+    if isinstance(params_list, str):
+        params_list = [params_list]
+    else:
+        params_list = list(params_list)
+    
+    if isinstance(forcings_list, str):
+        forcings_list = [forcings_list]
+    else:
+        forcings_list = list(forcings_list)
+    
+    if isinstance(fixed_states, str):
+        fixed_states = [fixed_states]
+    else:
+        fixed_states = list(fixed_states)
+    
+    if isinstance(fixed_params, str):
+        fixed_params = [fixed_params]
+    else:
+        fixed_params = list(fixed_params)
 
     states_list = list(rhs_dict.keys())
     odes_list = list(rhs_dict.values())
 
     n_states = len(states_list)
-    n_params = len(params_list)
 
-    # SymPy symbols for states/parameters/time
-    states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
-    params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
+    # ------------------------------------------------------------------
+    # STEP 1+2: define ALL symbols once
+    # ------------------------------------------------------------------
+    states_syms  = {n: sp.Symbol(n, real=True) for n in states_list}
+    params_syms  = {n: sp.Symbol(n, real=True) for n in params_list}
+    forcing_syms = {n: sp.Symbol(n, real=True) for n in forcings_list}
     t = sp.Symbol("time", real=True)
 
     local_symbols = {}
     local_symbols.update(states_syms)
     local_symbols.update(params_syms)
+    local_symbols.update(forcing_syms)
     local_symbols["time"] = t
 
-    # Parse RHS expressions
-    exprs = []
-    for ode_str in odes_list:
-        try:
-            expr = _safe_sympify(ode_str, local_symbols)
-            exprs.append(expr)
-        except Exception as e:
-            raise ValueError(f"Failed to parse ODE expression '{ode_str}': {e}")
+    # ------------------------------------------------------------------
+    # parse RHS
+    # ------------------------------------------------------------------
+    exprs = [
+        _safe_sympify(expr, local_symbols)
+        for expr in odes_list
+    ]
 
     states_syms_list = [states_syms[s] for s in states_list]
 
-    # Symbolic Jacobian
     jac_matrix = [
-        [sp.diff(expr, state_sym) for state_sym in states_syms_list]
+        [sp.diff(expr, s) for s in states_syms_list]
         for expr in exprs
     ]
 
-    # Time derivatives of RHS
     time_derivs = [sp.diff(expr, t) for expr in exprs]
 
-    # -----------------------------------------------------------------
-    # Generate C++: ODE system
-    # -----------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ODE system
+    # ------------------------------------------------------------------
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
         f"  ublas::vector<{num_type}> params;",
-        f"  explicit ode_system(const ublas::vector<{num_type}>& p_) : params(p_) {{}}",
-        f"  void operator()(const ublas::vector<{num_type}>& x, "
-        f"ublas::vector<{num_type}>& dxdt, const {num_type}& t) {{",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
+        "",
+        f"  ode_system(const ublas::vector<{num_type}>& p_,",
+        f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
+        "    : params(p_), F(F_) {}",
+        "",
+        f"  void operator()(const ublas::vector<{num_type}>& x,",
+        f"                  ublas::vector<{num_type}>& dxdt,",
+        f"                  const {num_type}& t) {{",
     ]
 
     for i, expr in enumerate(exprs):
-        cpp_code = _to_cpp(expr, states_list, params_list, n_states, num_type)
-        ode_cpp_lines.append(f"    dxdt[{i}] = {cpp_code};")
+        ode_cpp_lines.append(
+            f"    dxdt[{i}] = {_to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)};"
+        )
 
-    ode_cpp_lines.extend(["  }", "};"])
-    ode_code = "\n".join(ode_cpp_lines)
+    ode_cpp_lines += ["  }", "};"]
 
-    # -----------------------------------------------------------------
-    # Generate C++: Jacobian
-    # -----------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Jacobian
+    # ------------------------------------------------------------------
     jac_cpp_lines = [
         "// Jacobian for stiff solver",
         "struct jacobian {",
         f"  ublas::vector<{num_type}> params;",
-        f"  explicit jacobian(const ublas::vector<{num_type}>& p_) : params(p_) {{}}",
-        f"  void operator()(const ublas::vector<{num_type}>& x, "
-        f"ublas::matrix<{num_type}>& J, const {num_type}& t, "
-        f"ublas::vector<{num_type}>& dfdt) {{",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
+        "",
+        f"  jacobian(const ublas::vector<{num_type}>& p_,",
+        f"           const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
+        "    : params(p_), F(F_) {}",
+        "",
+        f"  void operator()(const ublas::vector<{num_type}>& x,",
+        f"                  ublas::matrix<{num_type}>& J,",
+        f"                  const {num_type}& t,",
+        f"                  ublas::vector<{num_type}>& dfdt) {{",
     ]
 
-    # Fill Jacobian entries
+    # STEP 3: J = df/dx, NO forcings
     for i in range(n_states):
         for j in range(n_states):
-            cpp_code = _to_cpp(jac_matrix[i][j], states_list, params_list, n_states, num_type)
-            jac_cpp_lines.append(f"    J({i},{j}) = {cpp_code};")
+            jac_cpp_lines.append(
+                f"    J({i},{j}) = {_to_cpp(jac_matrix[i][j], states_list, params_list, n_states, num_type, forcings=[])};"
+            )
 
-    # Fill df/dt
-    for i in range(n_states):
-        cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type)
+    # STEP 4: dfdt with forcing chain rule
+    for i, expr in enumerate(exprs):
+        cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type, forcings_list)
+
+        forcing_terms = []
+        for j, fname in enumerate(forcings_list):
+            df_dF = sp.diff(expr, forcing_syms[fname])   # <<< FIX
+            if df_dF != 0:
+                forcing_terms.append(
+                    f"({_to_cpp(df_dF, states_list, params_list, n_states, num_type, forcings_list)})*F[{j}]->derivative(t)"
+                )
+
+        if forcing_terms:
+            cpp_code = " + ".join([cpp_code] + forcing_terms) if cpp_code != "0" else " + ".join(forcing_terms)
+
         jac_cpp_lines.append(f"    dfdt[{i}] = {cpp_code};")
 
-    jac_cpp_lines.extend(["  }", "};"])
-    jac_code = "\n".join(jac_cpp_lines)
+    jac_cpp_lines += ["  }", "};"]
 
     return {
-        "ode_code": ode_code,
-        "jac_code": jac_code,
-        "jac_matrix": [[str(entry) for entry in row] for row in jac_matrix],
-        "time_derivs": [str(deriv) for deriv in time_derivs],
+        "ode_code": "\n".join(ode_cpp_lines),
+        "jac_code": "\n".join(jac_cpp_lines),
+        "jac_matrix": [[str(e) for e in row] for row in jac_matrix],
+        "time_derivs": [str(d) for d in time_derivs],
         "states": states_list,
         "params": params_list,
+        "forcings": forcings_list,
     }
+
+
+# =====================================================================
+# Forcing initialization code generation
+# =====================================================================
+
+def generate_forcing_init_code(n_forcings, num_type="AD"):
+    """
+    Generate C++ code to initialize PchipForcing objects from R raw data.
+    
+    Always generates the forcing infrastructure, even for n_forcings=0.
+    This keeps the solve_* signature uniform.
+    """
+    lines = [
+        "",
+        "  // --- Initialize forcings (PCHIP interpolation) ---",
+        f"  int n_forcings = Rf_length(forcingTimesSEXP);",
+        f"  std::vector<cppode::PchipForcing<{num_type}>> forcing_storage(n_forcings);",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F(n_forcings);",
+        "",
+        "  for (int fi = 0; fi < n_forcings; ++fi) {",
+        "    SEXP times_i = VECTOR_ELT(forcingTimesSEXP, fi);",
+        "    SEXP values_i = VECTOR_ELT(forcingValuesSEXP, fi);",
+        "    int n_points = Rf_length(times_i);",
+        "",
+        "    std::vector<double> ftimes(REAL(times_i), REAL(times_i) + n_points);",
+        "    std::vector<double> fvalues(REAL(values_i), REAL(values_i) + n_points);",
+        "",
+        "    forcing_storage[fi].initialize(ftimes, fvalues);",
+        "    F[fi] = &forcing_storage[fi];",
+        "  }",
+        "",
+    ]
+    return lines
 
 
 # =====================================================================
 # Event code generation
 # =====================================================================
 
+def _get_list_value(dict_or_df, key, index, n_events):
+    """Extract a value from a dict-of-lists."""
+    if key not in dict_or_df:
+        return None
+    value = dict_or_df[key]
+    if isinstance(value, (list, tuple)):
+        if index < len(value):
+            return value[index]
+        return None
+    return value
 
-def generate_event_code(events_df, states_list, params_list, n_states, num_type="AD"):
-    """
-    Generate C++ initialization lines for fixed-time and root-triggered events.
 
-    The input mirrors an R data.frame with columns (as strings):
+def _is_valid_value(value):
+    """Check whether a value is meaningful (not NA/None/boolean)."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, numbers.Number):
+        try:
+            if value != value:
+                return False
+        except Exception:
+            pass
+        return True
+    str_val = str(value).lower().strip()
+    if str_val in {"none", "nan", "na", ""}:
+        return False
+    if str_val in {"true", "false"}:
+        return False
+    return True
 
-      var   : affected state variable name (required)
-      value : value or expression applied at the event (required)
-      method: "replace", "add", or "multiply" (optional, default "replace")
-      time  : numeric time or expression (optional)
-      root  : root expression in states/time (optional)
 
-    For each row i:
+def _parse_value_or_expression(value, local_symbols, states_list, params_list, 
+                                n_states, num_type, forcings_list=None):
+    """Interpret a value as numeric literal or symbolic expression."""
+    if forcings_list is None:
+        forcings_list = []
+    
+    if not _is_valid_value(value):
+        return None
 
-      - if time_i is non-NA/non-empty, a fixed-time event is generated.
-      - else if root_i is non-NA/non-empty, a root-triggered event is generated.
-      - else an error is raised.
+    value_str = str(value).strip()
 
-    Parameters
-    ----------
-    events_df : pandas.DataFrame or dict-like
-        Event specifications.
-    states_list : list of str
-        Names of state variables (matching rhs_dict).
-    params_list : list of str
-        Names of parameters (matching params_list in generate_ode_cpp).
-    n_states : int
-        Number of states.
-    num_type : str
-        Numeric type used in C++ (e.g., "double", "AD", "AD2").
+    try:
+        float(value_str)
+        return value_str
+    except (ValueError, TypeError):
+        pass
 
-    Returns
-    -------
-    list of str
-        C++ code lines that append to `fixed_events` and `root_events`.
-    """
+    try:
+        value_expr = _safe_sympify(value_str, local_symbols)
+        value_code = _to_cpp(value_expr, states_list, params_list, n_states, 
+                            num_type, forcings=forcings_list)
+        return str(value_code)
+    except Exception as e:
+        raise ValueError(f"Failed to parse expression '{value_str}': {e}")
+
+
+def generate_event_code(events_df, states_list, params_list, n_states, 
+                        num_type="AD", forcings_list=None):
+    """Generate C++ initialization lines for events."""
+    if forcings_list is None:
+        forcings_list = []
+    
     if events_df is None or len(events_df) == 0:
         return []
 
-    # Convert pandas DataFrame to dict of lists, if necessary
     if hasattr(events_df, "to_dict"):
         events_dict = events_df.to_dict("list")
     else:
@@ -572,11 +405,12 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
     local_symbols = {}
     local_symbols.update(states_syms)
     local_symbols.update(params_syms)
+    for name in forcings_list:
+        local_symbols[name] = sp.Symbol(name, real=True)
     local_symbols["time"] = t
 
     event_lines = []
 
-    # Determine number of events robustly: maximum list-length over columns
     list_lengths = []
     for v in events_dict.values():
         if isinstance(v, (list, tuple)):
@@ -584,12 +418,8 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
     n_events = max(list_lengths) if list_lengths else 1
 
     for i in range(n_events):
-        # --------------------------------------------------------------
-        # Affected variable
-        # --------------------------------------------------------------
         var_raw = _get_list_value(events_dict, "var", i, n_events)
         if var_raw is None:
-            # silently skip malformed rows
             continue
 
         var_name = str(var_raw)
@@ -597,22 +427,16 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
             raise ValueError(f"Event {i}: unknown state variable '{var_name}'")
         var_idx = states_list.index(var_name)
 
-        # --------------------------------------------------------------
-        # Value to apply
-        # --------------------------------------------------------------
         value_raw = _get_list_value(events_dict, "value", i, n_events)
         value_code = _parse_value_or_expression(
-            value_raw, local_symbols, states_list, params_list, n_states, num_type
+            value_raw, local_symbols, states_list, params_list, n_states, 
+            num_type, forcings_list
         )
         if value_code is None:
             raise ValueError(f"Event {i}: 'value' is required but is NA/None")
 
-        # Map params[...] (symbolic) to full_params[...] (runtime C++ vector)
         value_code = str(value_code).replace("params[", "full_params[")
 
-        # --------------------------------------------------------------
-        # Method (replace/add/multiply)
-        # --------------------------------------------------------------
         method_raw = _get_list_value(events_dict, "method", i, n_events)
         method = str(method_raw).lower() if method_raw is not None else "replace"
         method_map = {
@@ -622,39 +446,29 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
         }
         method_code = method_map.get(method, "EventMethod::Replace")
 
-        # --------------------------------------------------------------
-        # Time and root expressions
-        # --------------------------------------------------------------
         time_raw = _get_list_value(events_dict, "time", i, n_events)
         time_code = _parse_value_or_expression(
-            time_raw, local_symbols, states_list, params_list, n_states, num_type
+            time_raw, local_symbols, states_list, params_list, n_states, 
+            num_type, forcings_list
         )
         if time_raw is not None and time_code is None:
-            # A column existed but contained NA/boolean/empty -> treat as absent
             time_code = None
 
         root_raw = _get_list_value(events_dict, "root", i, n_events)
         root_code = _parse_value_or_expression(
-            root_raw, local_symbols, states_list, params_list, n_states, num_type
+            root_raw, local_symbols, states_list, params_list, n_states, 
+            num_type, forcings_list
         )
         if root_raw is not None and root_code is None:
             root_code = None
 
-        # --------------------------------------------------------------
-        # Generate C++ for the event
-        #   - fixed-time if a valid time is present
-        #   - root-triggered if time is absent but root is present
-        # --------------------------------------------------------------
         if time_code is not None:
-            # Fixed-time event
             time_code = str(time_code).replace("params[", "full_params[")
             event_lines.append(
                 f"  fixed_events.emplace_back(FixedEvent<{num_type}>{{"
                 f"{time_code}, {var_idx}, {value_code}, {method_code}}});"
             )
-
         elif root_code is not None:
-            # Root-triggered event
             root_code = str(root_code).replace("params[", "full_params[")
             event_lines.append(
                 f"  root_events.push_back("
@@ -667,9 +481,294 @@ def generate_event_code(events_df, states_list, params_list, n_states, num_type=
             event_lines.append(
                 f"    {var_idx}, {value_code}, {method_code}}});"
             )
-
         else:
-            # Neither time nor root provided in a meaningful way
             raise ValueError(f"Event {i}: must specify either 'time' or 'root'")
 
     return event_lines
+
+
+# =====================================================================
+# Root function code generation
+# =====================================================================
+
+def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
+                           num_type="AD", forcings_list=None):
+    """
+    Generate C++ code for root function based termination.
+    
+    Parameters
+    ----------
+    rootfunc : str or list
+        Either "equilibrate" for steady-state detection, or a list/vector
+        of expressions that trigger termination when crossing zero.
+    states_list : list
+        List of state variable names.
+    params_list : list
+        List of parameter names.
+    n_states : int
+        Number of state variables.
+    num_type : str
+        Numeric type ("double", "AD", or "AD2").
+    forcings_list : list, optional
+        List of forcing function names.
+    
+    Returns
+    -------
+    list
+        Lines of C++ code to initialize root events for the root function.
+    """
+    if forcings_list is None:
+        forcings_list = []
+    
+    if rootfunc is None:
+        return []
+    
+    # Handle single string vs list
+    if isinstance(rootfunc, str):
+        rootfunc_list = [rootfunc]
+    else:
+        rootfunc_list = list(rootfunc)
+    
+    # Check for "equilibrate" - special case
+    if len(rootfunc_list) == 1 and rootfunc_list[0].lower().strip() == "equilibrate":
+        return _generate_equilibrate_code(num_type)
+    
+    # Otherwise, treat as user-defined root expressions
+    return _generate_user_rootfunc_code(
+        rootfunc_list, states_list, params_list, n_states, 
+        num_type, forcings_list
+    )
+
+
+def _generate_equilibrate_code(num_type):
+    """
+    Generate C++ code for steady-state detection using make_steady_state_root_func.
+    
+    The generated code creates a terminal root event that fires when all derivatives
+    (including sensitivities for AD types) fall below the root tolerance.
+    """
+    state_type = f"ublas::vector<{num_type}>"
+    
+    lines = [
+        "",
+        "  // --- Steady-state termination (rootfunc = 'equilibrate') ---",
+        f"  auto ss_root_func = make_steady_state_root_func<ode_system, {state_type}, {num_type}>(sys, root_tol);",
+        f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
+        f"    ss_root_func,",
+        f"    0,            // state_index (ignored for terminal)",
+        f"    {num_type}(0.0),  // value (ignored for terminal)",
+        f"    EventMethod::Replace,  // method (ignored for terminal)",
+        f"    true,         // terminal = true: stop integration",
+        f"    -1            // direction = -1: trigger when rate falls below tol",
+        f"  }});",
+        ""
+    ]
+    return lines
+
+
+def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list, 
+                                  n_states, num_type, forcings_list):
+    """
+    Generate C++ code for user-defined root expressions.
+    
+    Each expression in rootfunc_list becomes a terminal root event that
+    fires when the expression crosses zero (in either direction).
+    """
+    # Build symbol table for parsing
+    states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
+    params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
+    t = sp.Symbol("time", real=True)
+    
+    local_symbols = {}
+    local_symbols.update(states_syms)
+    local_symbols.update(params_syms)
+    for name in forcings_list:
+        local_symbols[name] = sp.Symbol(name, real=True)
+    local_symbols["time"] = t
+    
+    state_type = f"ublas::vector<{num_type}>"
+    lines = [
+        "",
+        "  // --- User-defined root function termination ---"
+    ]
+    
+    for i, expr_str in enumerate(rootfunc_list):
+        expr_str = str(expr_str).strip()
+        if not expr_str:
+            continue
+        
+        # Parse the expression
+        try:
+            expr = _safe_sympify(expr_str, local_symbols)
+            root_code = _to_cpp(expr, states_list, params_list, n_states, 
+                               num_type, forcings_list)
+            root_code = str(root_code).replace("params[", "full_params[")
+        except Exception as e:
+            raise ValueError(f"Failed to parse rootfunc expression '{expr_str}': {e}")
+        
+        lines.extend([
+            f"  // rootfunc[{i}]: {expr_str}",
+            f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
+            f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{",
+            f"      return {root_code};",
+            f"    }},",
+            f"    0,            // state_index (ignored for terminal)",
+            f"    {num_type}(0.0),  // value (ignored for terminal)",
+            f"    EventMethod::Replace,  // method (ignored for terminal)",
+            f"    true,         // terminal = true: stop integration",
+            f"    0             // direction = 0: any crossing",
+            f"  }});",
+        ])
+    
+    lines.append("")
+    return lines
+
+
+# =====================================================================
+# Root function code generation (for integration termination)
+# =====================================================================
+
+def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
+                           num_type="AD", forcings_list=None):
+    """
+    Generate C++ initialization lines for terminal root events.
+    
+    This function handles two cases:
+    
+    1. rootfunc = "equilibrate": 
+       Uses make_steady_state_root_func to stop integration when the system
+       reaches steady state (all derivatives including sensitivities < roottol).
+       
+    2. rootfunc = list of expressions (e.g., ["x - 0.5", "y - 1.0"]):
+       Similar to deSolve's rootfunc - stops integration when any expression
+       crosses zero.
+    
+    Parameters
+    ----------
+    rootfunc : str or list
+        Either "equilibrate" or a list of expressions
+    states_list : list
+        List of state variable names
+    params_list : list
+        List of parameter names
+    n_states : int
+        Number of state variables
+    num_type : str
+        Numeric type ("double", "AD", or "AD2")
+    forcings_list : list, optional
+        List of forcing function names
+        
+    Returns
+    -------
+    list of str
+        C++ code lines to be inserted after event initialization
+    """
+    if forcings_list is None:
+        forcings_list = []
+    
+    if rootfunc is None:
+        return []
+    
+    # Handle single string that might be "equilibrate" or a single expression
+    if isinstance(rootfunc, str):
+        rootfunc_lower = rootfunc.strip().lower()
+        if rootfunc_lower == "equilibrate":
+            # Use make_steady_state_root_func
+            return _generate_equilibrate_code(num_type)
+        else:
+            # Single expression - wrap in list
+            rootfunc = [rootfunc]
+    
+    # At this point, rootfunc should be a list of expressions
+    if not isinstance(rootfunc, (list, tuple)):
+        raise ValueError(f"rootfunc must be 'equilibrate' or a list of expressions, got: {type(rootfunc)}")
+    
+    return _generate_rootfunc_expressions_code(
+        rootfunc, states_list, params_list, n_states, num_type, forcings_list
+    )
+
+
+def _generate_equilibrate_code(num_type):
+    """
+    Generate C++ code for steady-state detection using make_steady_state_root_func.
+    
+    The generated code creates a terminal root event that fires when all
+    derivatives (including sensitivities for AD types) fall below root_tol.
+    """
+    lines = [
+        "",
+        "  // --- Steady-state detection (equilibrate) ---",
+        "  {",
+        f"    auto ss_root_func = make_steady_state_root_func<",
+        f"        decltype(sys), ublas::vector<{num_type}>, {num_type}>(sys, root_tol);",
+        "",
+        f"    root_events.push_back(RootEvent<ublas::vector<{num_type}>, {num_type}>{{",
+        "        ss_root_func,",
+        "        0,                      // state_index (ignored for terminal)",
+        f"        {num_type}(0),          // value (ignored for terminal)",
+        "        EventMethod::Replace,   // method (ignored for terminal)",
+        "        true,                   // terminal = true: stop integration",
+        "        -1                      // direction = -1: trigger when rate falls below tol",
+        "    });",
+        "  }",
+        "",
+    ]
+    return lines
+
+
+def _generate_rootfunc_expressions_code(expressions, states_list, params_list, 
+                                         n_states, num_type, forcings_list):
+    """
+    Generate C++ code for user-specified root function expressions.
+    
+    Each expression creates a terminal root event that fires when
+    the expression crosses zero (any direction).
+    """
+    # Create symbol tables for parsing
+    states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
+    params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
+    t = sp.Symbol("time", real=True)
+    
+    local_symbols = {}
+    local_symbols.update(states_syms)
+    local_symbols.update(params_syms)
+    for name in forcings_list:
+        local_symbols[name] = sp.Symbol(name, real=True)
+    local_symbols["time"] = t
+    
+    lines = [
+        "",
+        "  // --- User-specified root functions (terminal) ---",
+    ]
+    
+    for i, expr_str in enumerate(expressions):
+        if not _is_valid_value(expr_str):
+            continue
+            
+        expr_str = str(expr_str).strip()
+        
+        try:
+            # Parse and convert to C++
+            expr = _safe_sympify(expr_str, local_symbols)
+            cpp_code = _to_cpp(expr, states_list, params_list, n_states, 
+                              num_type, forcings=forcings_list)
+            cpp_code = str(cpp_code).replace("params[", "full_params[")
+        except Exception as e:
+            raise ValueError(f"Failed to parse rootfunc expression '{expr_str}': {e}")
+        
+        lines.extend([
+            f"  // Root expression {i}: {expr_str}",
+            f"  root_events.push_back(RootEvent<ublas::vector<{num_type}>, {num_type}>{{",
+            f"      [full_params](const ublas::vector<{num_type}>& x, const {num_type}& t) {{",
+            f"          return {cpp_code};",
+            "      },",
+            "      0,                      // state_index (ignored for terminal)",
+            f"      {num_type}(0),          // value (ignored for terminal)",
+            "      EventMethod::Replace,   // method (ignored for terminal)",
+            "      true,                   // terminal = true: stop integration",
+            "      0                       // direction = 0: any direction",
+            "  });",
+            "",
+        ])
+    
+    return lines

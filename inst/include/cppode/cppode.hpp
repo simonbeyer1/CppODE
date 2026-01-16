@@ -37,6 +37,7 @@
 //  CppODE utilities
 // ============================================================================
 #include <cppode/cppode_odeint_utils.hpp>
+#include <cppode/cppode_pchip_forcing.hpp>
 
 // ============================================================================
 //  CppODE Rosenbrock controllers and dense output

@@ -87,32 +87,7 @@ It supports two backends:
 \item A compiled C++ backend generated via a small Python helper (recommended for performance).
 \item A pure-R fallback that evaluates parsed R expressions.
 }
-
-The function automatically:
-\itemize{
-\item Validates and aligns variable/parameter inputs.
-\item Computes symbolic derivatives (via \code{derivSymb()}), if requested.
-\item Normalizes derivative arrays so that their row/column orders match the internal
-differentiation order used throughout the evaluator.
 }
-}
-\section{Derivative ordering}{
-
-Derivative dimensions always follow \code{diff_syms = c(variables, setdiff(parameters, fixed))}.
-Internally, the symbolic Jacobian/Hessian matrices returned by \code{derivSymb()} are reindexed
-to this order to ensure compiled and R-fallback paths produce consistent layouts.
-}
-
-\section{Array layout}{
-
-Arrays are stored with observations in the first dimension for better memory locality:
-\itemize{
-\item Jacobian: \verb{[n_obs, n_out, n_diff_syms]}
-\item Hessian: \verb{[n_obs, n_out, n_diff_syms, n_diff_syms]}
-This allows efficient subsetting like \code{jacobian[1:10, , ]} for the first 10 observations.
-}
-}
-
 \examples{
 \dontrun{
 # funCpp() makes use of the Python module 'sympy'

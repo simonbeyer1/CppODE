@@ -50,6 +50,20 @@
 #' Each event must define either `time` or `root`.
 #' Root-triggered events fire when the `root` expression crosses zero.
 #'
+#' ## Root function (rootfunc)
+#'
+#' The `rootfunc` argument enables integration termination based on root-finding:
+#'
+#' - **`"equilibrate"`**: Stops integration when the system reaches steady state.
+#'   The steady-state condition checks that all derivatives (including sensitivities
+#'   when `deriv = TRUE` or `deriv2 = TRUE`) fall below the `roottol` tolerance.
+#'   This is useful for equilibrating systems before further analysis.
+#'
+#' - **Character vector of expressions**: Similar to deSolve's `rootfunc`, you can
+#'   specify one or more expressions (e.g., `"x - 0.5"` or `c("x - 0.5", "y - 1")`).
+#'   Integration stops when any expression crosses zero. Variables, parameters, and
+#'   `time` can be used in expressions.
+#'
 #' ## Output
 #'
 #' The generated solver function (accessible via `.Call`) returns a named list:
@@ -74,8 +88,11 @@
 #'
 #' @param rhs Named character vector of ODE right-hand sides; names must correspond to variables.
 #' @param events Optional `data.frame` describing events (see **Events**). Default: `NULL`.
+#' @param rootfunc Optional root function specification for integration termination.
+#'   Either `"equilibrate"` for steady-state detection, or a character vector of
+#'   expressions that trigger termination when crossing zero. Default: `NULL`.
+#' @param forcings Character vector of forcing function names used in `rhs`.
 #' @param fixed Character vector of fixed initial conditions or parameters (excluded from sensitivities).
-#' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
 #' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
 #' @param modelname Optional base name for the generated C++ source file
 #'   \emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
@@ -85,6 +102,7 @@
 #' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
 #' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers; requires `deriv = TRUE`.
 #' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector including derivatives. If `FALSE`, use only the value components for error control.
+#' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
 #' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
@@ -99,6 +117,7 @@
 #' | `variables` | `character` | Names of the dynamic state variables |
 #' | `parameters` | `character` | Names of model parameters |
 #' | `events` | `data.frame` | Table of event specifications (if any) |
+#' | `rootfunc` | `character` | Root function specification (if any) |
 #' | `solver` | `list` | Description of the numerical solver configuration |
 #' | `fixed` | `character` | Names of fixed initial conditions or parameters |
 #' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
@@ -107,13 +126,13 @@
 #' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
 #'
 #' @example inst/examples/example_ODE.R
-#' @importFrom reticulate source_python
 #' @importFrom stats setNames
+#' @seealso [solveODE()] for a solver interface of compiled models
 #' @export
-CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
+CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
-                   useDenseOutput = TRUE,
+                   includeTimeZero = TRUE, useDenseOutput = TRUE,
                    verbose = FALSE) {
 
   # --- Validate arguments ---
@@ -129,12 +148,41 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Extract variable and parameter names ---
   variables <- names(rhs)
-  symbols <- getSymbols(c(rhs, if (!is.null(events)) {
-    c(events$value,
-      if ("time" %in% names(events)) events$time,
-      if ("root" %in% names(events)) events$root)
-  }))
-  params  <- setdiff(symbols, c(variables, "time"))
+
+  # Collect all expressions for symbol extraction
+  all_expressions <- rhs
+  if (!is.null(events)) {
+    all_expressions <- c(all_expressions,
+                         events$value,
+                         if ("time" %in% names(events)) events$time,
+                         if ("root" %in% names(events)) events$root)
+  }
+  # Include rootfunc expressions (but not "equilibrate" which is a keyword)
+  if (!is.null(rootfunc) && !identical(tolower(rootfunc), "equilibrate")) {
+    all_expressions <- c(all_expressions, rootfunc)
+  }
+
+  symbols <- getSymbols(all_expressions)
+
+  # --- Validate forcings ---
+  if (is.null(forcings)) forcings <- character(0)
+
+  # Forcings must be symbols in rhs but NOT state names
+  if (length(forcings) > 0) {
+    unknown_forcings <- setdiff(forcings, symbols)
+    if (length(unknown_forcings) > 0) {
+      stop("Unknown forcing symbols: ", paste(unknown_forcings, collapse = ", "))
+    }
+    forcing_states <- intersect(forcings, variables)
+    if (length(forcing_states) > 0) {
+      stop("Forcing names cannot be state variables: ", paste(forcing_states, collapse = ", "))
+    }
+  }
+  n_forcings <- length(forcings)
+
+  # Parameters are symbols that are not variables, forcings, or time
+
+  params  <- setdiff(symbols, c(variables, forcings, "time"))
 
   # --- Handle fixed initial conditions and parameters ---
   if (is.null(fixed)) fixed <- character(0)
@@ -180,7 +228,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
     params_list = params,
     num_type = numType,
     fixed_states = fixed_initials,
-    fixed_params = fixed_params
+    fixed_params = fixed_params,
+    forcings_list = forcings
   )
 
   ode_code <- codegen_result$ode_code
@@ -200,11 +249,33 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
       states_list = variables,
       params_list = params,
       n_states = n_variables,
-      num_type = numType
+      num_type = numType,
+      forcings_list = forcings
     )
 
     event_code <- paste(event_lines, collapse = "\n")
   }
+
+  # --- Generate rootfunc code if needed ---
+  rootfunc_code <- ""
+  if (!is.null(rootfunc)) {
+    if (verbose) message("Generating rootfunc code...")
+
+    rootfunc_lines <- codegen$generate_rootfunc_code(
+      rootfunc = rootfunc,
+      states_list = variables,
+      params_list = params,
+      n_states = n_variables,
+      num_type = numType,
+      forcings_list = forcings
+    )
+
+    rootfunc_code <- paste(rootfunc_lines, collapse = "\n")
+    if (verbose) message("  \u2713 rootfunc generated")
+  }
+
+  # --- Generate forcing initialization code ---
+  forcing_init_code <- paste(codegen$generate_forcing_init_code(n_forcings, numType), collapse = "\n")
 
   # --- C++ includes ---
   includings <- c(
@@ -258,7 +329,10 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 
   # --- Solver function (externC) ---
   externC <- c(
-    sprintf('extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP) {', modelname),
+    sprintf(
+      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
+      modelname
+    ),
     "try {",
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
@@ -364,10 +438,14 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                  sprintf("    full_params[%d + i] = REAL(paramsSEXP)[%d + i];", n_variables, n_variables))
   }
 
-
   externC <- c(externC,
                "  }",
-               "",
+               "")
+
+  # === INSERT FORCING INITIALIZATION CODE HERE ===
+  externC <- c(externC, forcing_init_code, "")
+
+  externC <- c(externC,
                "  // --- Copy integration times ---",
                "  std::vector<double> times_dbl(REAL(timesSEXP), REAL(timesSEXP) + Rf_length(timesSEXP));",
                ""
@@ -408,6 +486,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   if (event_code != "") {
     externC <- c(externC, event_code)
   }
+
+  # Note: rootfunc_code is inserted later, after sys is defined
 
   # --- Integration setup ---
   if (useDenseOutput) {
@@ -455,9 +535,16 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
                "  double root_tol = REAL(root_tolSEXP)[0];",
                "  double hini = REAL(hiniSEXP)[0];",
                "  int maxroot = INTEGER(maxrootSEXP)[0];",
-               "  ode_system sys(full_params);",
-               "  jacobian jac(full_params);",
-               "  observer obs(result_times, y);",
+               "  ode_system sys(full_params, F);",
+               "  jacobian jac(full_params, F);",
+               "  observer obs(result_times, y);")
+
+  # Insert rootfunc code from Python (after sys is defined, needed for equilibrate)
+  if (rootfunc_code != "") {
+    externC <- c(externC, rootfunc_code)
+  }
+
+  externC <- c(externC,
                stepper_line, "",
                "  // --- Determine dt ---",
                sprintf("  %s dt;", numType),
@@ -774,7 +861,9 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
   attr(modelname, "srcfile")       <- normalizePath(filename, winslash = "/", mustWork = FALSE)
   attr(modelname, "variables")     <- variables
   attr(modelname, "parameters")    <- params
+  attr(modelname, "forcings")      <- forcings
   attr(modelname, "events")        <- events
+  attr(modelname, "rootfunc")      <- rootfunc
   attr(modelname, "fixed")         <- c(fixed_initials, fixed_params)
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
@@ -799,6 +888,239 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 }
 
 
+#' Solver Interface for Ordinary Differential Equation Models
+#'
+#' @description
+#' Numerically integrates a compiled ODE model created by [CppODE()] over a
+#' specified time span.
+#'
+#' @param model A compiled ODE model object returned by [CppODE()].
+#' @param times Numeric vector of time points at which to return the solution.
+#'   Must be non-empty and contain finite values.
+#' @param parms Named numeric vector containing initial conditions and parameters.
+#'   The order must match `c(attr(model, "variables"), attr(model, "parameters"))`.
+#'   Names are checked against the model specification.
+#' @param forcings Optional named list of forcing function data. Each element
+#'   should be a `data.frame` (or coercible object) with columns `time` and `value`,
+#'   or a two-column matrix. Names must match `attr(model, "forcings")`.
+#'   Default: `NULL`.
+#' @param abstol Absolute error tolerance for the integrator. Default: `1e-6`.
+#' @param reltol Relative error tolerance for the integrator. Default: `1e-6`.
+#' @param maxprogress Maximum number of integration steps without progress
+#'   before an error is raised. Default: `100`.
+#' @param maxsteps Maximum total number of integration steps. Default: `1e6`.
+#' @param hini Initial step size. If `0` (default), an appropriate step size
+#'   is estimated automatically.
+#' @param roottol Tolerance for root-finding in root-triggered events.
+#'   Default: `1e-6`.
+#' @param maxroot Maximum triggers per root event
+#'   Default: `1`.
+#'
+#' @return A named list with the following components:
+#' \describe{
+#'   \item{`time`}{Numeric vector of output time points (length \eqn{n_t}).}
+#'   \item{`variable`}{Numeric matrix of state trajectories with dimensions
+#'     \eqn{(n_t, n_x)}, where rows correspond to time points and columns to
+#'     state variables. Column names match `attr(model, "variables")`.}
+#'   \item{`sens1`}{(If `deriv = TRUE`) Numeric array of first-order sensitivities
+#'     with dimensions \eqn{(n_t, n_x, n_s)}, containing
+#'     \eqn{\partial x_j(t_i) / \partial p_k}.
+#'     Dimension names are provided via `attr(model, "dim_names")`.}
+#'   \item{`sens2`}{(If `deriv2 = TRUE`) Numeric array of second-order sensitivities
+#'     with dimensions \eqn{(n_t, n_x, n_s, n_s)}, containing
+#'     \eqn{\partial^2 x_j(t_i) / \partial p_k \partial p_l}.}
+#' }
+#'
+#' @seealso [CppODE()] for model specification and compilation.
+#'
+#' @export
+solveODE <- function(model, times, parms, forcings = NULL,
+                     abstol = 1e-6, reltol = 1e-6,
+                     maxprogress = 100L, maxsteps = 1e6L,
+                     hini = 0, roottol = 1e-6, maxroot = 100L) {
+
+  ## --- Model validation ---
+  if (!is.character(model) || length(model) != 1L) {
+    stop("'model' must be a character string (modelname from CppODE() output)")
+  }
+
+  model_attr_names <- names(attributes(model))
+  required_attrs <- c("variables", "parameters", "forcings", "deriv", "deriv2", "dim_names")
+  missing_attrs <- required_attrs[!required_attrs %in% model_attr_names]
+
+  if (length(missing_attrs)) {
+    stop("'model' is missing required attributes: ",
+         paste(missing_attrs, collapse = ", "),
+         ". Was it created by CppODE()?")
+  }
+
+  variables      <- attr(model, "variables")
+  parameters     <- attr(model, "parameters")
+  forcing_names  <- attr(model, "forcings")
+  dim_names      <- attr(model, "dim_names")
+
+  ## --- Times ---
+  if (!is.numeric(times) || !length(times)) {
+    stop("'times' must be a non-empty numeric vector")
+  }
+  if (anyNA(times) || any(!is.finite(times))) {
+    stop("'times' must contain only finite values")
+  }
+  times <- as.double(times)
+
+  ## --- Parameters ---
+  if (!is.numeric(parms) || is.null(names(parms))) {
+    stop("'parms' must be a named numeric vector")
+  }
+
+  required_names <- c(variables, parameters)
+  parm_names     <- names(parms)
+
+  missing_names <- required_names[!required_names %in% parm_names]
+  if (length(missing_names)) {
+    stop("'parms' is missing required values: ",
+         paste(missing_names, collapse = ", "))
+  }
+
+  parms_ordered <- as.double(parms[required_names])
+
+  if (anyNA(parms_ordered) || any(!is.finite(parms_ordered))) {
+    stop("'parms' must contain only finite values")
+  }
+
+  ## --- Forcings ---
+  n_forcings <- length(forcing_names)
+
+  if (n_forcings && is.null(forcings)) {
+    stop("Model requires forcings: ",
+         paste(forcing_names, collapse = ", "),
+         "\nProvide via 'forcings' argument.")
+  }
+
+  if (!n_forcings) {
+    forcing_times_list  <- list()
+    forcing_values_list <- list()
+  } else {
+
+    if (!is.list(forcings) || is.null(names(forcings))) {
+      stop("'forcings' must be a named list")
+    }
+
+    missing_forcings <- forcing_names[!forcing_names %in% names(forcings)]
+    if (length(missing_forcings)) {
+      stop("Missing forcing data for: ",
+           paste(missing_forcings, collapse = ", "))
+    }
+
+    forcing_times_list  <- vector("list", n_forcings)
+    forcing_values_list <- vector("list", n_forcings)
+
+    for (i in seq_len(n_forcings)) {
+      nm <- forcing_names[i]
+      f  <- forcings[[nm]]
+
+      if (is.matrix(f)) {
+        if (ncol(f) != 2L)
+          stop("Forcing '", nm, "' must have 2 columns (time, value)")
+        f <- data.frame(time = f[, 1L], value = f[, 2L])
+      } else if (!is.data.frame(f)) {
+        f <- as.data.frame(f)
+      }
+
+      if (!all(c("time", "value") %in% names(f))) {
+        stop("Forcing '", nm, "' must have columns 'time' and 'value'")
+      }
+
+      ft <- as.double(f$time)
+      fv <- as.double(f$value)
+
+      if (length(ft) < 2L)
+        stop("Forcing '", nm, "' needs at least 2 time points")
+
+      if (length(ft) != length(fv))
+        stop("Forcing '", nm, "': 'time' and 'value' length mismatch")
+
+      if (anyNA(ft) || any(!is.finite(ft)))
+        stop("Forcing '", nm, "': non-finite 'time'")
+
+      if (anyNA(fv) || any(!is.finite(fv)))
+        stop("Forcing '", nm, "': non-finite 'value'")
+
+      if (anyDuplicated(ft))
+        stop("Forcing '", nm, "': duplicate time values")
+
+      forcing_times_list[[i]]  <- ft
+      forcing_values_list[[i]] <- fv
+    }
+  }
+
+  ## --- Solver options ---
+  if (!is.numeric(abstol) || abstol <= 0) stop("'abstol' must be positive")
+  if (!is.numeric(reltol) || reltol <= 0) stop("'reltol' must be positive")
+  if (!is.numeric(hini)   || hini   <  0) stop("'hini' must be non-negative")
+  if (!is.numeric(roottol)|| roottol<=  0) stop("'roottol' must be positive")
+
+  maxprogress <- as.integer(maxprogress)
+  maxsteps    <- as.integer(maxsteps)
+  maxroot     <- as.integer(maxroot)
+
+  if (maxprogress <= 0L) stop("'maxprogress' must be positive")
+  if (maxsteps    <= 0L) stop("'maxsteps' must be positive")
+  if (maxroot     <= 0L) stop("'maxroot' must be positive")
+
+  ## --- Call C++ solver ---
+  SYM <- getNativeSymbolInfo(paste0("solve_", model))
+  result <- tryCatch(
+    .Call(
+      SYM,
+      times,
+      parms_ordered,
+      as.double(abstol),
+      as.double(reltol),
+      maxprogress,
+      maxsteps,
+      as.double(hini),
+      as.double(roottol),
+      maxroot,
+      forcing_times_list,
+      forcing_values_list
+    ),
+    error = function(e) {
+      if (grepl("not available|not found|symbol", e$message, ignore.case = TRUE)) {
+        stop("Compiled solver '", SYM$name,
+             "' not found. Was the model compiled with compile = TRUE?",
+             call. = FALSE)
+      }
+      stop(e$message, call. = FALSE)
+    }
+  )
+
+  ## --- Output decoration ---
+  if (!is.null(result$variable)) {
+    colnames(result$variable) <- variables
+  }
+
+  if (!is.null(result$sens1) && !is.null(dim_names$sens)) {
+    dimnames(result$sens1) <- list(
+      time = NULL,
+      variable = variables,
+      sens = dim_names$sens
+    )
+  }
+
+  if (!is.null(result$sens2) && !is.null(dim_names$sens)) {
+    dimnames(result$sens2) <- list(
+      time = NULL,
+      variable = variables,
+      sens1 = dim_names$sens,
+      sens2 = dim_names$sens
+    )
+  }
+
+  return(result)
+}
+
+
 #' Generate a R/C++ evaluator for algebraic models with optional Jacobian/Hessian
 #'
 #' @description
@@ -807,12 +1129,6 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' It supports two backends:
 #' - A compiled C++ backend generated via a small Python helper (recommended for performance).
 #' - A pure-R fallback that evaluates parsed R expressions.
-#'
-#' The function automatically:
-#' - Validates and aligns variable/parameter inputs.
-#' - Computes symbolic derivatives (via `derivSymb()`), if requested.
-#' - Normalizes derivative arrays so that their row/column orders match the internal
-#'   differentiation order used throughout the evaluator.
 #'
 #' @param eqns Named character vector or list of expressions (e.g. `c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")`).
 #'           Names become output column names. If `names(eqns)` is `NULL`, default names `f1, f2, ...` are used.
@@ -855,19 +1171,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, includeTimeZero = TRUE,
 #' - `jacobian.symb` (if `deriv=TRUE`)
 #' - `hessian.symb`  (if `deriv2=TRUE`)
 #'
-#' @section Derivative ordering:
-#' Derivative dimensions always follow `diff_syms = c(variables, setdiff(parameters, fixed))`.
-#' Internally, the symbolic Jacobian/Hessian matrices returned by `derivSymb()` are reindexed
-#' to this order to ensure compiled and R-fallback paths produce consistent layouts.
-#'
-#' @section Array layout:
-#' Arrays are stored with observations in the first dimension for better memory locality:
-#' - Jacobian: `[n_obs, n_out, n_diff_syms]`
-#' - Hessian: `[n_obs, n_out, n_diff_syms, n_diff_syms]`
-#' This allows efficient subsetting like `jacobian[1:10, , ]` for the first 10 observations.
-#'
 #' @example inst/examples/example_fun.R
-#' @importFrom reticulate import_from_path
 #' @export
 funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
                    parameters = NULL, fixed = NULL,

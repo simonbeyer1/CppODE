@@ -7,14 +7,16 @@
 CppODE(
   rhs,
   events = NULL,
+  rootfunc = NULL,
   fixed = NULL,
-  includeTimeZero = TRUE,
+  forcings = NULL,
   compile = TRUE,
   modelname = NULL,
   outdir = tempdir(),
   deriv = TRUE,
   deriv2 = FALSE,
   fullErr = TRUE,
+  includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   verbose = FALSE
 )
@@ -24,9 +26,13 @@ CppODE(
 
 \item{events}{Optional \code{data.frame} describing events (see \strong{Events}). Default: \code{NULL}.}
 
+\item{rootfunc}{Optional root function specification for integration termination.
+Either \code{"equilibrate"} for steady-state detection, or a character vector of
+expressions that trigger termination when crossing zero. Default: \code{NULL}.}
+
 \item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
+\item{forcings}{Character vector of forcing function names used in \code{rhs}.}
 
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
@@ -43,6 +49,8 @@ If \code{NULL}, a random identifier is used.}
 
 \item{fullErr}{Logical. If \code{TRUE}, compute error estimates using full state vector including derivatives. If \code{FALSE}, use only the value components for error control.}
 
+\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
+
 \item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
@@ -56,6 +64,7 @@ and its symbolic structure:\tabular{lll}{
    \code{variables} \tab \code{character} \tab Names of the dynamic state variables \cr
    \code{parameters} \tab \code{character} \tab Names of model parameters \cr
    \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
+   \code{rootfunc} \tab \code{character} \tab Root function specification (if any) \cr
    \code{solver} \tab \code{list} \tab Description of the numerical solver configuration \cr
    \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
    \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
@@ -113,6 +122,21 @@ Events are specified in a \code{data.frame} with the following columns:\tabular{
 
 Each event must define either \code{time} or \code{root}.
 Root-triggered events fire when the \code{root} expression crosses zero.
+}
+
+\subsection{Root function (rootfunc)}{
+
+The \code{rootfunc} argument enables integration termination based on root-finding:
+\itemize{
+\item \strong{\code{"equilibrate"}}: Stops integration when the system reaches steady state.
+The steady-state condition checks that all derivatives (including sensitivities
+when \code{deriv = TRUE} or \code{deriv2 = TRUE}) fall below the \code{roottol} tolerance.
+This is useful for equilibrating systems before further analysis.
+\item \strong{Character vector of expressions}: Similar to deSolve's \code{rootfunc}, you can
+specify one or more expressions (e.g., \code{"x - 0.5"} or \code{c("x - 0.5", "y - 1")}).
+Integration stops when any expression crosses zero. Variables, parameters, and
+\code{time} can be used in expressions.
+}
 }
 
 \subsection{Output}{
@@ -212,4 +236,7 @@ head(res$variable)         # variables
 head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }
+}
+\seealso{
+\code{\link[=solveODE]{solveODE()}} for a solver interface of compiled models
 }
