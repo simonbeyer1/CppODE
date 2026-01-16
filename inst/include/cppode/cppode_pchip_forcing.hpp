@@ -169,8 +169,12 @@ private:
 
   // For any AD-like type with .x() method (F<T>, F<F<T>>, etc.)
   template<typename U>
-  static auto extract_double(const U& x) -> decltype(extract_double(x.x())) {
-    return extract_double(x.x());
+  static double extract_double(const U& x) {
+    if constexpr (std::is_same_v<U, double>) {
+      return x;
+    } else {
+      return extract_double(const_cast<U&>(x).x());
+    }
   }
 
   /**

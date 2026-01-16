@@ -12,7 +12,51 @@ library(tidyr)
 # Define ODE system
 eqns <- c(
   x = "v",
-  v = "-k1*x^2 + F1 + F2"
+  v = "-omega0*x - 2*gamma * v"
 )
 
-homodel <- CppODE(eqns, forcings = c("F1", "F2"), outdir = getwd(), modelname = "homodel")
+eqns_forc <- c(
+  x = "v",
+  v = "-omega0*x - 2*gamma * v + F1"
+)
+
+homodel <- CppODE(eqns, outdir = getwd(), modelname = "homodel", compile = T)
+homodel_forc <- CppODE(eqns_forc, forcings = c("F1"), outdir = getwd(), modelname = "homodel_forc", compile = T)
+
+
+times <- seq(0, 100, length.out = 3000)
+
+# Liste mit Namen
+forcs <- list(
+  F1 = data.frame(time = times, value = sin(times))
+)
+
+params <- c(x = 1, v = 0, omega0 = 1, gamma = 0.5)
+
+res <- solveODE(homodel, times, params)
+res_forc <- solveODE(homodel_forc, times, params, forcings = forcs)
+
+
+out_hom <- as.data.frame(res$variable) %>%
+  mutate(time = res$time) %>%
+  pivot_longer(-time, names_to = "name", values_to = "value") %>%
+  mutate(system = "homogen")
+
+out_forc <- as.data.frame(res_forc$variable) %>%
+  mutate(time = res_forc$time) %>%
+  pivot_longer(-time, names_to = "name", values_to = "value") %>%
+  mutate(system = "getrieben")
+
+out <- rbind(out_hom, out_forc)
+
+ggplot(out, aes(x = time, y = value)) +
+  geom_line() +
+  facet_wrap(~ name + system, scales = "free_y") +
+  dMod::theme_dMod() +
+  labs(
+    x = "Time",
+    y = "Value"
+  )
+
+system.time({solveODE(homodel, times, params)})
+system.time({solveODE(homodel_forc, times, params, forcings = forcs)})

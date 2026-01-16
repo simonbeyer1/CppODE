@@ -149,6 +149,27 @@ def generate_ode_cpp(
     if forcings_list is None:
         forcings_list = []
 
+    # --- Ensure all list arguments are proper lists (not strings) ---
+    if isinstance(params_list, str):
+        params_list = [params_list]
+    else:
+        params_list = list(params_list)
+    
+    if isinstance(forcings_list, str):
+        forcings_list = [forcings_list]
+    else:
+        forcings_list = list(forcings_list)
+    
+    if isinstance(fixed_states, str):
+        fixed_states = [fixed_states]
+    else:
+        fixed_states = list(fixed_states)
+    
+    if isinstance(fixed_params, str):
+        fixed_params = [fixed_params]
+    else:
+        fixed_params = list(fixed_params)
+
     states_list = list(rhs_dict.keys())
     odes_list = list(rhs_dict.values())
 

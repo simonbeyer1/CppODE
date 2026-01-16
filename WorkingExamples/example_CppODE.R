@@ -34,8 +34,8 @@ model_d <- CppODE(eqns, events = events, deriv2 = F, outdir = getwd(), modelname
 # Example run
 params <- c(A = 0, B = 0, k1 = 0.1, k2 = 0.1, k3 = 0.1, dose = 1, Acrit = 0.25)
 times  <- seq(-10, 50, length.out = 300)
-res_c <- solveODE(model_c, times, params, maxroot = 1)
-res_d <- solveODE(model_d, times, params, maxroot = 1)
+res_c <- solveODE(model_c, times, params, maxroot = 4)
+res_d <- solveODE(model_d, times, params, maxroot = 4)
 head(res_c$variable)
 head(res_c$sens1[, "A", ])
 res_c$sens2[10, "A", ,]
