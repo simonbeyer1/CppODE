@@ -7,6 +7,7 @@
 CppODE(
   rhs,
   events = NULL,
+  rootfunc = NULL,
   fixed = NULL,
   forcings = NULL,
   compile = TRUE,
@@ -24,6 +25,10 @@ CppODE(
 \item{rhs}{Named character vector of ODE right-hand sides; names must correspond to variables.}
 
 \item{events}{Optional \code{data.frame} describing events (see \strong{Events}). Default: \code{NULL}.}
+
+\item{rootfunc}{Optional root function specification for integration termination.
+Either \code{"equilibrate"} for steady-state detection, or a character vector of
+expressions that trigger termination when crossing zero. Default: \code{NULL}.}
 
 \item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
 
@@ -59,6 +64,7 @@ and its symbolic structure:\tabular{lll}{
    \code{variables} \tab \code{character} \tab Names of the dynamic state variables \cr
    \code{parameters} \tab \code{character} \tab Names of model parameters \cr
    \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
+   \code{rootfunc} \tab \code{character} \tab Root function specification (if any) \cr
    \code{solver} \tab \code{list} \tab Description of the numerical solver configuration \cr
    \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
    \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
@@ -116,6 +122,21 @@ Events are specified in a \code{data.frame} with the following columns:\tabular{
 
 Each event must define either \code{time} or \code{root}.
 Root-triggered events fire when the \code{root} expression crosses zero.
+}
+
+\subsection{Root function (rootfunc)}{
+
+The \code{rootfunc} argument enables integration termination based on root-finding:
+\itemize{
+\item \strong{\code{"equilibrate"}}: Stops integration when the system reaches steady state.
+The steady-state condition checks that all derivatives (including sensitivities
+when \code{deriv = TRUE} or \code{deriv2 = TRUE}) fall below the \code{roottol} tolerance.
+This is useful for equilibrating systems before further analysis.
+\item \strong{Character vector of expressions}: Similar to deSolve's \code{rootfunc}, you can
+specify one or more expressions (e.g., \code{"x - 0.5"} or \code{c("x - 0.5", "y - 1")}).
+Integration stops when any expression crosses zero. Variables, parameters, and
+\code{time} can be used in expressions.
+}
 }
 
 \subsection{Output}{

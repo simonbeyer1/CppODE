@@ -109,6 +109,7 @@
 #include <cppode/cppode_boost_step_checker.hpp>
 
 #include <fadbad++/fadiff.h>
+#include <cppode/cppode_fadiff_extensions.hpp>
 
 namespace boost {
 namespace numeric {
@@ -226,6 +227,7 @@ struct FixedEvent {
  * - Peak detection (derivative crosses zero)
  * - Collision detection (distance function crosses zero)
  * - Phase transitions (energy below threshold)
+ * - **Steady-state detection** (all derivatives below tolerance)
  *
  * @tparam state_type The ODE state vector type
  * @tparam time_type The time variable type
@@ -251,10 +253,137 @@ struct RootEvent {
   int         state_index;  ///< Index of the state variable to modify
   value_t     value;        ///< Value to apply when event triggers
   EventMethod method;       ///< How to apply the value (Replace/Add/Multiply)
+
+  /**
+   * @brief Whether this event terminates integration
+   *
+   * If true, integration stops immediately after this event fires.
+   * Useful for steady-state detection or other termination conditions.
+   * Default: false (integration continues after event)
+   */
+  bool terminal = false;
+
+  /**
+   * @brief Direction of zero-crossing to detect
+   *
+   * Controls which direction of sign change triggers the event:
+   * -  0: Trigger on any sign change (both directions)
+   * - -1: Trigger only when function decreases through zero (+ to -)
+   * - +1: Trigger only when function increases through zero (- to +)
+   *
+   * For steady-state detection, use direction = -1 to trigger when
+   * the rate norm falls below the tolerance (goes from positive to "negative").
+   *
+   * Default: 0 (any direction)
+   */
+  int direction = 0;
 };
 
 //==============================================================================
 // Section 3: Event Application
+//==============================================================================
+
+/**
+ * @brief Check if a sign change matches the specified direction
+ *
+ * @param last_val Previous function value
+ * @param curr_val Current function value
+ * @param direction Direction filter: 0 = any, -1 = falling, +1 = rising
+ * @return true if the crossing matches the direction criterion
+ */
+inline bool direction_matches(double last_val, double curr_val, int direction)
+{
+  if (direction == 0) {
+    // Any direction
+    return true;
+  }
+  else if (direction < 0) {
+    // Falling: last > 0 and curr < 0
+    return last_val > 0.0 && curr_val < 0.0;
+  }
+  else {
+    // Rising: last < 0 and curr > 0
+    return last_val < 0.0 && curr_val > 0.0;
+  }
+}
+
+//==============================================================================
+// Section 3b: Steady-State Root Function Factory
+//==============================================================================
+
+/**
+ * @brief Create a root function for steady-state detection
+ *
+ * Returns a function that evaluates to (max_rate - tol), where max_rate
+ * is the maximum absolute value of dx/dt across all state components AND
+ * all sensitivity levels (for automatic differentiation types).
+ *
+ * The returned function:
+ * - Is positive when the system is NOT at steady state
+ * - Crosses zero when max|dx/dt| = tol
+ * - Is negative when the system IS at steady state
+ *
+ * When used with direction = -1, this triggers exactly when the system
+ * transitions from non-steady to steady state.
+ *
+ * @tparam System The ODE system type (callable: void(x, dxdt, t))
+ * @tparam State The state vector type
+ * @tparam Time The time type
+ *
+ * @param sys The ODE system
+ * @param tol Tolerance for steady-state (triggers when max|dx/dt| < tol)
+ * @return A root function suitable for use in RootEvent
+ *
+ * @par Example Usage
+ * @code
+ * auto sys = MyODESystem();
+ * double ss_tol = 1e-8;
+ *
+ * auto ss_root_func = make_steady_state_root_func<decltype(sys), state_type, double>(
+ *     sys, ss_tol);
+ *
+ * RootEvent<state_type, double> ss_event{
+ *     ss_root_func,
+ *     0,                      // state_index (ignored for terminal)
+ *     0.0,                    // value (ignored for terminal)
+ *     EventMethod::Replace,   // method (ignored for terminal)
+ *     true,                   // terminal = true: stop integration
+ *     -1                      // direction = -1: trigger when rate falls below tol
+ * };
+ *
+ * root_events.push_back(ss_event);
+ * @endcode
+ *
+ * @note The function captures `sys` by reference, so the system must
+ *       remain valid for the lifetime of the root function.
+ *
+ * @note For nested AD types (F<F<double>>), this checks ALL derivative
+ *       levels, ensuring that both states AND sensitivities have reached
+ *       steady state.
+ */
+template<class System, class State, class Time>
+auto make_steady_state_root_func(System& sys, double tol)
+{
+  return [&sys, tol](const State& x, const Time& t) ->
+    typename State::value_type
+    {
+      // Compute dx/dt
+      State dxdt(x.size());
+      sys(x, dxdt, t);
+
+      // Get max |dx/dt| across all components and all AD levels
+      double max_rate = cppode::max_abs_all_levels_vec(dxdt);
+
+      // Return (max_rate - tol):
+      //   > 0 when not steady
+      //   < 0 when steady
+      // This creates a falling zero-crossing when steady state is reached
+      return typename State::value_type(max_rate - tol);
+    };
+}
+
+//==============================================================================
+// Section 4: Event Application
 //==============================================================================
 
 /**
@@ -389,11 +518,11 @@ std::vector<Time> merge_user_and_event_times(
  * the appropriate reset method for different stepper types.
  *
  * **Dispatch Logic:**
- * 1. If stepper has `reset_after_event(dt)` → call it
+ * 1. If stepper has `reset_after_event(dt)` â†’ call it
  *    (controlled steppers: rosenbrock4_controller_pi)
- * 2. Else if stepper has `reinitialize_at_event(x, t, dt)` → call it
+ * 2. Else if stepper has `reinitialize_at_event(x, t, dt)` â†’ call it
  *    (dense output steppers: rosenbrock4_dense_output_pi)
- * 3. Else → no-op (standard Boost steppers don't need reset)
+ * 3. Else â†’ no-op (standard Boost steppers don't need reset)
  *
  * @tparam S Stepper type
  * @tparam State State vector type
@@ -623,10 +752,11 @@ public:
             auto fval = m_root[i].func(x, t);
             double f_now = scalar_value(fval);
 
-            // Detect sign change (root crossing)
+            // Detect sign change (root crossing) with direction check
             if (fired[i] < max_trigger &&
                 !std::isnan(last_val[i]) &&
-                last_val[i] * f_now < 0.0)
+                last_val[i] * f_now < 0.0 &&
+                direction_matches(last_val[i], f_now, m_root[i].direction))
             {
               // Localize root via bisection with re-integration
               localize_root_controlled(
@@ -641,17 +771,24 @@ public:
               Time t_root = t;
               obs(x, t_root);
 
-              // Apply event
+              // Apply event (skip for terminal events where we just want to stop)
               State x_after = x;
-              apply_event(x_after,
-                          m_root[i].state_index,
-                          m_root[i].value,
-                          m_root[i].method);
+              if (!m_root[i].terminal) {
+                apply_event(x_after,
+                            m_root[i].state_index,
+                            m_root[i].value,
+                            m_root[i].method);
+              }
               fired[i]++;
 
               // Output state after event (with tiny time offset for plotting)
               obs(x_after, t_root + Time(1e-15));
               x = x_after;
+
+              // Check for terminal event - stop integration
+              if (m_root[i].terminal) {
+                return steps;
+              }
 
               // Reset stepper for clean restart after discontinuity
               reset_stepper_unified(m_st, x, t, dt);
@@ -822,7 +959,8 @@ public:
         if (fired[i] < max_trigger &&
             !std::isnan(last_val[i]) &&
             last_val[i] * f_at_start < 0.0 &&
-            scalar_value(last_time[i]) < scalar_value(t_start))
+            scalar_value(last_time[i]) < scalar_value(t_start) &&
+            direction_matches(last_val[i], f_at_start, m_root[i].direction))
         {
           // Root crossed between intervals - trigger at interval start
           // (we cannot interpolate before t_start)
@@ -831,11 +969,20 @@ public:
 
           obs(x_root, t_root);
 
-          apply_event(x_root, m_root[i].state_index,
-                      m_root[i].value, m_root[i].method);
+          // Apply event (skip for terminal events)
+          if (!m_root[i].terminal) {
+            apply_event(x_root, m_root[i].state_index,
+                        m_root[i].value, m_root[i].method);
+          }
           fired[i]++;
 
           obs(x_root, t_root + Time(1e-15));
+
+          // Check for terminal event - stop integration
+          if (m_root[i].terminal) {
+            x = x_root;
+            return steps;
+          }
 
           // Reinitialize stepper from event state
           x = x_root;
@@ -924,7 +1071,8 @@ public:
 
           if (fired[i] < max_trigger &&
               !std::isnan(last_val[i]) &&
-              last_val[i] * f_now < 0.0)
+              last_val[i] * f_now < 0.0 &&
+              direction_matches(last_val[i], f_now, m_root[i].direction))
           {
             // Localize root via bisection using interpolation
             // last_time[i] is guaranteed >= t_start at this point
@@ -935,11 +1083,20 @@ public:
 
             obs(x_root, t_root);
 
-            apply_event(x_root, m_root[i].state_index,
-                        m_root[i].value, m_root[i].method);
+            // Apply event (skip for terminal events)
+            if (!m_root[i].terminal) {
+              apply_event(x_root, m_root[i].state_index,
+                          m_root[i].value, m_root[i].method);
+            }
             fired[i]++;
 
             obs(x_root, t_root + Time(1e-15));
+
+            // Check for terminal event - stop integration
+            if (m_root[i].terminal) {
+              x = x_root;
+              return steps;
+            }
 
             // Reinitialize stepper
             x = x_root;
@@ -1036,8 +1193,8 @@ private:
    * @code
    * while |tb - ta| > tol:
    *     tm = (ta + tb) / 2
-   *     Integrate from ta to tm → get xm
-   *     Evaluate f(xm, tm) → get fm
+   *     Integrate from ta to tm â†’ get xm
+   *     Evaluate f(xm, tm) â†’ get fm
    *     if fa * fm <= 0:  // Root in [ta, tm]
    *         tb = tm, xb = xm, fb = fm
    *     else:              // Root in [tm, tb]
@@ -1122,8 +1279,8 @@ private:
    * @code
    * while |tb - ta| > tol:
    *     tm = (ta + tb) / 2
-   *     Interpolate at tm → get xm  (FAST!)
-   *     Evaluate f(xm, tm) → get fm
+   *     Interpolate at tm â†’ get xm  (FAST!)
+   *     Evaluate f(xm, tm) â†’ get fm
    *     if fa * fm <= 0:
    *         tb = tm, xb = xm, fb = fm
    *     else:
@@ -1351,6 +1508,12 @@ using detail::integrate_times;
  * @see detail::integrate_times_dense
  */
 using detail::integrate_times_dense;
+
+/**
+ * @brief Factory function for steady-state root detection
+ * @see detail::make_steady_state_root_func
+ */
+using detail::make_steady_state_root_func;
 
 } // namespace odeint
 } // namespace numeric

@@ -6,6 +6,7 @@
  * - Fritsch-Carlson monotonicity-preserving slope computation
  * - C1 continuous interpolation with analytical derivatives
  * - Support for FADBAD++ automatic differentiation types (F<T>, F<F<T>>)
+ * - Zero extrapolation outside defined time range (safe default)
  *
  * Copyright (C) 2026 Simon Beyer
  */
@@ -25,6 +26,10 @@ namespace cppode {
  *
  * Computes cubic spline coefficients from raw (time, value) data using the
  * Fritsch-Carlson method, which guarantees monotonicity preservation.
+ *
+ * Behavior outside the defined time range:
+ * - Returns zero for times before the first knot or after the last knot
+ * - No extrapolation (safe default to prevent numerical blow-up)
  *
  * Template parameter T is the numeric type (double, AD, or AD2).
  */
@@ -46,6 +51,14 @@ struct PchipForcing {
 
   /**
    * Initialize from raw data (for deferred construction).
+   *
+   * @param times Vector of time points (will be sorted internally)
+   * @param values Vector of forcing values corresponding to times
+   *
+   * @throws std::invalid_argument if:
+   *   - fewer than 2 data points
+   *   - times and values have different lengths
+   *   - duplicate time points exist
    */
   void initialize(const std::vector<double>& times,
                   const std::vector<double>& values) {
@@ -70,6 +83,13 @@ struct PchipForcing {
       y[i] = values[idx[i]];
     }
 
+    // Check for duplicates (after sorting, duplicates are adjacent)
+    for (size_t i = 0; i < n - 1; ++i) {
+      if (t[i] == t[i + 1]) {
+        throw std::invalid_argument("PchipForcing: duplicate time points not allowed");
+      }
+    }
+
     size_t n_intervals = n - 1;
 
     // Compute interval widths and slopes
@@ -77,9 +97,7 @@ struct PchipForcing {
     std::vector<double> delta(n_intervals);
     for (size_t i = 0; i < n_intervals; ++i) {
       h[i] = t[i + 1] - t[i];
-      if (h[i] <= 0) {
-        throw std::invalid_argument("PchipForcing: times must be strictly increasing");
-      }
+      // Note: h[i] > 0 guaranteed since we checked for duplicates above
       delta[i] = (y[i + 1] - y[i]) / h[i];
     }
 
@@ -137,10 +155,20 @@ struct PchipForcing {
 
   /**
    * Evaluate forcing at given time.
-   * Uses Horner's method for numerical stability.
+   * Returns zero outside the defined time range (no extrapolation).
+   * Uses Horner's method for numerical stability within range.
+   *
+   * @param time Time at which to evaluate the forcing
+   * @return Forcing value (zero if outside [t.front(), t.back()])
    */
   T operator()(const T& time) const {
     double td = extract_double(time);
+
+    // Return zero outside defined range (safe default)
+    if (td < t.front() || td > t.back()) {
+      return T(0.0);
+    }
+
     int i = find_interval(td);
     T dt = time - t[i];
     // Horner's method: a + dt*(b + dt*(c + dt*d))
@@ -149,15 +177,46 @@ struct PchipForcing {
 
   /**
    * Time derivative of forcing (for Jacobian df/dt computation).
+   * Returns zero outside the defined time range.
    * p(t) = a + b*dt + c*dt^2 + d*dt^3
    * p'(t) = b + 2*c*dt + 3*d*dt^2
+   *
+   * @param time Time at which to evaluate the derivative
+   * @return Derivative value (zero if outside [t.front(), t.back()])
    */
   T derivative(const T& time) const {
     double td = extract_double(time);
+
+    // Return zero outside defined range (safe default)
+    if (td < t.front() || td > t.back()) {
+      return T(0.0);
+    }
+
     int i = find_interval(td);
     T dt = time - t[i];
     // Horner's method: b + dt*(2c + dt*3d)
     return b[i] + dt * (2.0 * c[i] + dt * 3.0 * d[i]);
+  }
+
+  /**
+   * Get the minimum time in the forcing data.
+   * @return First time point
+   */
+  double time_min() const { return t.front(); }
+
+  /**
+   * Get the maximum time in the forcing data.
+   * @return Last time point
+   */
+  double time_max() const { return t.back(); }
+
+  /**
+   * Check if a time is within the defined range.
+   * @param time Time to check
+   * @return true if time is in [t.front(), t.back()]
+   */
+  bool in_range(double time) const {
+    return time >= t.front() && time <= t.back();
   }
 
 private:
@@ -179,12 +238,14 @@ private:
 
   /**
    * Find interval index i such that t[i] <= td < t[i+1].
-   * Uses binary search, returns clamped index for extrapolation.
+   * Uses binary search, returns clamped index for boundary cases.
+   *
+   * @pre td is within [t.front(), t.back()] (caller must check)
    */
   int find_interval(double td) const {
     auto it = std::upper_bound(t.begin(), t.end(), td);
     int i = static_cast<int>(it - t.begin()) - 1;
-    // Clamp to valid interval range
+    // Clamp to valid interval range (handles td == t.back() case)
     if (i < 0) i = 0;
     if (i >= static_cast<int>(t.size()) - 1) i = static_cast<int>(t.size()) - 2;
     return i;

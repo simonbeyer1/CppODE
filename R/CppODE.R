@@ -50,6 +50,20 @@
 #' Each event must define either `time` or `root`.
 #' Root-triggered events fire when the `root` expression crosses zero.
 #'
+#' ## Root function (rootfunc)
+#'
+#' The `rootfunc` argument enables integration termination based on root-finding:
+#'
+#' - **`"equilibrate"`**: Stops integration when the system reaches steady state.
+#'   The steady-state condition checks that all derivatives (including sensitivities
+#'   when `deriv = TRUE` or `deriv2 = TRUE`) fall below the `roottol` tolerance.
+#'   This is useful for equilibrating systems before further analysis.
+#'
+#' - **Character vector of expressions**: Similar to deSolve's `rootfunc`, you can
+#'   specify one or more expressions (e.g., `"x - 0.5"` or `c("x - 0.5", "y - 1")`).
+#'   Integration stops when any expression crosses zero. Variables, parameters, and
+#'   `time` can be used in expressions.
+#'
 #' ## Output
 #'
 #' The generated solver function (accessible via `.Call`) returns a named list:
@@ -74,6 +88,9 @@
 #'
 #' @param rhs Named character vector of ODE right-hand sides; names must correspond to variables.
 #' @param events Optional `data.frame` describing events (see **Events**). Default: `NULL`.
+#' @param rootfunc Optional root function specification for integration termination.
+#'   Either `"equilibrate"` for steady-state detection, or a character vector of
+#'   expressions that trigger termination when crossing zero. Default: `NULL`.
 #' @param forcings Character vector of forcing function names used in `rhs`.
 #' @param fixed Character vector of fixed initial conditions or parameters (excluded from sensitivities).
 #' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
@@ -100,6 +117,7 @@
 #' | `variables` | `character` | Names of the dynamic state variables |
 #' | `parameters` | `character` | Names of model parameters |
 #' | `events` | `data.frame` | Table of event specifications (if any) |
+#' | `rootfunc` | `character` | Root function specification (if any) |
 #' | `solver` | `list` | Description of the numerical solver configuration |
 #' | `fixed` | `character` | Names of fixed initial conditions or parameters |
 #' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
@@ -111,7 +129,7 @@
 #' @importFrom stats setNames
 #' @seealso [solveODE()] for a solver interface of compiled models
 #' @export
-CppODE <- function(rhs, events = NULL, fixed = NULL, forcings = NULL,
+CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
@@ -130,11 +148,21 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, forcings = NULL,
 
   # --- Extract variable and parameter names ---
   variables <- names(rhs)
-  symbols <- getSymbols(c(rhs, if (!is.null(events)) {
-    c(events$value,
-      if ("time" %in% names(events)) events$time,
-      if ("root" %in% names(events)) events$root)
-  }))
+
+  # Collect all expressions for symbol extraction
+  all_expressions <- rhs
+  if (!is.null(events)) {
+    all_expressions <- c(all_expressions,
+                         events$value,
+                         if ("time" %in% names(events)) events$time,
+                         if ("root" %in% names(events)) events$root)
+  }
+  # Include rootfunc expressions (but not "equilibrate" which is a keyword)
+  if (!is.null(rootfunc) && !identical(tolower(rootfunc), "equilibrate")) {
+    all_expressions <- c(all_expressions, rootfunc)
+  }
+
+  symbols <- getSymbols(all_expressions)
 
   # --- Validate forcings ---
   if (is.null(forcings)) forcings <- character(0)
@@ -226,6 +254,24 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, forcings = NULL,
     )
 
     event_code <- paste(event_lines, collapse = "\n")
+  }
+
+  # --- Generate rootfunc code if needed ---
+  rootfunc_code <- ""
+  if (!is.null(rootfunc)) {
+    if (verbose) message("Generating rootfunc code...")
+
+    rootfunc_lines <- codegen$generate_rootfunc_code(
+      rootfunc = rootfunc,
+      states_list = variables,
+      params_list = params,
+      n_states = n_variables,
+      num_type = numType,
+      forcings_list = forcings
+    )
+
+    rootfunc_code <- paste(rootfunc_lines, collapse = "\n")
+    if (verbose) message("  \u2713 rootfunc generated")
   }
 
   # --- Generate forcing initialization code ---
@@ -441,6 +487,8 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, forcings = NULL,
     externC <- c(externC, event_code)
   }
 
+  # Note: rootfunc_code is inserted later, after sys is defined
+
   # --- Integration setup ---
   if (useDenseOutput) {
     # Dense output version (WITH Interpolation)
@@ -489,7 +537,14 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, forcings = NULL,
                "  int maxroot = INTEGER(maxrootSEXP)[0];",
                "  ode_system sys(full_params, F);",
                "  jacobian jac(full_params, F);",
-               "  observer obs(result_times, y);",
+               "  observer obs(result_times, y);")
+
+  # Insert rootfunc code from Python (after sys is defined, needed for equilibrate)
+  if (rootfunc_code != "") {
+    externC <- c(externC, rootfunc_code)
+  }
+
+  externC <- c(externC,
                stepper_line, "",
                "  // --- Determine dt ---",
                sprintf("  %s dt;", numType),
@@ -808,6 +863,7 @@ CppODE <- function(rhs, events = NULL, fixed = NULL, forcings = NULL,
   attr(modelname, "parameters")    <- params
   attr(modelname, "forcings")      <- forcings
   attr(modelname, "events")        <- events
+  attr(modelname, "rootfunc")      <- rootfunc
   attr(modelname, "fixed")         <- c(fixed_initials, fixed_params)
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
