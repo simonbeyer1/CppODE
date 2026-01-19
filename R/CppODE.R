@@ -840,11 +840,14 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     "",
     usings,
     "",
+    "namespace {",
     ode_code,
     "",
     jac_code,
     "",
     observer_code,
+    "",
+    "}",
     "",
     externC
   )
