@@ -22,6 +22,26 @@
 // =========================================================================================
 namespace fadbad {
 
+// =========================================================================================
+//  Helper: Extract double value from any AD type (for comparisons)
+// =========================================================================================
+namespace detail {
+
+// Base case: arithmetic types -> just cast to double
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
+to_double(const T& v) {
+  return static_cast<double>(v);
+}
+
+// Recursive case: F<T> -> extract .val() recursively
+template<class T>
+inline double to_double(const F<T>& v) {
+  return to_double(const_cast<F<T>&>(v).val());
+}
+
+} // namespace detail
+
 // ----------------------------------------------------------------------------
 //  Hyperbolic functions for F<T>
 // ----------------------------------------------------------------------------
@@ -123,7 +143,7 @@ inline F<T> atanh(const F<T>& x) {
  */
 template<class T>
 inline F<T> abs(const F<T>& x) {
-  return (x < T(0)) ? -x : x;
+  return (detail::to_double(x) < 0.0) ? -x : x;
 }
 
 // ----------------------------------------------------------------------------
@@ -144,7 +164,7 @@ inline F<T> abs(const F<T>& x) {
  */
 template <typename Inner>
 inline bool operator<(const F<F<Inner>>& a, const F<Inner>& b) {
-  return a.val().val() < b.val();
+  return detail::to_double(a) < detail::to_double(b);
 }
 
 /**
@@ -152,52 +172,52 @@ inline bool operator<(const F<F<Inner>>& a, const F<Inner>& b) {
  */
 template <typename Inner>
 inline bool operator<(const F<Inner>& a, const F<F<Inner>>& b) {
-  return a.val() < b.val().val();
-}
-
-/**
- * @brief Safe absolute value function for nested fadbad::F types.
- *
- * This handles the F<F<T>> case which requires special comparison.
- *
- * @tparam Inner Inner fadbad or arithmetic type.
- * @param x Value to take the absolute of.
- * @return |x|
- */
-template <typename Inner>
-inline F<F<Inner>> abs(const F<F<Inner>>& x) {
-  double val = x.val().val();
-  return (val < 0.0) ? -x : x;
+  return detail::to_double(a) < detail::to_double(b);
 }
 
 // ----------------------------------------------------------------------------
-//  Min/Max functions
+//  Min/Max functions - robust for both int and double scalars
 // ----------------------------------------------------------------------------
+// These implementations handle:
+//   - max(F<T>, F<T>)     : two AD types
+//   - max(F<T>, 0.0)      : AD type with double scalar
+//   - max(F<T>, 0)        : AD type with int scalar
+//   - max(0.0, F<T>)      : double scalar with AD type
+//   - max(0, F<T>)        : int scalar with AD type
+//
+// The key insight: we extract double values for comparison and construct
+// F<T> from double (not from int) to avoid type ambiguities.
 
 /**
  * @brief min for two fadbad::F types
  */
 template<class T>
 inline fadbad::F<T> min(const fadbad::F<T>& a, const fadbad::F<T>& b) {
-  return (a < b) ? a : b;
+  return (detail::to_double(a) < detail::to_double(b)) ? a : b;
 }
 
 /**
  * @brief min for fadbad::F and scalar (F on left)
+ *
+ * Works with both int and double scalars: max(x, 0) and max(x, 0.0)
  */
 template<class T, class U>
 inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
 min(const fadbad::F<T>& a, const U& b) {
-  return (a < b) ? a : fadbad::F<T>(b);
+  double b_val = static_cast<double>(b);
+  return (detail::to_double(a) < b_val) ? a : fadbad::F<T>(b_val);
 }
 
 /**
  * @brief min for scalar and fadbad::F (F on right)
+ *
+ * Works with both int and double scalars: max(0, x) and max(0.0, x)
  */
 template<class T, class U>
 inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
 min(const U& a, const fadbad::F<T>& b) {
-  return (a < b) ? fadbad::F<T>(a) : b;
+  double a_val = static_cast<double>(a);
+  return (a_val < detail::to_double(b)) ? fadbad::F<T>(a_val) : b;
 }
 
 /**
@@ -205,25 +225,62 @@ min(const U& a, const fadbad::F<T>& b) {
  */
 template<class T>
 inline fadbad::F<T> max(const fadbad::F<T>& a, const fadbad::F<T>& b) {
-  return (a > b) ? a : b;
+  return (detail::to_double(a) > detail::to_double(b)) ? a : b;
 }
 
 /**
  * @brief max for fadbad::F and scalar (F on left)
+ *
+ * Works with both int and double scalars: max(x, 0) and max(x, 0.0)
  */
 template<class T, class U>
 inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
 max(const fadbad::F<T>& a, const U& b) {
-  return (a > b) ? a : fadbad::F<T>(b);
+  double b_val = static_cast<double>(b);
+  return (detail::to_double(a) > b_val) ? a : fadbad::F<T>(b_val);
 }
 
 /**
  * @brief max for scalar and fadbad::F (F on right)
+ *
+ * Works with both int and double scalars: max(0, x) and max(0.0, x)
  */
 template<class T, class U>
 inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
 max(const U& a, const fadbad::F<T>& b) {
-  return (a > b) ? fadbad::F<T>(a) : b;
+  double a_val = static_cast<double>(a);
+  return (a_val > detail::to_double(b)) ? fadbad::F<T>(a_val) : b;
+}
+
+// ----------------------------------------------------------------------------
+//  Clamp function
+// ----------------------------------------------------------------------------
+
+/**
+ * @brief Clamp a fadbad::F value to a range
+ *
+ * Works with int and double bounds: clamp(x, 0, 1) and clamp(x, 0.0, 1.0)
+ *
+ * @param x Value to clamp
+ * @param lo Lower bound
+ * @param hi Upper bound
+ * @return x clamped to [lo, hi]
+ */
+template<class T, class Lo, class Hi>
+inline typename std::enable_if<
+  std::is_arithmetic<Lo>::value && std::is_arithmetic<Hi>::value,
+  fadbad::F<T>
+>::type
+clamp(const fadbad::F<T>& x, const Lo& lo, const Hi& hi) {
+  return min(max(x, lo), hi);
+}
+
+/**
+ * @brief Clamp with all fadbad::F types
+ */
+template<class T>
+inline fadbad::F<T> clamp(const fadbad::F<T>& x, const fadbad::F<T>& lo, const fadbad::F<T>& hi) {
+  return min(max(x, lo), hi);
 }
 
 } // namespace fadbad
