@@ -1345,6 +1345,11 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
   }
   if (!is.null(py_hess)) names(py_hess) <- names(sym_hess)
 
+  # Warn if file already exists
+  if (file.exists(file.path(outdir, paste0(modelname, ".cpp")))) {
+    message("Overwriting existing file: ", normalizePath(file.path(outdir, paste0(modelname, ".cpp")), winslash = "/", mustWork = FALSE))
+  }
+
   codegen$generate_fun_cpp(
     exprs      = exprs_list,
     variables  = if (length(variables)  > 0) variables  else list(),
