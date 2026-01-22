@@ -86,8 +86,54 @@ def _safe_sympify(expr_str, local_symbols=None):
 
 
 def _safe_replace(text, symbol, replacement):
-    pattern = r"\b" + re.escape(symbol) + r"\b"
+    # Use negative lookahead to avoid matching symbols that are already array-indexed.
+    # This prevents replacing 'x' in 'x[0]' when we want to replace the symbol 'x'.
+    # The pattern ensures:
+    # - Not preceded by alphanumeric or underscore (word boundary before)
+    # - Not followed by alphanumeric, underscore, or '[' (word boundary after, plus array check)
+    pattern = r"(?<![a-zA-Z0-9_])" + re.escape(symbol) + r"(?![a-zA-Z0-9_\[])"
     return re.sub(pattern, replacement, str(text))
+
+
+def _ensure_double_literals(cpp_code):
+    """
+    Convert integer literals to double literals in C++ code.
+    
+    This fixes issues with std::max/std::min template argument deduction
+    where mixing int and double arguments causes compilation errors.
+    E.g., std::max(0, x[1]) fails but std::max(0.0, x[1]) works.
+    
+    The function uses a two-pass approach:
+    1. Temporarily replace scientific notation with placeholders
+    2. Convert remaining integers to doubles
+    3. Restore scientific notation
+    
+    This avoids converting numbers like 1e-5 incorrectly.
+    """
+    # Match scientific notation: digits, optionally with decimal, 
+    # followed by e/E and optional sign and digits
+    sci_pattern = r'(\d+\.?\d*[eE][+-]?\d+)'
+    
+    # Store all scientific notation numbers
+    sci_numbers = []
+    def store_sci(match):
+        sci_numbers.append(match.group(0))
+        return f'__SCI_PLACEHOLDER_{len(sci_numbers)-1}__'
+    
+    # Replace scientific notation with placeholders
+    temp = re.sub(sci_pattern, store_sci, cpp_code)
+    
+    # Convert integers (not preceded by identifier chars or '[', not followed by digits, '.', or ']')
+    # This converts: 0, 1, 42
+    # But NOT: x[0], 3.14, array[123]
+    int_pattern = r'(?<![a-zA-Z0-9_.\[])(\d+)(?![0-9.\]])'
+    temp = re.sub(int_pattern, lambda m: m.group(1) + '.0', temp)
+    
+    # Restore scientific notation
+    for i, sci in enumerate(sci_numbers):
+        temp = temp.replace(f'__SCI_PLACEHOLDER_{i}__', sci)
+    
+    return temp
 
 
 # =====================================================================
@@ -125,6 +171,9 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None):
 
     cpp_code = _safe_replace(cpp_code, "time", "t")
     cpp_code = re.sub(r"\s+", "", cpp_code)
+    
+    # Convert integer literals to double literals to avoid C++ template deduction issues
+    cpp_code = _ensure_double_literals(cpp_code)
 
     return cpp_code
 

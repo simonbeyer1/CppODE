@@ -25,6 +25,47 @@ from io import StringIO
 # Safe parsing configuration (cached)
 # =====================================================================
 
+def _ensure_double_literals(cpp_code):
+    """
+    Convert integer literals to double literals in C++ code.
+    
+    This fixes issues with std::max/std::min template argument deduction
+    where mixing int and double arguments causes compilation errors.
+    E.g., std::max(0, x[1]) fails but std::max(0.0, x[1]) works.
+    
+    The function uses a two-pass approach:
+    1. Temporarily replace scientific notation with placeholders
+    2. Convert remaining integers to doubles
+    3. Restore scientific notation
+    
+    This avoids converting numbers like 1e-5 incorrectly.
+    """
+    # Match scientific notation: digits, optionally with decimal, 
+    # followed by e/E and optional sign and digits
+    sci_pattern = r'(\d+\.?\d*[eE][+-]?\d+)'
+    
+    # Store all scientific notation numbers
+    sci_numbers = []
+    def store_sci(match):
+        sci_numbers.append(match.group(0))
+        return f'__SCI_PLACEHOLDER_{len(sci_numbers)-1}__'
+    
+    # Replace scientific notation with placeholders
+    temp = re.sub(sci_pattern, store_sci, cpp_code)
+    
+    # Convert integers (not preceded by identifier chars or '[', not followed by digits, '.', or ']')
+    # This converts: 0, 1, 42
+    # But NOT: x[0], 3.14, array[123]
+    int_pattern = r'(?<![a-zA-Z0-9_.\[])(\d+)(?![0-9.\]])'
+    temp = re.sub(int_pattern, lambda m: m.group(1) + '.0', temp)
+    
+    # Restore scientific notation
+    for i, sci in enumerate(sci_numbers):
+        temp = temp.replace(f'__SCI_PLACEHOLDER_{i}__', sci)
+    
+    return temp
+
+
 @lru_cache(maxsize=1)
 def _get_safe_parse_dict_cached():
     """
@@ -179,6 +220,9 @@ class CodeGenContext:
         for pattern, replacement in self.compiled_patterns:
             cpp_code = pattern.sub(replacement, cpp_code)
         
+        # Convert integer literals to double literals to avoid C++ template deduction issues
+        cpp_code = _ensure_double_literals(cpp_code)
+        
         self._expr_cache[cache_key] = cpp_code
         return cpp_code
     
@@ -277,7 +321,7 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     # Check if file exists and warn
     if os.path.exists(filename):
         abs_path = os.path.abspath(filename)
-        print(f"⚠ Overwriting existing file: {abs_path}")
+        print(f"âš  Overwriting existing file: {abs_path}")
     
     with open(filename, "w") as f:
         f.write(cpp_code)
