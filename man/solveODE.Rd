@@ -11,11 +11,11 @@ solveODE(
   forcings = NULL,
   abstol = 1e-06,
   reltol = 1e-06,
-  maxprogress = 100L,
+  maxprogress = 10L,
   maxsteps = 1000000L,
   hini = 0,
   roottol = 1e-06,
-  maxroot = 100L
+  maxroot = 10L
 )
 }
 \arguments{

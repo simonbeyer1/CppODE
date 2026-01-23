@@ -6,31 +6,30 @@
 #'
 #' \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' using [**Boost.Odeint's**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
-#' stiff Rosenbrock4 method with dense output and error control (using third order in combination).
-#' The solver supports **time-based** and **root-triggered events** and can, optionally,
-#' compute **first- and second-order sensitivities** by evaluating the *same system* with
-#' **dual number** types provided by
-#' [**FADBAD++**](https://uning.dk/fadbad.html).
+#' using the stiff Rosenbrock4 method with dense output and error control (third-order
+#' error estimation) as implemented in \pkg{Boost.Odeint}.
+#' The solver supports \strong{time-based} and \strong{root-triggered events} and can,
+#' optionally, compute \strong{first- and second-order sensitivities} by evaluating the
+#' same system using \strong{dual number} types provided by \pkg{FADBAD++}.
 #'
 #' ## Sensitivity Computation
 #'
 #' If `deriv = TRUE`, all state variables and parameters are represented as
-#' [**dual numbers**](https://en.wikipedia.org/wiki/Dual_number) of type `F<double>`.
+#' \href{https://en.wikipedia.org/wiki/Dual_number}{dual numbers} of type `F<double>`.
 #' The ODE right-hand side \eqn{f} is evaluated on these dual numbers; due to the chain rule
-#' encoded in dual number arithmetic, the **derivative components propagate automatically**
+#' encoded in dual number arithmetic, derivative components propagate automatically
 #' through every operation in \eqn{f}. Consequently, the numerical integration solves
-#' *exactly the same* initial value problem, only over the dual number algebra
-#' \eqn{\mathbb{D}}, yielding both the state trajectories and their first derivatives
+#' exactly the same initial value problem, but over the dual number algebra
+#' \eqn{\mathbb{D}}, yielding both state trajectories and their first derivatives
 #' in a single pass.
 #'
 #' If `deriv2 = TRUE` (which implies `deriv = TRUE`), nested dual numbers
-#' `F<F<double>>` are used. This allows the evaluation of \eqn{f} over the
-#' second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing **second-order
-#' sensitivities** directly through nested automatic differentiation.
+#' `F<F<double>>` are used. This evaluates \eqn{f} over the second-order dual algebra
+#' \eqn{\mathbb{D} \otimes \mathbb{D}} and yields second-order sensitivities directly
+#' through nested automatic differentiation.
 #'
-#' Fixed initial conditions or parameters (listed in `fixed`) are created as plain scalars
-#' and therefore do **not** contribute sensitivity components.
+#' Fixed initial conditions or parameters listed in `fixed` are created as plain scalars
+#' and therefore do not contribute sensitivity components.
 #'
 #' If both `deriv = FALSE` and `deriv2 = FALSE`, plain doubles are used and no sensitivities
 #' are produced.
@@ -39,95 +38,89 @@
 #'
 #' Events are specified in a `data.frame` with the following columns:
 #'
-#' | Column | Description |
-#' |:--|:--|
-#' | `var` | Name of the affected variable |
-#' | `value` | Numeric value to apply at the event |
-#' | `method` | How the value is applied: `"replace"`, `"add"`, or `"multiply"` |
-#' | `time` | *(optional)* Time point at which the event occurs |
-#' | `root` | *(optional)* Root expression in terms of variables and `time` |
+#' \tabular{ll}{
+#' \strong{Column} \tab \strong{Description} \cr
+#' `var` \tab Name of the affected variable \cr
+#' `value` \tab Numeric value to apply at the event \cr
+#' `method` \tab How the value is applied: `"replace"`, `"add"`, or `"multiply"` \cr
+#' `time` \tab Optional time point at which the event occurs \cr
+#' `root` \tab Optional root expression in terms of variables and `time` \cr
+#' }
 #'
-#' Each event must define either `time` or `root`.
-#' Root-triggered events fire when the `root` expression crosses zero.
+#' Each event row must specify exactly one of `time` or `root`
+#' (one must be provided and the other must be `NA`).
+#' Root-triggered events fire when the corresponding `root` expression crosses zero.
 #'
-#' ## Root function (rootfunc)
+#' ## Root function (`rootfunc`)
 #'
-#' The `rootfunc` argument enables integration termination based on root-finding:
+#' The `rootfunc` argument enables termination of the integration based on root finding:
 #'
-#' - **`"equilibrate"`**: Stops integration when the system reaches steady state.
-#'   The steady-state condition checks that all derivatives (including sensitivities
-#'   when `deriv = TRUE` or `deriv2 = TRUE`) fall below the `roottol` tolerance.
-#'   This is useful for equilibrating systems before further analysis.
-#'
-#' - **Character vector of expressions**: Similar to deSolve's `rootfunc`, you can
-#'   specify one or more expressions (e.g., `"x - 0.5"` or `c("x - 0.5", "y - 1")`).
-#'   Integration stops when any expression crosses zero. Variables, parameters, and
-#'   `time` can be used in expressions.
+#' \itemize{
+#' \item \strong{`"equilibrate"`}: Stops integration when the system reaches a numerical
+#'   steady state, defined by all time derivatives (including sensitivities when
+#'   `deriv = TRUE` or `deriv2 = TRUE`) falling below the tolerance `roottol`.
+#' \item Character vector of expressions: One or more expressions (e.g. `"x - 0.5"`
+#'   or `c("x - 0.5", "y - 1")`). Integration stops when any expression crosses zero.
+#'   Variables, parameters, and `time` may be used in these expressions.
+#' }
 #'
 #' ## Output
 #'
 #' The generated solver function (accessible via `.Call`) returns a named list:
 #'
-#' - `deriv = FALSE`, `deriv2 = FALSE`
-#'   Returns `list(time, variable)`
-#'   - `time`: numeric vector of length \eqn{n_t}
-#'   - `variable`: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_t,n_x)}, containing \eqn{x_j(t_i)}
+#' \itemize{
+#' \item `deriv = FALSE`, `deriv2 = FALSE`:
+#'   \itemize{
+#'   \item `time`: numeric vector of length \eqn{n_t}
+#'   \item `variable`: numeric matrix of dimension \eqn{(n_t, n_x)} containing
+#'     \eqn{x_j(t_i)}
+#'   }
 #'
-#' - `deriv = TRUE`, `deriv2 = FALSE`
-#'   Returns `list(time, variable, sens1)`
-#'   - `sens1`: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_t,n_x,n_s)}, containing
-#'     \eqn{\partial x_j(t_i)/\partial p_k}
+#' \item `deriv = TRUE`, `deriv2 = FALSE`:
+#'   \itemize{
+#'   \item `time`
+#'   \item `variable`
+#'   \item `sens1`: numeric array of dimension \eqn{(n_t, n_x, n_s)} containing
+#'     \eqn{\partial x_j(t_i) / \partial p_k}
+#'   }
 #'
-#' - `deriv = TRUE`, `deriv2 = TRUE`
-#'   Returns `list(time, variable, sens1, sens2)`
-#'   - `sens2`: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_t,n_x,n_s,n_s)},
-#'     containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
+#' \item `deriv = TRUE`, `deriv2 = TRUE`:
+#'   \itemize{
+#'   \item `time`
+#'   \item `variable`
+#'   \item `sens1`
+#'   \item `sens2`: numeric array of dimension \eqn{(n_t, n_x, n_s, n_s)} containing
+#'     \eqn{\partial^2 x_j(t_i) / \partial p_k\,\partial p_l}
+#'   }
+#' }
+#'
+#' Sensitivities are returned only with respect to non-fixed initial conditions and
+#' parameters, in the order given by `attr(model, "dim_names")$sens`.
 #'
 #' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
-#' variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
+#' variables, and \eqn{n_s} the number of sensitivity parameters.
 #'
 #' @param rhs Named character vector of ODE right-hand sides; names must correspond to variables.
-#' @param events Optional `data.frame` describing events (see **Events**). Default: `NULL`.
+#' @param events Optional `data.frame` describing events (see \strong{Event handling}).
 #' @param rootfunc Optional root function specification for integration termination.
-#'   Either `"equilibrate"` for steady-state detection, or a character vector of
-#'   expressions that trigger termination when crossing zero. Default: `NULL`.
 #' @param forcings Character vector of forcing function names used in `rhs`.
 #' @param fixed Character vector of fixed initial conditions or parameters (excluded from sensitivities).
-#' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
-#' @param modelname Optional base name for the generated C++ source file
-#'   \emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
-#'   as well as the resulting shared library.
-#'   If \code{NULL}, a random identifier is used.
-#' @param outdir Directory where generated C++ source files are written. Defaults to `tempdir()`.
-#' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
-#' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers; requires `deriv = TRUE`.
-#' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector including derivatives. If `FALSE`, use only the value components for error control.
-#' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
-#' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
-#' @param verbose Logical. If `TRUE`, print progress messages.
+#' @param compile Logical; if `TRUE`, compiles and loads the generated C++ code.
+#' @param modelname Optional base name for the generated C++ source file and symbols.
+#' @param outdir Directory where generated C++ source files are written.
+#' @param deriv Logical; if `TRUE`, enable first-order sensitivities via dual numbers.
+#' @param deriv2 Logical; if `TRUE`, enable second-order sensitivities; requires `deriv = TRUE`.
+#' @param fullErr Logical; if `TRUE`, compute error estimates using the full state vector.
+#' @param includeTimeZero Logical; if `TRUE`, ensure that time zero is included.
+#' @param useDenseOutput Logical; if `TRUE`, use dense output (Hermite interpolation).
+#' @param verbose Logical; if `TRUE`, print progress messages.
 #'
 #' @return
-#' The compiled model name (character).
-#' The returned object carries a set of attributes that describe the compiled solver
-#' and its symbolic structure:
-#'
-#' | Attribute | Type | Description |
-#' |:--|:--|:--|
-#' | `equations` | `character` | ODE right-hand side definitions |
-#' | `variables` | `character` | Names of the dynamic state variables |
-#' | `parameters` | `character` | Names of model parameters |
-#' | `events` | `data.frame` | Table of event specifications (if any) |
-#' | `rootfunc` | `character` | Root function specification (if any) |
-#' | `solver` | `list` | Description of the numerical solver configuration |
-#' | `fixed` | `character` | Names of fixed initial conditions or parameters |
-#' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
-#' | `deriv` | `logical` | Indicates whether first-order sensitivities (dual numbers) were used |
-#' | `deriv2` | `logical` | Indicates whether nested dual numbers were used for second-order sensitivities |
-#' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
+#' The compiled model name (character), carrying attributes that describe the compiled
+#' solver and its symbolic structure.
 #'
 #' @example inst/examples/example_ODE.R
-#' @importFrom stats setNames
-#' @seealso [solveODE()] for a solver interface of compiled models
+#' @seealso \code{\link{solveODE}}
 #' @export
 CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
@@ -152,6 +145,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # Collect all expressions for symbol extraction
   all_expressions <- rhs
   if (!is.null(events)) {
+    bad <- which(!xor(!is.na(events$time), !is.na(events$root)))
+    if (length(bad) > 0) {
+      stop(
+        sprintf(
+          "Each event must define exactly one of 'time' or 'root'. Invalid event(s): %s",
+          paste(bad, collapse = ", ")
+        )
+      )
+    }
     all_expressions <- c(all_expressions,
                          events$value,
                          if ("time" %in% names(events)) events$time,
@@ -478,7 +480,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                sprintf("  std::vector<%s> y;", numType),
                "",
                "  // --- Event containers ---",
-               sprintf("  std::vector<FixedEvent<%s>> fixed_events;", numType),
+               sprintf("  std::vector<FixedEvent<ublas::vector<%s>, %s>> fixed_events;", numType, numType),
                sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
   )
 
@@ -939,8 +941,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @export
 solveODE <- function(model, times, parms, forcings = NULL,
                      abstol = 1e-6, reltol = 1e-6,
-                     maxprogress = 100L, maxsteps = 1e6L,
-                     hini = 0, roottol = 1e-6, maxroot = 100L) {
+                     maxprogress = 10L, maxsteps = 1e6L,
+                     hini = 0, roottol = 1e-6, maxroot = 10L) {
 
   ## --- Model validation ---
   if (!is.character(model) || length(model) != 1L) {

@@ -20,6 +20,8 @@
  - FADBAD++ automatic differentiation support
  - Root tracking and fire count management
  - Dense output optimization for root-finding
+ - **Simultaneous root events**: Multiple events with the same or similar
+ root conditions are now detected and applied together efficiently.
  */
 
 #ifndef CPPODE_INTEGRATE_TIMES_WITH_EVENTS_HPP_INCLUDED
@@ -38,6 +40,8 @@
  * - **Fixed-time events**: Trigger state modifications at predetermined times
  * - **Root-finding events**: Detect zero-crossings of user-defined functions
  *   and trigger state modifications when roots are found
+ * - **Simultaneous root events**: Multiple events triggered by the same root
+ *   condition are detected and applied together in a single pass
  * - **Root localization**: Bisection-based refinement to locate roots with
  *   configurable tolerance
  * - **Dual stepper support**: Works with both controlled steppers (try_step)
@@ -45,56 +49,7 @@
  * - **AD compatibility**: Full support for nested automatic differentiation
  *   types (fadbad::F<F<...>>) through scalar_value unwrapping
  *
- * @section usage Usage
- *
- * @code{.cpp}
- * // Define fixed events (e.g., dosing at specific times)
- * std::vector<FixedEvent<double>> fixed_events = {
- *     {10.0, 0, 1.0, EventMethod::Add},  // Add 1.0 to state[0] at t=10
- * };
- *
- * // Define root events (e.g., trigger when state crosses threshold)
- * std::vector<RootEvent<state_type, double>> root_events = {
- *     {[](const state_type& x, double t) { return x[0] - 0.5; },
- *      0, 1.0, EventMethod::Replace}  // Replace state[0] with 1.0 when x[0]=0.5
- * };
- *
- * // Integrate with events
- * StepChecker checker;
- * integrate_times(stepper, system, x, times.begin(), times.end(), dt,
- *                 observer, fixed_events, root_events, checker);
- * @endcode
- *
- * @section compatibility Stepper Compatibility
- *
- * The engine automatically adapts to different stepper types:
- *
- * - **rosenbrock4_controller_pi**: Uses reset_after_event(dt) for reinitialization
- * - **rosenbrock4_dense_output_pi**: Uses reinitialize_at_event(x,t,dt) for full reset
- * - **Standard Odeint steppers**: Fallback behavior (no special reset needed)
- *
- * @section algorithm Algorithm Overview
- *
- * **Controlled Stepper Mode:**
- * 1. Merge user output times with fixed event times
- * 2. Integrate adaptively between time points
- * 3. After each step, check for root crossings (sign changes)
- * 4. On detection, use bisection with re-integration to localize
- * 5. Apply event and reset stepper state
- *
- * **Dense Output Mode:**
- * 1. Merge user output times with fixed event times
- * 2. Take large steps with dense output
- * 3. Interpolate at output times
- * 4. Check for root crossings using interpolated states
- * 5. Use bisection with interpolation for efficient localization
- * 6. Apply event and reinitialize stepper
- *
- * @author Simon Beyer <simon.beyer@fdm.uni-freiburg.de>
- * @date December 22, 2025
- *
- * @see boost::numeric::odeint for the underlying integration framework
- * @see fadbad++ for automatic differentiation support
+ * @author Simon Beyer
  */
 
 #include <vector>
@@ -122,16 +77,6 @@ namespace detail {
 
 /**
  * @brief Extract the underlying scalar value from arithmetic types
- *
- * Base case for the scalar_value template recursion. Simply returns
- * the input value when it's already an arithmetic type (double, float, int).
- *
- * @tparam T Arithmetic type (std::is_arithmetic<T>::value == true)
- * @param v The value to extract
- * @return The input value as a double
- *
- * @note This function is used in root-finding and time comparisons to
- *       extract numeric values from potentially AD-enhanced types
  */
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
@@ -142,26 +87,6 @@ scalar_value(const T& v)
 
 /**
  * @brief Extract the underlying scalar value from FADBAD++ AD types
- *
- * Recursively unwraps nested fadbad::F<T> types to extract the underlying
- * scalar value. This enables seamless comparison and root-finding operations
- * on AD-enhanced state variables.
- *
- * @tparam T The inner type (may be another fadbad::F or a scalar)
- * @param v The AD value to unwrap
- * @return The underlying scalar value as a double
- *
- * @note Uses const_cast to call non-const x() method; this is safe as
- *       we only read the value
- *
- * @par Example
- * @code
- * fadbad::F<double> x = 3.14;
- * double val = scalar_value(x);  // Returns 3.14
- *
- * fadbad::F<fadbad::F<double>> y;  // Nested AD type
- * double val2 = scalar_value(y);   // Recursively extracts value
- * @endcode
  */
 template<class T>
 inline double scalar_value(const fadbad::F<T>& v)
@@ -175,191 +100,77 @@ inline double scalar_value(const fadbad::F<T>& v)
 
 /**
  * @brief Enumeration of event application methods
- *
- * Defines how an event modifies the target state variable when triggered.
- * These methods cover the most common event types in pharmacokinetic
- * and dynamical systems modeling.
  */
 enum class EventMethod {
-  Replace,   ///< Replace: x[i] = value (e.g., reset to baseline)
-  Add,       ///< Add: x[i] += value (e.g., instantaneous dose)
-  Multiply   ///< Multiply: x[i] *= value (e.g., fractional change)
+  Replace,   ///< Replace: x[i] = value
+  Add,       ///< Add: x[i] += value
+  Multiply   ///< Multiply: x[i] *= value
 };
 
 /**
  * @brief Fixed-time event specification
- *
- * Represents an event that triggers at a predetermined time point.
- * When the integration reaches the specified time, the event modifies
- * a state variable according to the specified method.
- *
- * Fixed-time events are exact - they always trigger at the specified
- * time regardless of the integration step size.
- *
- * @tparam value_type The numeric type for time and value (supports AD types)
- *
- * @par Example: Pharmacokinetic Dosing
- * @code{.cpp}
- * // Oral dose of 100mg at t=0 and t=12 hours
- * std::vector<FixedEvent<double>> doses = {
- *     {0.0,  0, 100.0, EventMethod::Add},   // First dose
- *     {12.0, 0, 100.0, EventMethod::Add}    // Second dose
- * };
- * @endcode
  */
-template<class value_type>
+template<class state_type, class value_type>
 struct FixedEvent {
-  value_type  time;         ///< Time at which the event triggers
-  int         state_index;  ///< Index of the state variable to modify (0-based)
-  value_type  value;        ///< Value to apply (interpretation depends on method)
-  EventMethod method;       ///< How to apply the value (Replace/Add/Multiply)
+  value_type  time;
+  int         state_index;
+  std::function<value_type(const state_type&, const value_type&)> value_func;
+  EventMethod method;
 };
 
 /**
  * @brief Root-finding event specification
- *
- * Represents an event that triggers when a user-defined function crosses zero.
- * The engine monitors the function value during integration and triggers the
- * event when a sign change is detected, using bisection to localize the root.
- *
- * Root events enable modeling of state-dependent phenomena like:
- * - Threshold crossings (drug concentration below MIC)
- * - Peak detection (derivative crosses zero)
- * - Collision detection (distance function crosses zero)
- * - Phase transitions (energy below threshold)
- * - **Steady-state detection** (all derivatives below tolerance)
- *
- * @tparam state_type The ODE state vector type
- * @tparam time_type The time variable type
  */
 template<class state_type, class time_type>
 struct RootEvent {
   using value_t = typename state_type::value_type;
 
-  /**
-   * @brief Root function: f(x,t) = 0 at event time
-   *
-   * The function should:
-   * - Return a continuous value that changes sign at the event
-   * - Be relatively smooth near the root for efficient localization
-   * - Avoid returning exactly zero to prevent numerical issues
-   *
-   * @param x Current state vector
-   * @param t Current time
-   * @return Function value (event triggers when sign changes)
-   */
   std::function<value_t(const state_type&, const time_type&)> func;
-
-  int         state_index;  ///< Index of the state variable to modify
-  value_t     value;        ///< Value to apply when event triggers
-  EventMethod method;       ///< How to apply the value (Replace/Add/Multiply)
-
-  /**
-   * @brief Whether this event terminates integration
-   *
-   * If true, integration stops immediately after this event fires.
-   * Useful for steady-state detection or other termination conditions.
-   * Default: false (integration continues after event)
-   */
+  int         state_index;
+  std::function<value_t(const state_type&, const time_type&)> value_func;
+  EventMethod method;
   bool terminal = false;
-
-  /**
-   * @brief Direction of zero-crossing to detect
-   *
-   * Controls which direction of sign change triggers the event:
-   * -  0: Trigger on any sign change (both directions)
-   * - -1: Trigger only when function decreases through zero (+ to -)
-   * - +1: Trigger only when function increases through zero (- to +)
-   *
-   * For steady-state detection, use direction = -1 to trigger when
-   * the rate norm falls below the tolerance (goes from positive to "negative").
-   *
-   * Default: 0 (any direction)
-   */
   int direction = 0;
 };
 
 //==============================================================================
-// Section 3: Event Application
+// Section 3: Helper Structures for Simultaneous Events
 //==============================================================================
 
 /**
- * @brief Check if a sign change matches the specified direction
+ * @brief Information about a triggered root event (for batch processing)
  *
- * @param last_val Previous function value
- * @param curr_val Current function value
- * @param direction Direction filter: 0 = any, -1 = falling, +1 = rising
- * @return true if the crossing matches the direction criterion
+ * This structure holds all information needed to process a triggered event,
+ * allowing multiple events to be collected and processed together.
+ */
+struct TriggeredEvent {
+  size_t index;        ///< Index in the root events vector
+  double last_val;     ///< Function value before crossing
+  double curr_val;     ///< Function value after crossing
+};
+
+/**
+ * @brief Check if a sign change matches the specified direction
  */
 inline bool direction_matches(double last_val, double curr_val, int direction)
 {
   if (direction == 0) {
-    // Any direction
     return true;
   }
   else if (direction < 0) {
-    // Falling: last > 0 and curr < 0
     return last_val > 0.0 && curr_val < 0.0;
   }
   else {
-    // Rising: last < 0 and curr > 0
     return last_val < 0.0 && curr_val > 0.0;
   }
 }
 
 //==============================================================================
-// Section 3b: Steady-State Root Function Factory
+// Section 4: Steady-State Root Function Factory
 //==============================================================================
 
 /**
  * @brief Create a root function for steady-state detection
- *
- * Returns a function that evaluates to (max_rate - tol), where max_rate
- * is the maximum absolute value of dx/dt across all state components AND
- * all sensitivity levels (for automatic differentiation types).
- *
- * The returned function:
- * - Is positive when the system is NOT at steady state
- * - Crosses zero when max|dx/dt| = tol
- * - Is negative when the system IS at steady state
- *
- * When used with direction = -1, this triggers exactly when the system
- * transitions from non-steady to steady state.
- *
- * @tparam System The ODE system type (callable: void(x, dxdt, t))
- * @tparam State The state vector type
- * @tparam Time The time type
- *
- * @param sys The ODE system
- * @param tol Tolerance for steady-state (triggers when max|dx/dt| < tol)
- * @return A root function suitable for use in RootEvent
- *
- * @par Example Usage
- * @code
- * auto sys = MyODESystem();
- * double ss_tol = 1e-8;
- *
- * auto ss_root_func = make_steady_state_root_func<decltype(sys), state_type, double>(
- *     sys, ss_tol);
- *
- * RootEvent<state_type, double> ss_event{
- *     ss_root_func,
- *     0,                      // state_index (ignored for terminal)
- *     0.0,                    // value (ignored for terminal)
- *     EventMethod::Replace,   // method (ignored for terminal)
- *     true,                   // terminal = true: stop integration
- *     -1                      // direction = -1: trigger when rate falls below tol
- * };
- *
- * root_events.push_back(ss_event);
- * @endcode
- *
- * @note The function captures `sys` by reference, so the system must
- *       remain valid for the lifetime of the root function.
- *
- * @note For nested AD types (F<F<double>>), this checks ALL derivative
- *       levels, ensuring that both states AND sensitivities have reached
- *       steady state.
  */
 template<class System, class State, class Time>
 auto make_steady_state_root_func(System& sys, double tol)
@@ -367,43 +178,19 @@ auto make_steady_state_root_func(System& sys, double tol)
   return [&sys, tol](const State& x, const Time& t) ->
     typename State::value_type
     {
-      // Compute dx/dt
       State dxdt(x.size());
       sys(x, dxdt, t);
-
-      // Get max |dx/dt| across all components and all AD levels
       double max_rate = cppode::max_abs_all_levels_vec(dxdt);
-
-      // Return (max_rate - tol):
-      //   > 0 when not steady
-      //   < 0 when steady
-      // This creates a falling zero-crossing when steady state is reached
       return typename State::value_type(max_rate - tol);
     };
 }
 
 //==============================================================================
-// Section 4: Event Application
+// Section 5: Event Application
 //==============================================================================
 
 /**
  * @brief Apply an event modification to a state vector
- *
- * Modifies a single element of the state vector according to the
- * specified method (Replace, Add, or Multiply).
- *
- * @tparam state_type The ODE state vector type
- * @param x The state vector to modify (modified in place)
- * @param idx Index of the state element to modify (0-based)
- * @param v Value to apply
- * @param method How to apply the value
- *
- * @note For AD types, this operation preserves derivative information:
- * @code
- * // If x[idx] has derivatives w.r.t. parameters
- * x[idx] += dose;  // Derivatives are preserved
- * // New sensitivity: d(x[idx] + dose)/dp = dx[idx]/dp + d(dose)/dp
- * @endcode
  */
 template<class state_type>
 inline void apply_event(
@@ -421,32 +208,19 @@ inline void apply_event(
 
 /**
  * @brief Apply all fixed events scheduled for a specific time
- *
- * Iterates through the fixed event list and applies any events whose
- * trigger time matches the current time. Uses exact floating-point
- * comparison on scalar values (after AD unwrapping).
- *
- * @tparam state_type The ODE state vector type
- * @tparam Time The time type (may be AD-enhanced)
- * @param x The state vector to modify (modified in place)
- * @param t Current integration time
- * @param evs Vector of fixed events to check
- * @return true if at least one event was applied, false otherwise
- *
- * @note Multiple events at the same time are applied in order
  */
 template<class state_type, class Time>
 bool apply_fixed_events_at_time(
     state_type& x,
     const Time& t,
-    const std::vector<FixedEvent<typename state_type::value_type>>& evs)
+    const std::vector<FixedEvent<state_type, typename state_type::value_type>>& evs)
 {
   const double tt = scalar_value(t);
   bool fired = false;
 
   for (const auto& e : evs) {
     if (scalar_value(e.time) == tt) {
-      apply_event(x, e.state_index, e.value, e.method);
+      apply_event(x, e.state_index, e.value_func(x, t), e.method);
       fired = true;
     }
   }
@@ -455,49 +229,27 @@ bool apply_fixed_events_at_time(
 }
 
 //==============================================================================
-// Section 4: Time Point Management
+// Section 6: Time Point Management
 //==============================================================================
 
 /**
  * @brief Merge user-requested output times with fixed event times
- *
- * Creates a sorted, deduplicated vector of all time points where the
- * integrator needs to stop: both user-requested output times and
- * fixed event trigger times.
- *
- * This ensures that:
- * - Integration stops exactly at event times
- * - Observer is called at both output and event times
- * - No event is missed due to step-size adaptation
- *
- * @tparam Time The time type for output
- * @tparam It Iterator type for user times
- * @tparam V Value type of fixed events
- * @param ubegin Iterator to first user time
- * @param uend Iterator past last user time
- * @param fix Vector of fixed events
- * @return Sorted vector of unique time points
- *
- * @note Duplicates are removed to avoid redundant observer calls
  */
-template<class Time, class It, class V>
+template<class Time, class It, class state_type, class V>
 std::vector<Time> merge_user_and_event_times(
     It ubegin, It uend,
-    const std::vector<FixedEvent<V>>& fix)
+    const std::vector<FixedEvent<state_type, V>>& fix)
 {
-  // Collect all time points
   std::vector<Time> out(ubegin, uend);
   for (const auto& e : fix) {
     out.push_back(e.time);
   }
 
-  // Sort by scalar value (handles AD types correctly)
   std::sort(out.begin(), out.end(),
             [](auto& a, auto& b) {
               return scalar_value(a) < scalar_value(b);
             });
 
-  // Remove duplicates (preserves sorted order)
   out.erase(std::unique(out.begin(), out.end(),
                         [](auto& a, auto& b) {
                           return scalar_value(a) == scalar_value(b);
@@ -508,116 +260,50 @@ std::vector<Time> merge_user_and_event_times(
 }
 
 //==============================================================================
-// Section 5: Stepper Reset Dispatch
+// Section 7: Stepper Reset Dispatch
 //==============================================================================
 
 /**
  * @brief Unified stepper reset after discontinuous events
- *
- * Uses C++20 concepts (via requires expressions) to detect and call
- * the appropriate reset method for different stepper types.
- *
- * **Dispatch Logic:**
- * 1. If stepper has `reset_after_event(dt)` â†’ call it
- *    (controlled steppers: rosenbrock4_controller_pi)
- * 2. Else if stepper has `reinitialize_at_event(x, t, dt)` â†’ call it
- *    (dense output steppers: rosenbrock4_dense_output_pi)
- * 3. Else â†’ no-op (standard Boost steppers don't need reset)
- *
- * @tparam S Stepper type
- * @tparam State State vector type
- * @tparam Time Time type
- * @param st The stepper instance
- * @param x Current state (used for dense output reinitialization)
- * @param t Current time
- * @param dt Reference to step size (may be modified by reset)
- *
- * @note This function is called automatically after every event application
- *       to ensure clean continuation of integration
- *
- * @par Why Reset is Necessary
- * Events cause state discontinuities, which invalidate:
- * - Error estimates (based on smooth evolution)
- * - Step-size history (used in PI control)
- * - Dense output coefficients (interpolation data)
- * - Derivative tracking (for AD types)
- *
- * Resetting clears this stale information and prevents
- * spurious step rejections or inaccurate interpolation.
  */
 template<class S, class State, class Time>
 inline void reset_stepper_unified(S& st, State& x, Time t, Time& dt)
 {
   if constexpr (requires { st.reset_after_event(dt); }) {
-    // Controlled stepper with event reset support
-    // Clears error history and step-size memory
     st.reset_after_event(dt);
   }
   else if constexpr (requires { st.reinitialize_at_event(x, t, dt); }) {
-    // Dense output stepper with full reinitialization
-    // Resets state buffers and prepares new interpolation interval
     st.reinitialize_at_event(x, t, dt);
   }
   else {
-    // Fallback: stepper doesn't need special reset
-    // Standard Boost steppers work fine without explicit reset
     (void)st; (void)x; (void)t; (void)dt;
   }
 }
 
 //==============================================================================
-// Section 6: Event Engine Core
+// Section 8: Event Engine Core
 //==============================================================================
 
 /**
  * @class EventEngine
- * @brief Core event-aware integration engine
+ * @brief Core event-aware integration engine with simultaneous event support
  *
  * This class implements the main integration loops for both controlled
  * and dense-output steppers, with full support for fixed-time and
- * root-finding events.
+ * root-finding events. **Multiple events with the same root condition
+ * are now detected and applied together efficiently.**
  *
- * **Design Philosophy:**
- * - Separation of concerns: integration logic vs. event detection
- * - Efficiency: use best available method (re-integration vs. interpolation)
- * - Robustness: handle edge cases (multiple roots, events at boundaries)
- * - Generality: work with any conforming stepper type
+ * @section simultaneous Simultaneous Event Handling
  *
- * @tparam Stepper The ODE stepper type
- * @tparam System The ODE system type (callable with signature void(x, dxdt, t))
- * @tparam State The state vector type
- * @tparam Time The time type
+ * When multiple root events have the same (or very similar) trigger condition:
+ * 1. All root functions are evaluated in a single pass
+ * 2. All events with sign changes are collected
+ * 3. Root localization is performed once (using the first triggered event)
+ * 4. All triggered events are applied at the same root time
+ * 5. A single stepper reset is performed
  *
- * @section algorithm Algorithm Overview
- *
- * **Controlled Stepper Mode (process_controlled):**
- * @code
- * 1. For each target time:
- *    a. Take adaptive steps with try_step()
- *    b. After each success:
- *       - Evaluate root functions
- *       - Check for sign changes
- *       - If detected: localize via bisection + re-integration
- *       - Apply event and reset stepper
- *    c. Check for fixed events at target time
- * @endcode
- *
- * **Dense Output Mode (process_dense):**
- * @code
- * 1. Initialize dense output stepper
- * 2. While not finished:
- *    a. Take one large step with do_step()
- *    b. For each output time in [t_old, t_new]:
- *       - Interpolate state with calc_state()
- *       - Check for root crossings
- *       - If detected: localize via bisection + interpolation
- *       - Apply event and reinitialize stepper
- *    c. Check for fixed events
- * @endcode
- *
- * @note The dense output mode is generally more efficient for root-finding
- *       as it can use interpolation instead of re-integration during bisection.
- *       For a root tolerance of 1e-8, interpolation can be 10x faster.
+ * This is more efficient than the naive approach of handling one event,
+ * resetting, and then detecting the next event in a subsequent step.
  */
 template<class Stepper, class System, class State, class Time>
 class EventEngine {
@@ -625,21 +311,10 @@ public:
   using state_type = State;
   using time_type  = Time;
 
-  /**
-   * @brief Construct an EventEngine
-   *
-   * @param st Reference to the stepper (must outlive the engine)
-   * @param sys Reference to the ODE system (must outlive the engine)
-   * @param fixed Vector of fixed-time events
-   * @param root Vector of root-finding events
-   *
-   * @note The engine stores references, so the stepper and system
-   *       must remain valid for the engine's lifetime
-   */
   EventEngine(
     Stepper& st,
     System& sys,
-    const std::vector<FixedEvent<typename State::value_type>>& fixed,
+    const std::vector<FixedEvent<State, typename State::value_type>>& fixed,
     const std::vector<RootEvent<State, Time>>& root)
     : m_st(st)
     , m_sys(sys)
@@ -652,44 +327,7 @@ public:
   //--------------------------------------------------------------------------
 
   /**
-   * @brief Integrate using a controlled (adaptive) stepper with event handling
-   *
-   * This method implements event-aware integration for steppers that provide
-   * try_step() interface (e.g., rosenbrock4_controller_pi). Root localization
-   * is performed by re-integrating with smaller steps during bisection.
-   *
-   * **Root Detection Strategy:**
-   * After each successful step, the engine evaluates all root functions and
-   * compares with the previous value. A sign change indicates a root crossing.
-   * The bisection then uses re-integration to find the exact crossing time.
-   *
-   * **Event Application:**
-   * When a root is found:
-   * 1. Observer is called with state before event
-   * 2. Event is applied to create post-event state
-   * 3. Observer is called with post-event state (t + epsilon)
-   * 4. Stepper is reset to clear stale error history
-   * 5. Integration continues from post-event state
-   *
-   * @tparam Obs Observer type with signature void(const state_type&, time_type)
-   * @tparam Checker Step checker type (e.g., StepChecker for max step limits)
-   *
-   * @param x Initial state (modified to final state on return)
-   * @param times Sorted vector of output times (merged with event times)
-   * @param dt Initial step size suggestion
-   * @param obs Observer called at each output time and event
-   * @param checker Step checker for detecting integration failures
-   * @param root_tol Tolerance for root localization (bisection stops when
-   *                 interval width < root_tol)
-   * @param max_trigger Maximum number of times each root event can fire
-   *                    (prevents infinite loops on chattering)
-   *
-   * @return Total number of successful integration steps taken
-   *
-   * @par Performance Considerations
-   * - Root localization requires re-integration, which can be expensive
-   * - For tight tolerances (< 1e-10), consider using dense output mode
-   * - Multiple roots in one step are handled sequentially
+   * @brief Integrate using a controlled stepper with simultaneous event support
    */
   template<class Obs, class Checker>
   size_t process_controlled(
@@ -713,28 +351,29 @@ public:
       reset_stepper_unified(m_st, x, t, dt);
     }
 
-    // Output initial state
     obs(x, t);
     ++it;
     if (it == end) return 0;
 
     // --- Initialize root tracking ---
-    // last_val: Previous value of each root function (NaN = not yet evaluated)
-    // last_state: State at which last_val was computed
-    // last_time: Time at which last_val was computed
-    // fired: Number of times each root event has triggered
     std::vector<double> last_val(m_root.size(),
                                  std::numeric_limits<double>::quiet_NaN());
     std::vector<State>  last_state(m_root.size(), x);
     std::vector<Time>   last_time(m_root.size(), t);
     std::vector<size_t> fired(m_root.size(), 0);
 
+    // Pre-allocate for triggered events (avoids allocations in hot loop)
+    std::vector<TriggeredEvent> triggered;
+    triggered.reserve(m_root.size());
+
+    // Pre-allocate current values vector
+    std::vector<double> curr_val(m_root.size());
+
     // --- Main integration loop ---
     while (it != end)
     {
       Time t_target = *it;
 
-      // Integrate towards target time
       while (less_with_sign(t, t_target, dt))
       {
         Time dt_step = min_abs(dt, t_target - t);
@@ -746,85 +385,111 @@ public:
           checker.reset();
           dt = dt_step;
 
-          // --- Check for root crossings ---
-          for (size_t i = 0; i < m_root.size(); ++i)
-          {
-            auto fval = m_root[i].func(x, t);
-            double f_now = scalar_value(fval);
+          // === PHASE 1: Evaluate ALL root functions (single pass) ===
+          for (size_t i = 0; i < m_root.size(); ++i) {
+            curr_val[i] = scalar_value(m_root[i].func(x, t));
+          }
 
-            // Detect sign change (root crossing) with direction check
+          // === PHASE 2: Collect ALL triggered events ===
+          triggered.clear();
+          for (size_t i = 0; i < m_root.size(); ++i) {
             if (fired[i] < max_trigger &&
                 !std::isnan(last_val[i]) &&
-                last_val[i] * f_now < 0.0 &&
-                direction_matches(last_val[i], f_now, m_root[i].direction))
+                last_val[i] * curr_val[i] < 0.0 &&
+                direction_matches(last_val[i], curr_val[i], m_root[i].direction))
             {
-              // Localize root via bisection with re-integration
-              localize_root_controlled(
-                i,
-                last_state[i], last_time[i],
-                                        x, t,
-                                        last_val[i], f_now,
-                                        root_tol,
-                                        checker);
+              triggered.push_back({i, last_val[i], curr_val[i]});
+            }
+          }
 
-              // Output state at root (before event)
-              Time t_root = t;
-              obs(x, t_root);
+          // === PHASE 3: Process all triggered events together ===
+          if (!triggered.empty()) {
+            // Use first triggered event for root localization
+            // (all have roots in the same interval)
+            size_t ref_idx = triggered[0].index;
 
-              // Apply event (skip for terminal events where we just want to stop)
-              State x_after = x;
+            // Localize root once
+            localize_root_controlled(
+              ref_idx,
+              last_state[ref_idx], last_time[ref_idx],
+                                            x, t,
+                                            triggered[0].last_val, triggered[0].curr_val,
+                                            root_tol,
+                                            checker);
+
+            Time t_root = t;
+
+            // Output state at root (before any events)
+            obs(x, t_root);
+
+            // Check for terminal events first
+            bool has_terminal = false;
+            for (const auto& te : triggered) {
+              if (m_root[te.index].terminal) {
+                has_terminal = true;
+                break;
+              }
+            }
+
+            // Apply ALL triggered events to the state
+            State x_after = x;
+            for (const auto& te : triggered) {
+              size_t i = te.index;
               if (!m_root[i].terminal) {
                 apply_event(x_after,
                             m_root[i].state_index,
-                            m_root[i].value,
+                            m_root[i].value_func(x, t_root),
                             m_root[i].method);
               }
               fired[i]++;
-
-              // Output state after event (with tiny time offset for plotting)
-              obs(x_after, t_root + Time(1e-15));
-              x = x_after;
-
-              // Check for terminal event - stop integration
-              if (m_root[i].terminal) {
-                return steps;
-              }
-
-              // Reset stepper for clean restart after discontinuity
-              reset_stepper_unified(m_st, x, t, dt);
-
-              // Reset root tracking (keep fired counts to prevent re-triggering)
-              for (size_t j = 0; j < m_root.size(); ++j) {
-                last_val[j] = std::numeric_limits<double>::quiet_NaN();
-                last_state[j] = x;
-                last_time[j] = t;
-              }
-
-              break;  // Exit root loop, continue integration
             }
-            else {
-              // Update tracking for next comparison
-              last_val[i] = f_now;
+
+            // Output state after all events
+            obs(x_after, t_root + Time(1e-15));
+            x = x_after;
+
+            // Terminal check
+            if (has_terminal) {
+              return steps;
+            }
+
+            // Single reset after all events
+            reset_stepper_unified(m_st, x, t, dt);
+
+            // Reset root tracking (keep fired counts)
+            for (size_t j = 0; j < m_root.size(); ++j) {
+              last_val[j] = std::numeric_limits<double>::quiet_NaN();
+              last_state[j] = x;
+              last_time[j] = t;
+            }
+          }
+          else {
+            // No events triggered - update tracking for all
+            for (size_t i = 0; i < m_root.size(); ++i) {
+              last_val[i] = curr_val[i];
               last_state[i] = x;
               last_time[i] = t;
             }
           }
         }
         else {
-          // Step rejected - try again with smaller step
           checker();
           dt = dt_step;
         }
       }
 
-      // Reached target time
       t = t_target;
 
-      // Check for fixed events at this time
       if (apply_fixed_events_at_time(x, t, m_fixed)) {
         obs(x, t);
-        // Reset root tracking after fixed events (may change dynamics)
-        reset_memory(fired, last_val, last_state, last_time, x, t);
+        reset_stepper_unified(m_st, x, t, dt);
+        // Reset root tracking after fixed events
+        for (size_t j = 0; j < m_root.size(); ++j) {
+          last_val[j] = std::numeric_limits<double>::quiet_NaN();
+          last_state[j] = x;
+          last_time[j] = t;
+          fired[j] = 0;
+        }
       }
       else {
         obs(x, t);
@@ -841,55 +506,7 @@ public:
   //--------------------------------------------------------------------------
 
   /**
-   * @brief Integrate using a dense-output stepper with event handling
-   *
-   * This method implements event-aware integration for steppers that provide
-   * dense output (interpolation) capability. Root localization uses the
-   * efficient calc_state() interpolation instead of re-integration.
-   *
-   * **Key Advantages over Controlled Mode:**
-   * - **Efficiency**: Interpolation is much faster than re-integration
-   *   (typical speedup: 10-100x for root localization)
-   * - **Accuracy**: Dense output provides higher-order interpolation
-   *   (cubic Hermite vs. linear for re-integration)
-   * - **Consistency**: All states come from same underlying solution
-   *
-   * **Root Detection Strategy:**
-   * The engine maintains a valid interpolation interval [t_old, t_new].
-   * For each output time in this interval, it interpolates the state and
-   * checks root functions. On sign change, bisection uses interpolation
-   * to find the exact crossing time.
-   *
-   * **Edge Cases Handled:**
-   * 1. Roots between intervals (last_time < t_start)
-   * 2. Multiple output times in one step
-   * 3. Events requiring reinitialization mid-interval
-   *
-   * @tparam Obs Observer type with signature void(const state_type&, time_type)
-   * @tparam Checker Step checker type
-   *
-   * @param x Initial state (modified to final state on return)
-   * @param times Sorted vector of output times (merged with event times)
-   * @param dt Initial step size suggestion
-   * @param obs Observer called at each output time and event
-   * @param checker Step checker for detecting integration failures
-   * @param root_tol Tolerance for root localization
-   * @param max_trigger Maximum triggers per root event
-   *
-   * @return Total number of integration steps taken
-   *
-   * @note After do_step(), the valid interpolation interval is
-   *       [previous_time(), current_time()]. All root localization
-   *       must occur within this interval.
-   *
-   * @par Performance Optimization
-   * Dense output is particularly efficient when:
-   * - Output times are dense relative to natural step size
-   * - Root tolerance is tight (< 1e-8)
-   * - ODE system is expensive to evaluate
-   *
-   * For sparse output (few times per step), controlled mode may be faster
-   * due to overhead of dense output coefficient computation.
+   * @brief Integrate using dense output with simultaneous event support
    */
   template<class Obs, class Checker>
   size_t process_dense(
@@ -907,21 +524,15 @@ public:
     auto it = times.begin();
     auto end = times.end();
 
-    // --- Handle events at initial time ---
     if (apply_fixed_events_at_time(x, *it, m_fixed))
-      ;  // State modified, continue with modified state
+      ;
 
-    // Initialize dense output stepper
     m_st.initialize(x, *it, dt);
-
-    // Output initial state
     obs(x, *it);
     ++it;
     if (it == end) return 0;
 
-    // --- Initialize root tracking with actual function values ---
-    // Unlike controlled mode, we evaluate root functions immediately
-    // to enable detection of roots in the first step
+    // --- Initialize root tracking ---
     std::vector<double> last_val(m_root.size());
     std::vector<State>  last_state(m_root.size(), x);
     std::vector<Time>   last_time(m_root.size(), times.front());
@@ -931,85 +542,98 @@ public:
       last_val[i] = scalar_value(m_root[i].func(x, times.front()));
     }
 
+    // Pre-allocate for triggered events
+    std::vector<TriggeredEvent> triggered;
+    triggered.reserve(m_root.size());
+
+    // Pre-allocate current values
+    std::vector<double> curr_val(m_root.size());
+
     // --- Main integration loop ---
     while (it != end)
     {
-      // Take one integration step (may be large)
       m_st.do_step(m_sys);
       ++steps;
-
       checker();
       checker.reset();
 
-      // Get valid interpolation interval [t_start, t_end]
       Time t_start = m_st.previous_time();
       Time t_end = m_st.current_time();
       dt = m_st.current_time_step();
 
       // --- Check for roots crossing between intervals ---
-      // This handles the case where a root occurs between the last
-      // evaluated point and the start of the new interpolation interval
       State x_at_start = x;
       m_st.calc_state(t_start, x_at_start);
 
-      for (size_t i = 0; i < m_root.size(); ++i)
-      {
-        double f_at_start = scalar_value(m_root[i].func(x_at_start, t_start));
+      // Evaluate all root functions at interval start
+      for (size_t i = 0; i < m_root.size(); ++i) {
+        curr_val[i] = scalar_value(m_root[i].func(x_at_start, t_start));
+      }
 
+      // Collect all events triggered between intervals
+      triggered.clear();
+      for (size_t i = 0; i < m_root.size(); ++i) {
         if (fired[i] < max_trigger &&
             !std::isnan(last_val[i]) &&
-            last_val[i] * f_at_start < 0.0 &&
+            last_val[i] * curr_val[i] < 0.0 &&
             scalar_value(last_time[i]) < scalar_value(t_start) &&
-            direction_matches(last_val[i], f_at_start, m_root[i].direction))
+            direction_matches(last_val[i], curr_val[i], m_root[i].direction))
         {
-          // Root crossed between intervals - trigger at interval start
-          // (we cannot interpolate before t_start)
-          Time t_root = t_start;
-          State x_root = x_at_start;
-
-          obs(x_root, t_root);
-
-          // Apply event (skip for terminal events)
-          if (!m_root[i].terminal) {
-            apply_event(x_root, m_root[i].state_index,
-                        m_root[i].value, m_root[i].method);
-          }
-          fired[i]++;
-
-          obs(x_root, t_root + Time(1e-15));
-
-          // Check for terminal event - stop integration
-          if (m_root[i].terminal) {
-            x = x_root;
-            return steps;
-          }
-
-          // Reinitialize stepper from event state
-          x = x_root;
-          m_st.initialize(x, t_root, dt);
-          m_st.do_step(m_sys);
-          ++steps;
-          checker();
-          checker.reset();
-
-          // Update interval bounds
-          t_start = m_st.previous_time();
-          t_end = m_st.current_time();
-          dt = m_st.current_time_step();
-
-          // Reset tracking to new interval start
-          m_st.calc_state(t_start, x_at_start);
-          for (size_t j = 0; j < m_root.size(); ++j) {
-            last_val[j] = scalar_value(m_root[j].func(x_at_start, t_start));
-            last_state[j] = x_at_start;
-            last_time[j] = t_start;
-          }
+          triggered.push_back({i, last_val[i], curr_val[i]});
         }
       }
 
-      // --- Ensure tracking is within current interval ---
-      // This is necessary because last_time may be from a previous
-      // interval that we can no longer interpolate in
+      // Process all triggered events at interval boundary
+      if (!triggered.empty()) {
+        Time t_root = t_start;
+        State x_root = x_at_start;
+
+        obs(x_root, t_root);
+
+        bool has_terminal = false;
+        for (const auto& te : triggered) {
+          if (m_root[te.index].terminal) {
+            has_terminal = true;
+            break;
+          }
+        }
+
+        for (const auto& te : triggered) {
+          size_t i = te.index;
+          if (!m_root[i].terminal) {
+            apply_event(x_root, m_root[i].state_index,
+                        m_root[i].value_func(x_root, t_root), m_root[i].method);
+          }
+          fired[i]++;
+        }
+
+        obs(x_root, t_root + Time(1e-15));
+
+        if (has_terminal) {
+          x = x_root;
+          return steps;
+        }
+
+        x = x_root;
+        m_st.initialize(x, t_root, dt);
+        m_st.do_step(m_sys);
+        ++steps;
+        checker();
+        checker.reset();
+
+        t_start = m_st.previous_time();
+        t_end = m_st.current_time();
+        dt = m_st.current_time_step();
+
+        m_st.calc_state(t_start, x_at_start);
+        for (size_t j = 0; j < m_root.size(); ++j) {
+          last_val[j] = scalar_value(m_root[j].func(x_at_start, t_start));
+          last_state[j] = x_at_start;
+          last_time[j] = t_start;
+        }
+      }
+
+      // Ensure tracking is within current interval
       for (size_t i = 0; i < m_root.size(); ++i) {
         if (scalar_value(last_time[i]) < scalar_value(t_start)) {
           m_st.calc_state(t_start, x_at_start);
@@ -1024,21 +648,18 @@ public:
       {
         Time t_eval = *it;
 
-        // Skip times before current interval (shouldn't happen normally)
         if (scalar_value(t_eval) < scalar_value(t_start)) {
           ++it;
           continue;
         }
 
-        // Interpolate state at output time
         m_st.calc_state(t_eval, x);
 
-        // --- Check for fixed events ---
+        // Check for fixed events
         if (apply_fixed_events_at_time(x, t_eval, m_fixed))
         {
           obs(x, t_eval);
 
-          // Reinitialize from event state
           m_st.initialize(x, t_eval, dt);
           m_st.do_step(m_sys);
           ++steps;
@@ -1049,92 +670,106 @@ public:
           t_end = m_st.current_time();
           dt = m_st.current_time_step();
 
-          // Reset all root tracking
           State x_new_start = x;
           m_st.calc_state(t_start, x_new_start);
           for (size_t j = 0; j < m_root.size(); ++j) {
             last_val[j] = scalar_value(m_root[j].func(x_new_start, t_start));
             last_state[j] = x_new_start;
             last_time[j] = t_start;
-            fired[j] = 0;  // Reset fire counts after fixed event
+            fired[j] = 0;
           }
 
           ++it;
           continue;
         }
 
-        // --- Check for root events ---
-        bool root_fired = false;
-        for (size_t i = 0; i < m_root.size(); ++i)
-        {
-          double f_now = scalar_value(m_root[i].func(x, t_eval));
+        // === Evaluate ALL root functions at t_eval ===
+        for (size_t i = 0; i < m_root.size(); ++i) {
+          curr_val[i] = scalar_value(m_root[i].func(x, t_eval));
+        }
 
+        // === Collect ALL triggered events ===
+        triggered.clear();
+        for (size_t i = 0; i < m_root.size(); ++i) {
           if (fired[i] < max_trigger &&
               !std::isnan(last_val[i]) &&
-              last_val[i] * f_now < 0.0 &&
-              direction_matches(last_val[i], f_now, m_root[i].direction))
+              last_val[i] * curr_val[i] < 0.0 &&
+              direction_matches(last_val[i], curr_val[i], m_root[i].direction))
           {
-            // Localize root via bisection using interpolation
-            // last_time[i] is guaranteed >= t_start at this point
-            Time t_root = t_eval;
-            State x_root = x;
-            localize_root_dense(i, last_state[i], last_time[i],
-                                x_root, t_root, last_val[i], f_now, root_tol);
+            triggered.push_back({i, last_val[i], curr_val[i]});
+          }
+        }
 
-            obs(x_root, t_root);
+        // === Process all triggered events together ===
+        if (!triggered.empty()) {
+          // Use first event for root localization
+          size_t ref_idx = triggered[0].index;
 
-            // Apply event (skip for terminal events)
+          Time t_root = t_eval;
+          State x_root = x;
+          localize_root_dense(ref_idx, last_state[ref_idx], last_time[ref_idx],
+                              x_root, t_root, triggered[0].last_val,
+                              triggered[0].curr_val, root_tol);
+
+          obs(x_root, t_root);
+
+          bool has_terminal = false;
+          for (const auto& te : triggered) {
+            if (m_root[te.index].terminal) {
+              has_terminal = true;
+              break;
+            }
+          }
+
+          // Apply ALL events at the same root time
+          for (const auto& te : triggered) {
+            size_t i = te.index;
             if (!m_root[i].terminal) {
               apply_event(x_root, m_root[i].state_index,
-                          m_root[i].value, m_root[i].method);
+                          m_root[i].value_func(x_root, t_root), m_root[i].method);
             }
             fired[i]++;
+          }
 
-            obs(x_root, t_root + Time(1e-15));
+          obs(x_root, t_root + Time(1e-15));
 
-            // Check for terminal event - stop integration
-            if (m_root[i].terminal) {
-              x = x_root;
-              return steps;
-            }
-
-            // Reinitialize stepper
+          if (has_terminal) {
             x = x_root;
-            m_st.initialize(x, t_root, dt);
-            m_st.do_step(m_sys);
-            ++steps;
-            checker();
-            checker.reset();
-
-            t_start = m_st.previous_time();
-            t_end = m_st.current_time();
-            dt = m_st.current_time_step();
-
-            // Reset root tracking (preserve fired counts)
-            State x_new_start = x;
-            m_st.calc_state(t_start, x_new_start);
-            for (size_t j = 0; j < m_root.size(); ++j) {
-              last_val[j] = scalar_value(m_root[j].func(x_new_start, t_start));
-              last_state[j] = x_new_start;
-              last_time[j] = t_start;
-            }
-
-            root_fired = true;
-            break;  // Re-evaluate current output time in new interval
+            return steps;
           }
-          else {
-            // Update tracking
-            last_val[i] = f_now;
-            last_state[i] = x;
-            last_time[i] = t_eval;
+
+          // Single reinitialization after all events
+          x = x_root;
+          m_st.initialize(x, t_root, dt);
+          m_st.do_step(m_sys);
+          ++steps;
+          checker();
+          checker.reset();
+
+          t_start = m_st.previous_time();
+          t_end = m_st.current_time();
+          dt = m_st.current_time_step();
+
+          // Reset root tracking (preserve fired counts)
+          State x_new_start = x;
+          m_st.calc_state(t_start, x_new_start);
+          for (size_t j = 0; j < m_root.size(); ++j) {
+            last_val[j] = scalar_value(m_root[j].func(x_new_start, t_start));
+            last_state[j] = x_new_start;
+            last_time[j] = t_start;
           }
+
+          // Don't advance iterator - reprocess in new interval
+          continue;
         }
 
-        if (root_fired) {
-          continue;  // Don't advance iterator - reprocess in new interval
+        // No events - update tracking and output
+        for (size_t i = 0; i < m_root.size(); ++i) {
+          last_val[i] = curr_val[i];
+          last_state[i] = x;
+          last_time[i] = t_eval;
         }
 
-        // No event - output interpolated state
         obs(x, t_eval);
         ++it;
       }
@@ -1150,74 +785,7 @@ private:
   //--------------------------------------------------------------------------
 
   /**
-   * @brief Reset root tracking state after a fixed event
-   *
-   * Clears all root tracking data to ensure clean detection of future
-   * root crossings. Called after fixed events which may cause discontinuities
-   * that invalidate previous root function values.
-   *
-   * @param fired Fire counts (reset to 0 - allows events to trigger again)
-   * @param last_val Last function values (reset to NaN - forces re-evaluation)
-   * @param last_state Last states (reset to current state)
-   * @param last_time Last times (reset to current time)
-   * @param x Current state (post-event)
-   * @param t Current time (event time)
-   *
-   */
-  void reset_memory(
-      std::vector<size_t>& fired,
-      std::vector<double>& last_val,
-      std::vector<State>&  last_state,
-      std::vector<Time>&   last_time,
-      const State& x, Time t)
-  {
-    std::fill(last_val.begin(), last_val.end(),
-              std::numeric_limits<double>::quiet_NaN());
-    std::fill(fired.begin(), fired.end(), 0);
-
-    for (size_t i = 0; i < last_state.size(); ++i) {
-      last_state[i] = x;
-      last_time[i]  = t;
-    }
-  }
-
-  /**
    * @brief Localize a root using controlled stepping (re-integration)
-   *
-   * Performs bisection to find the precise root location. At each bisection
-   * step, re-integrates from the lower bound to the midpoint to obtain
-   * the state at the midpoint. This is less efficient than interpolation
-   * but works with any stepper.
-   *
-   * **Bisection Algorithm:**
-   * @code
-   * while |tb - ta| > tol:
-   *     tm = (ta + tb) / 2
-   *     Integrate from ta to tm â†’ get xm
-   *     Evaluate f(xm, tm) â†’ get fm
-   *     if fa * fm <= 0:  // Root in [ta, tm]
-   *         tb = tm, xb = xm, fb = fm
-   *     else:              // Root in [tm, tb]
-   *         ta = tm, xa = xm, fa = fm
-   * @endcode
-   *
-   * @tparam Checker Step checker type
-   *
-   * @param idx Index of the root event being localized
-   * @param xa State at lower bound (modified during bisection)
-   * @param ta Time at lower bound (modified during bisection)
-   * @param xb State at upper bound (output: state at root)
-   * @param tb Time at upper bound (output: time at root)
-   * @param fa Function value at lower bound
-   * @param fb Function value at upper bound
-   * @param tol Tolerance (stop when |tb - ta| < tol)
-   * @param checker Step checker for sub-integration
-   *
-   * @pre fa and fb must have opposite signs (fa * fb < 0)
-   * @post tb contains the root time to within tol, xb contains state at root
-   *
-   * @note Each bisection iteration requires ~10 integration sub-steps,
-   *       making this expensive for tight tolerances
    */
   template<class Checker>
   void localize_root_controlled(
@@ -1232,10 +800,9 @@ private:
     {
       Time tm = (ta + tb) / 2.0;
 
-      // Re-integrate from ta to tm to get state at midpoint
       State xm = xa;
       Time t_tmp = ta;
-      Time dt_tmp = (tm - ta) / 10.0;  // Use 10 sub-steps
+      Time dt_tmp = (tm - ta) / 10.0;
 
       while (detail::less_with_sign(t_tmp, tm, dt_tmp))
       {
@@ -1252,12 +819,9 @@ private:
 
       double fm = scalar_value(m_root[idx].func(xm, tm));
 
-      // Bisection update
       if (fa * fm <= 0.0) {
-        // Root in [ta, tm]
         tb = tm; xb = xm; fb = fm;
       } else {
-        // Root in [tm, tb]
         ta = tm; xa = xm; fa = fm;
       }
     }
@@ -1265,37 +829,6 @@ private:
 
   /**
    * @brief Localize a root using dense output (interpolation)
-   *
-   * Performs bisection to find the precise root location using the
-   * stepper's interpolation capability. Much more efficient than
-   * re-integration when dense output is available.
-   *
-   * **Key Advantage:**
-   * Each bisection iteration requires only ONE calc_state() call
-   * (cheap interpolation) instead of ~10 integration steps.
-   * Typical speedup: 10-100x over controlled mode.
-   *
-   * **Bisection Algorithm:**
-   * @code
-   * while |tb - ta| > tol:
-   *     tm = (ta + tb) / 2
-   *     Interpolate at tm â†’ get xm  (FAST!)
-   *     Evaluate f(xm, tm) â†’ get fm
-   *     if fa * fm <= 0:
-   *         tb = tm, xb = xm, fb = fm
-   *     else:
-   *         ta = tm, xa = xm, fa = fm
-   * @endcode
-   *
-   * @param idx Index of the root event being localized
-   * @param xa State at lower bound (used for sizing only)
-   * @param ta Time at lower bound (modified during bisection)
-   * @param xb State at upper bound (output: state at root)
-   * @param tb Time at upper bound (output: time at root)
-   * @param fa Function value at lower bound
-   * @param fb Function value at upper bound
-   * @param tol Tolerance (stop when |tb - ta| < tol)
-   *
    */
   void localize_root_dense(
       size_t idx,
@@ -1308,74 +841,32 @@ private:
     {
       Time tm = (ta + tb) / 2.0;
 
-      // Use interpolation to get state at midpoint (very efficient!)
-      State xm = xa;  // Copy for correct sizing
+      State xm = xa;
       m_st.calc_state(tm, xm);
 
       double fm = scalar_value(m_root[idx].func(xm, tm));
 
-      // Bisection update
       if (fa * fm <= 0.0) {
-        // Root in [ta, tm]
         tb = tm; xb = xm; fb = fm;
       } else {
-        // Root in [tm, tb]
         ta = tm; xa = xm; fa = fm;
       }
     }
   }
 
 private:
-  Stepper& m_st;   ///< Reference to the ODE stepper
-  System&  m_sys;  ///< Reference to the ODE system
-
-  /// Fixed-time events (sorted by time via merge_user_and_event_times)
-  const std::vector<FixedEvent<typename State::value_type>>& m_fixed;
-
-  /// Root-finding events
+  Stepper& m_st;
+  System&  m_sys;
+  const std::vector<FixedEvent<State, typename State::value_type>>& m_fixed;
   const std::vector<RootEvent<State, Time>>& m_root;
 };
 
 //==============================================================================
-// Section 7: Public API - Controlled Stepper Integration
+// Section 9: Public API
 //==============================================================================
 
 /**
  * @brief Integrate ODE at specified times with event handling (controlled stepper)
- *
- * Main entry point for event-aware integration using controlled (adaptive)
- * steppers. Combines user output times with fixed event times, then integrates
- * while monitoring for both fixed-time and root-finding events.
- *
- * **When to Use:**
- * - Sparse output (few time points per natural step)
- * - Moderate root tolerance (>= 1e-6)
- * - Simple ODE systems (cheap evaluations)
- * - When dense output is not available
- *
- * @tparam Stepper Controlled stepper type (must provide try_step interface)
- * @tparam System ODE system type
- * @tparam State State vector type
- * @tparam TimeIterator Iterator type for time sequence
- * @tparam Time Time type
- * @tparam Observer Observer callable type
- *
- * @param stepper The ODE stepper instance
- * @param system The ODE system (callable: void(x, dxdt, t))
- * @param x Initial state (modified in place to final state)
- * @param t_begin Iterator to first output time
- * @param t_end Iterator past last output time
- * @param dt Initial step size
- * @param obs Observer called at each output time and event
- * @param fixed Vector of fixed-time events
- * @param root Vector of root-finding events
- * @param checker Step checker for integration monitoring
- * @param root_tol Root localization tolerance (default: 1e-8)
- * @param max_trigger_root Maximum triggers per root event (default: 1)
- * @param tag Stepper category tag (default: controlled_stepper_tag)
- *
- * @return Number of integration steps taken
- *
  */
 template<class Stepper, class System, class State,
          class TimeIterator, class Time, class Observer>
@@ -1387,7 +878,7 @@ size_t integrate_times(
     TimeIterator t_end,
     Time dt,
     Observer obs,
-    const std::vector<FixedEvent<typename State::value_type>>& fixed,
+    const std::vector<FixedEvent<State, typename State::value_type>>& fixed,
     const std::vector<RootEvent<State, Time>>& root,
     StepChecker& checker,
     double root_tol = 1e-8,
@@ -1395,58 +886,13 @@ size_t integrate_times(
     controlled_stepper_tag = controlled_stepper_tag())
 {
   auto times = merge_user_and_event_times<Time>(t_begin, t_end, fixed);
-
   EventEngine<Stepper, System, State, Time> eng(stepper, system, fixed, root);
-
   return eng.process_controlled(x, times, dt, obs, checker,
                                 root_tol, max_trigger_root);
 }
 
-//==============================================================================
-// Section 8: Public API - Dense Output Stepper Integration
-//==============================================================================
-
 /**
  * @brief Integrate ODE at specified times with event handling (dense output)
- *
- * Main entry point for event-aware integration using dense-output steppers.
- * Leverages interpolation for efficient output and root localization.
- *
- * **When to Use:**
- * - Dense output (many time points per natural step)
- * - Tight root tolerance (<= 1e-8)
- * - Expensive ODE systems (minimize evaluations)
- * - When highest accuracy is required
- *
- * **Performance Characteristics:**
- * - Large integration steps (dt can be >> output spacing)
- * - Cheap interpolation at output times
- * - Very fast root localization (10-100x speedup)
- * - Higher overhead per step (dense output coefficients)
- *
- * @tparam Stepper Dense output stepper type (must provide initialize, do_step,
- *                 calc_state, previous_time, current_time interfaces)
- * @tparam System ODE system type
- * @tparam State State vector type
- * @tparam TimeIterator Iterator type for time sequence
- * @tparam Time Time type
- * @tparam Observer Observer callable type
- *
- * @param stepper The dense output stepper instance
- * @param system The ODE system (callable: void(x, dxdt, t))
- * @param x Initial state (modified in place to final state)
- * @param t_begin Iterator to first output time
- * @param t_end Iterator past last output time
- * @param dt Initial step size
- * @param obs Observer called at each output time and event
- * @param fixed Vector of fixed-time events
- * @param root Vector of root-finding events
- * @param checker Step checker for integration monitoring
- * @param root_tol Root localization tolerance (default: 1e-8)
- * @param max_trigger_root Maximum triggers per root event (default: 1)
- * @param tag Stepper category tag (default: dense_output_stepper_tag)
- *
- * @return Number of integration steps taken
  */
 template<class Stepper, class System, class State,
          class TimeIterator, class Time, class Observer>
@@ -1458,7 +904,7 @@ size_t integrate_times_dense(
     TimeIterator t_end,
     Time dt,
     Observer obs,
-    const std::vector<FixedEvent<typename State::value_type>>& fixed,
+    const std::vector<FixedEvent<State, typename State::value_type>>& fixed,
     const std::vector<RootEvent<State, Time>>& root,
     StepChecker& checker,
     double root_tol = 1e-8,
@@ -1466,9 +912,7 @@ size_t integrate_times_dense(
     dense_output_stepper_tag = dense_output_stepper_tag())
 {
   auto times = merge_user_and_event_times<Time>(t_begin, t_end, fixed);
-
   EventEngine<Stepper, System, State, Time> eng(stepper, system, fixed, root);
-
   return eng.process_dense(x, times, dt, obs, checker,
                            root_tol, max_trigger_root);
 }
@@ -1479,40 +923,11 @@ size_t integrate_times_dense(
 // Public Namespace Exports
 //==============================================================================
 
-/**
- * @brief Fixed-time event (exported to boost::numeric::odeint)
- * @see detail::FixedEvent
- */
 using detail::FixedEvent;
-
-/**
- * @brief Root-finding event (exported to boost::numeric::odeint)
- * @see detail::RootEvent
- */
 using detail::RootEvent;
-
-/**
- * @brief Event application method (exported to boost::numeric::odeint)
- * @see detail::EventMethod
- */
 using detail::EventMethod;
-
-/**
- * @brief Event-aware integration (controlled stepper, exported to boost::numeric::odeint)
- * @see detail::integrate_times
- */
 using detail::integrate_times;
-
-/**
- * @brief Event-aware integration (dense output, exported to boost::numeric::odeint)
- * @see detail::integrate_times_dense
- */
 using detail::integrate_times_dense;
-
-/**
- * @brief Factory function for steady-state root detection
- * @see detail::make_steady_state_root_func
- */
 using detail::make_steady_state_root_func;
 
 } // namespace odeint

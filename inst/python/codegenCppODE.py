@@ -140,12 +140,10 @@ def _ensure_double_literals(cpp_code):
 # _to_cpp
 # =====================================================================
 
-def _to_cpp(expr, states, params, n_states, num_type, forcings=None):
+def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial_states=False):
     if forcings is None:
         forcings = []
-
     cpp_code = str(sp.cxxcode(expr, standard="c++17", strict=False)).replace("\n", " ")
-
     if num_type in ("AD", "AD2"):
         for fn in [
             "sin", "cos", "tan", "asin", "acos", "atan",
@@ -153,28 +151,25 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None):
             "exp", "log", "sqrt", "pow", "abs", "min", "max"
         ]:
             cpp_code = cpp_code.replace(f"std::{fn}", f"fadbad::{fn}")
-
     # forcings
     for i, forcing in enumerate(forcings):
         cpp_code = _safe_replace(cpp_code, forcing, f"(*F[{i}])(t)")
-
     # params
     for j, param in enumerate(params):
         cpp_code = _safe_replace(cpp_code, param, f"params[{n_states + j}]")
-
     # states
-    for i, state in enumerate(states):
-        cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
-
+    if use_initial_states:
+        for i, state in enumerate(states):
+            cpp_code = _safe_replace(cpp_code, state, f"params[{i}]")
+    else:
+        for i, state in enumerate(states):
+            cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
+    # explicit notation for initial values
     for i, state in enumerate(states):
         cpp_code = _safe_replace(cpp_code, f"{state}_0", f"params[{i}]")
-
     cpp_code = _safe_replace(cpp_code, "time", "t")
     cpp_code = re.sub(r"\s+", "", cpp_code)
-    
-    # Convert integer literals to double literals to avoid C++ template deduction issues
     cpp_code = _ensure_double_literals(cpp_code)
-
     return cpp_code
 
 
@@ -513,22 +508,51 @@ def generate_event_code(events_df, states_list, params_list, n_states,
 
         if time_code is not None:
             time_code = str(time_code).replace("params[", "full_params[")
+            
+            # value_func: dynamischer Zugriff auf x[i]
+            value_expr = _safe_sympify(str(value_raw), local_symbols)
+            value_cpp = _to_cpp(value_expr, states_list, params_list, n_states,
+                               num_type, forcings_list, use_initial_states=False)
+            value_cpp = str(value_cpp).replace("params[", "full_params[")
+            
+            state_type = f"ublas::vector<{num_type}>"
             event_lines.append(
-                f"  fixed_events.emplace_back(FixedEvent<{num_type}>{{"
-                f"{time_code}, {var_idx}, {value_code}, {method_code}}});"
+                f"  fixed_events.emplace_back(FixedEvent<{state_type}, {num_type}>{{"
+                f"{time_code}, {var_idx},"
+            )
+            event_lines.append(
+                f"    [full_params, &F](const {state_type}& x, const {num_type}& t){{ return {value_cpp}; }},"
+            )
+            event_lines.append(
+                f"    {method_code}}});"
             )
         elif root_code is not None:
             root_code = str(root_code).replace("params[", "full_params[")
+            
+            # value_func: dynamischer Zugriff auf x[i]
+            value_expr = _safe_sympify(str(value_raw), local_symbols)
+            value_cpp = _to_cpp(value_expr, states_list, params_list, n_states,
+                               num_type, forcings_list, use_initial_states=False)
+            value_cpp = str(value_cpp).replace("params[", "full_params[")
+            
+            state_type = f"ublas::vector<{num_type}>"
             event_lines.append(
                 f"  root_events.push_back("
-                f"RootEvent<ublas::vector<{num_type}>, {num_type}>{{"
+                f"RootEvent<{state_type}, {num_type}>{{"
             )
             event_lines.append(
-                f"    [full_params](const ublas::vector<{num_type}>& x, "
+                f"    [full_params, &F](const {state_type}& x, "
                 f"const {num_type}& t){{ return {root_code}; }},"
             )
             event_lines.append(
-                f"    {var_idx}, {value_code}, {method_code}}});"
+                f"    {var_idx},"
+            )
+            event_lines.append(
+                f"    [full_params, &F](const {state_type}& x, "
+                f"const {num_type}& t){{ return {value_cpp}; }},"
+            )
+            event_lines.append(
+                f"    {method_code}}});"
             )
         else:
             raise ValueError(f"Event {i}: must specify either 'time' or 'root'")

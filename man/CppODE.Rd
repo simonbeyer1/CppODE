@@ -24,54 +24,35 @@ CppODE(
 \arguments{
 \item{rhs}{Named character vector of ODE right-hand sides; names must correspond to variables.}
 
-\item{events}{Optional \code{data.frame} describing events (see \strong{Events}). Default: \code{NULL}.}
+\item{events}{Optional \code{data.frame} describing events (see \strong{Event handling}).}
 
-\item{rootfunc}{Optional root function specification for integration termination.
-Either \code{"equilibrate"} for steady-state detection, or a character vector of
-expressions that trigger termination when crossing zero. Default: \code{NULL}.}
+\item{rootfunc}{Optional root function specification for integration termination.}
 
 \item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
 
 \item{forcings}{Character vector of forcing function names used in \code{rhs}.}
 
-\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
+\item{compile}{Logical; if \code{TRUE}, compiles and loads the generated C++ code.}
 
-\item{modelname}{Optional base name for the generated C++ source file
-\emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
-as well as the resulting shared library.
-If \code{NULL}, a random identifier is used.}
+\item{modelname}{Optional base name for the generated C++ source file and symbols.}
 
-\item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
+\item{outdir}{Directory where generated C++ source files are written.}
 
-\item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
+\item{deriv}{Logical; if \code{TRUE}, enable first-order sensitivities via dual numbers.}
 
-\item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers; requires \code{deriv = TRUE}.}
+\item{deriv2}{Logical; if \code{TRUE}, enable second-order sensitivities; requires \code{deriv = TRUE}.}
 
-\item{fullErr}{Logical. If \code{TRUE}, compute error estimates using full state vector including derivatives. If \code{FALSE}, use only the value components for error control.}
+\item{fullErr}{Logical; if \code{TRUE}, compute error estimates using the full state vector.}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
+\item{includeTimeZero}{Logical; if \code{TRUE}, ensure that time zero is included.}
 
-\item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
+\item{useDenseOutput}{Logical; if \code{TRUE}, use dense output (Hermite interpolation).}
 
-\item{verbose}{Logical. If \code{TRUE}, print progress messages.}
+\item{verbose}{Logical; if \code{TRUE}, print progress messages.}
 }
 \value{
-The compiled model name (character).
-The returned object carries a set of attributes that describe the compiled solver
-and its symbolic structure:\tabular{lll}{
-   Attribute \tab Type \tab Description \cr
-   \code{equations} \tab \code{character} \tab ODE right-hand side definitions \cr
-   \code{variables} \tab \code{character} \tab Names of the dynamic state variables \cr
-   \code{parameters} \tab \code{character} \tab Names of model parameters \cr
-   \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
-   \code{rootfunc} \tab \code{character} \tab Root function specification (if any) \cr
-   \code{solver} \tab \code{list} \tab Description of the numerical solver configuration \cr
-   \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
-   \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
-   \code{deriv} \tab \code{logical} \tab Indicates whether first-order sensitivities (dual numbers) were used \cr
-   \code{deriv2} \tab \code{logical} \tab Indicates whether nested dual numbers were used for second-order sensitivities \cr
-   \code{dim_names} \tab \code{list} \tab Dimension names for arrays: \code{time}, \code{variable}, and \code{sens} \cr
-}
+The compiled model name (character), carrying attributes that describe the compiled
+solver and its symbolic structure.
 }
 \description{
 This function generates and compiles a C++ solver for systems of ordinary differential
@@ -79,30 +60,29 @@ equations (ODEs) of the form
 
 \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 
-using \href{https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html}{\strong{Boost.Odeint's}}
-stiff Rosenbrock4 method with dense output and error control (using third order in combination).
-The solver supports \strong{time-based} and \strong{root-triggered events} and can, optionally,
-compute \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
-\strong{dual number} types provided by
-\href{https://uning.dk/fadbad.html}{\strong{FADBAD++}}.
+using the stiff Rosenbrock4 method with dense output and error control (third-order
+error estimation) as implemented in \pkg{Boost.Odeint}.
+The solver supports \strong{time-based} and \strong{root-triggered events} and can,
+optionally, compute \strong{first- and second-order sensitivities} by evaluating the
+same system using \strong{dual number} types provided by \pkg{FADBAD++}.
 \subsection{Sensitivity Computation}{
 
 If \code{deriv = TRUE}, all state variables and parameters are represented as
-\href{https://en.wikipedia.org/wiki/Dual_number}{\strong{dual numbers}} of type \verb{F<double>}.
+\href{https://en.wikipedia.org/wiki/Dual_number}{dual numbers} of type \verb{F<double>}.
 The ODE right-hand side \eqn{f} is evaluated on these dual numbers; due to the chain rule
-encoded in dual number arithmetic, the \strong{derivative components propagate automatically}
+encoded in dual number arithmetic, derivative components propagate automatically
 through every operation in \eqn{f}. Consequently, the numerical integration solves
-\emph{exactly the same} initial value problem, only over the dual number algebra
-\eqn{\mathbb{D}}, yielding both the state trajectories and their first derivatives
+exactly the same initial value problem, but over the dual number algebra
+\eqn{\mathbb{D}}, yielding both state trajectories and their first derivatives
 in a single pass.
 
 If \code{deriv2 = TRUE} (which implies \code{deriv = TRUE}), nested dual numbers
-\verb{F<F<double>>} are used. This allows the evaluation of \eqn{f} over the
-second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing \strong{second-order
-sensitivities} directly through nested automatic differentiation.
+\verb{F<F<double>>} are used. This evaluates \eqn{f} over the second-order dual algebra
+\eqn{\mathbb{D} \otimes \mathbb{D}} and yields second-order sensitivities directly
+through nested automatic differentiation.
 
-Fixed initial conditions or parameters (listed in \code{fixed}) are created as plain scalars
-and therefore do \strong{not} contribute sensitivity components.
+Fixed initial conditions or parameters listed in \code{fixed} are created as plain scalars
+and therefore do not contribute sensitivity components.
 
 If both \code{deriv = FALSE} and \code{deriv2 = FALSE}, plain doubles are used and no sensitivities
 are produced.
@@ -110,61 +90,71 @@ are produced.
 
 \subsection{Event handling}{
 
-Events are specified in a \code{data.frame} with the following columns:\tabular{ll}{
-   Column \tab Description \cr
-   \code{var} \tab Name of the affected variable \cr
-   \code{value} \tab Numeric value to apply at the event \cr
-   \code{method} \tab How the value is applied: \code{"replace"}, \code{"add"}, or \code{"multiply"} \cr
-   \code{time} \tab \emph{(optional)} Time point at which the event occurs \cr
-   \code{root} \tab \emph{(optional)} Root expression in terms of variables and \code{time} \cr
+Events are specified in a \code{data.frame} with the following columns:
+
+\tabular{ll}{
+\strong{Column} \tab \strong{Description} \cr
+\code{var} \tab Name of the affected variable \cr
+\code{value} \tab Numeric value to apply at the event \cr
+\code{method} \tab How the value is applied: \code{"replace"}, \code{"add"}, or \code{"multiply"} \cr
+\code{time} \tab Optional time point at which the event occurs \cr
+\code{root} \tab Optional root expression in terms of variables and \code{time} \cr
 }
 
-
-Each event must define either \code{time} or \code{root}.
-Root-triggered events fire when the \code{root} expression crosses zero.
+Each event row must specify exactly one of \code{time} or \code{root}
+(one must be provided and the other must be \code{NA}).
+Root-triggered events fire when the corresponding \code{root} expression crosses zero.
 }
 
-\subsection{Root function (rootfunc)}{
+\subsection{Root function (\code{rootfunc})}{
 
-The \code{rootfunc} argument enables integration termination based on root-finding:
+The \code{rootfunc} argument enables termination of the integration based on root finding:
+
 \itemize{
-\item \strong{\code{"equilibrate"}}: Stops integration when the system reaches steady state.
-The steady-state condition checks that all derivatives (including sensitivities
-when \code{deriv = TRUE} or \code{deriv2 = TRUE}) fall below the \code{roottol} tolerance.
-This is useful for equilibrating systems before further analysis.
-\item \strong{Character vector of expressions}: Similar to deSolve's \code{rootfunc}, you can
-specify one or more expressions (e.g., \code{"x - 0.5"} or \code{c("x - 0.5", "y - 1")}).
-Integration stops when any expression crosses zero. Variables, parameters, and
-\code{time} can be used in expressions.
+\item \strong{\code{"equilibrate"}}: Stops integration when the system reaches a numerical
+steady state, defined by all time derivatives (including sensitivities when
+\code{deriv = TRUE} or \code{deriv2 = TRUE}) falling below the tolerance \code{roottol}.
+\item Character vector of expressions: One or more expressions (e.g. \code{"x - 0.5"}
+or \code{c("x - 0.5", "y - 1")}). Integration stops when any expression crosses zero.
+Variables, parameters, and \code{time} may be used in these expressions.
 }
 }
 
 \subsection{Output}{
 
 The generated solver function (accessible via \code{.Call}) returns a named list:
+
 \itemize{
-\item \code{deriv = FALSE}, \code{deriv2 = FALSE}
-Returns \code{list(time, variable)}
+\item \code{deriv = FALSE}, \code{deriv2 = FALSE}:
 \itemize{
 \item \code{time}: numeric vector of length \eqn{n_t}
-\item \code{variable}: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_t,n_x)}, containing \eqn{x_j(t_i)}
+\item \code{variable}: numeric matrix of dimension \eqn{(n_t, n_x)} containing
+\eqn{x_j(t_i)}
 }
-\item \code{deriv = TRUE}, \code{deriv2 = FALSE}
-Returns \code{list(time, variable, sens1)}
+
+\item \code{deriv = TRUE}, \code{deriv2 = FALSE}:
 \itemize{
-\item \code{sens1}: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_t,n_x,n_s)}, containing
-\eqn{\partial x_j(t_i)/\partial p_k}
+\item \code{time}
+\item \code{variable}
+\item \code{sens1}: numeric array of dimension \eqn{(n_t, n_x, n_s)} containing
+\eqn{\partial x_j(t_i) / \partial p_k}
 }
-\item \code{deriv = TRUE}, \code{deriv2 = TRUE}
-Returns \code{list(time, variable, sens1, sens2)}
+
+\item \code{deriv = TRUE}, \code{deriv2 = TRUE}:
 \itemize{
-\item \code{sens2}: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_t,n_x,n_s,n_s)},
-containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
+\item \code{time}
+\item \code{variable}
+\item \code{sens1}
+\item \code{sens2}: numeric array of dimension \eqn{(n_t, n_x, n_s, n_s)} containing
+\eqn{\partial^2 x_j(t_i) / \partial p_k\,\partial p_l}
 }
 }
 
+Sensitivities are returned only with respect to non-fixed initial conditions and
+parameters, in the order given by \code{attr(model, "dim_names")$sens}.
+
 Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
-variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
+variables, and \eqn{n_s} the number of sensitivity parameters.
 }
 }
 \examples{
@@ -238,5 +228,5 @@ res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }
 }
 \seealso{
-\code{\link[=solveODE]{solveODE()}} for a solver interface of compiled models
+\code{\link{solveODE}}
 }
