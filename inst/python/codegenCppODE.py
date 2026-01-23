@@ -28,10 +28,6 @@ from sympy.parsing.sympy_parser import (
 # Safe parsing configuration
 # =====================================================================
 
-# =====================================================================
-# Safe parsing configuration
-# =====================================================================
-
 def _get_safe_parse_dict():
     """Construct a local dictionary for SymPy parsing."""
     safe_local_dict = {
@@ -192,6 +188,8 @@ def generate_ode_cpp(
         fixed_params = []
     if forcings_list is None:
         forcings_list = []
+    if params_list is None:
+        params_list = []
 
     # --- Ensure all list arguments are proper lists (not strings) ---
     if isinstance(params_list, str):
@@ -433,6 +431,24 @@ def generate_event_code(events_df, states_list, params_list, n_states,
     """Generate C++ initialization lines for events."""
     if forcings_list is None:
         forcings_list = []
+    if states_list is None:
+        states_list = []
+    if params_list is None:
+        params_list = []
+    
+    # Ensure lists are proper lists (not strings)
+    if isinstance(states_list, str):
+        states_list = [states_list]
+    else:
+        states_list = list(states_list)
+    if isinstance(params_list, str):
+        params_list = [params_list]
+    else:
+        params_list = list(params_list)
+    if isinstance(forcings_list, str):
+        forcings_list = [forcings_list]
+    else:
+        forcings_list = list(forcings_list)
     
     if events_df is None or len(events_df) == 0:
         return []
@@ -569,26 +585,9 @@ def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
     """
     Generate C++ code for root function based termination.
     
-    Parameters
-    ----------
-    rootfunc : str or list
-        Either "equilibrate" for steady-state detection, or a list/vector
-        of expressions that trigger termination when crossing zero.
-    states_list : list
-        List of state variable names.
-    params_list : list
-        List of parameter names.
-    n_states : int
-        Number of state variables.
-    num_type : str
-        Numeric type ("double", "AD", or "AD2").
-    forcings_list : list, optional
-        List of forcing function names.
-    
-    Returns
-    -------
-    list
-        Lines of C++ code to initialize root events for the root function.
+    Handles two cases:
+    1. rootfunc = "equilibrate": steady-state detection
+    2. rootfunc = list of expressions: stop when any crosses zero
     """
     if forcings_list is None:
         forcings_list = []
@@ -598,27 +597,22 @@ def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
     
     # Handle single string vs list
     if isinstance(rootfunc, str):
-        rootfunc_list = [rootfunc]
-    else:
-        rootfunc_list = list(rootfunc)
+        if rootfunc.strip().lower() == "equilibrate":
+            return _generate_equilibrate_code(num_type)
+        else:
+            rootfunc = [rootfunc]
     
-    # Check for "equilibrate" - special case
-    if len(rootfunc_list) == 1 and rootfunc_list[0].lower().strip() == "equilibrate":
-        return _generate_equilibrate_code(num_type)
+    if not isinstance(rootfunc, (list, tuple)):
+        raise ValueError(f"rootfunc must be 'equilibrate' or a list of expressions, got: {type(rootfunc)}")
     
-    # Otherwise, treat as user-defined root expressions
     return _generate_user_rootfunc_code(
-        rootfunc_list, states_list, params_list, n_states, 
-        num_type, forcings_list
+        rootfunc, states_list, params_list, n_states, num_type, forcings_list
     )
 
 
 def _generate_equilibrate_code(num_type):
     """
     Generate C++ code for steady-state detection using make_steady_state_root_func.
-    
-    The generated code creates a terminal root event that fires when all derivatives
-    (including sensitivities for AD types) fall below the root tolerance.
     """
     state_type = f"ublas::vector<{num_type}>"
     
@@ -629,7 +623,7 @@ def _generate_equilibrate_code(num_type):
         f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
         f"    ss_root_func,",
         f"    0,            // state_index (ignored for terminal)",
-        f"    {num_type}(0.0),  // value (ignored for terminal)",
+        f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},  // value_func (ignored for terminal)",
         f"    EventMethod::Replace,  // method (ignored for terminal)",
         f"    true,         // terminal = true: stop integration",
         f"    -1            // direction = -1: trigger when rate falls below tol",
@@ -643,11 +637,7 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
                                   n_states, num_type, forcings_list):
     """
     Generate C++ code for user-defined root expressions.
-    
-    Each expression in rootfunc_list becomes a terminal root event that
-    fires when the expression crosses zero (in either direction).
     """
-    # Build symbol table for parsing
     states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
     params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
     t = sp.Symbol("time", real=True)
@@ -670,7 +660,6 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
         if not expr_str:
             continue
         
-        # Parse the expression
         try:
             expr = _safe_sympify(expr_str, local_symbols)
             root_code = _to_cpp(expr, states_list, params_list, n_states, 
@@ -686,162 +675,12 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
             f"      return {root_code};",
             f"    }},",
             f"    0,            // state_index (ignored for terminal)",
-            f"    {num_type}(0.0),  // value (ignored for terminal)",
-            f"    EventMethod::Replace,  // method (ignored for terminal)",
+            f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},",
+            f"    EventMethod::Replace,",
             f"    true,         // terminal = true: stop integration",
             f"    0             // direction = 0: any crossing",
             f"  }});",
         ])
     
     lines.append("")
-    return lines
-
-
-# =====================================================================
-# Root function code generation (for integration termination)
-# =====================================================================
-
-def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
-                           num_type="AD", forcings_list=None):
-    """
-    Generate C++ initialization lines for terminal root events.
-    
-    This function handles two cases:
-    
-    1. rootfunc = "equilibrate": 
-       Uses make_steady_state_root_func to stop integration when the system
-       reaches steady state (all derivatives including sensitivities < roottol).
-       
-    2. rootfunc = list of expressions (e.g., ["x - 0.5", "y - 1.0"]):
-       Similar to deSolve's rootfunc - stops integration when any expression
-       crosses zero.
-    
-    Parameters
-    ----------
-    rootfunc : str or list
-        Either "equilibrate" or a list of expressions
-    states_list : list
-        List of state variable names
-    params_list : list
-        List of parameter names
-    n_states : int
-        Number of state variables
-    num_type : str
-        Numeric type ("double", "AD", or "AD2")
-    forcings_list : list, optional
-        List of forcing function names
-        
-    Returns
-    -------
-    list of str
-        C++ code lines to be inserted after event initialization
-    """
-    if forcings_list is None:
-        forcings_list = []
-    
-    if rootfunc is None:
-        return []
-    
-    # Handle single string that might be "equilibrate" or a single expression
-    if isinstance(rootfunc, str):
-        rootfunc_lower = rootfunc.strip().lower()
-        if rootfunc_lower == "equilibrate":
-            # Use make_steady_state_root_func
-            return _generate_equilibrate_code(num_type)
-        else:
-            # Single expression - wrap in list
-            rootfunc = [rootfunc]
-    
-    # At this point, rootfunc should be a list of expressions
-    if not isinstance(rootfunc, (list, tuple)):
-        raise ValueError(f"rootfunc must be 'equilibrate' or a list of expressions, got: {type(rootfunc)}")
-    
-    return _generate_rootfunc_expressions_code(
-        rootfunc, states_list, params_list, n_states, num_type, forcings_list
-    )
-
-
-def _generate_equilibrate_code(num_type):
-    """
-    Generate C++ code for steady-state detection using make_steady_state_root_func.
-    
-    The generated code creates a terminal root event that fires when all
-    derivatives (including sensitivities for AD types) fall below root_tol.
-    """
-    lines = [
-        "",
-        "  // --- Steady-state detection (equilibrate) ---",
-        "  {",
-        f"    auto ss_root_func = make_steady_state_root_func<",
-        f"        decltype(sys), ublas::vector<{num_type}>, {num_type}>(sys, root_tol);",
-        "",
-        f"    root_events.push_back(RootEvent<ublas::vector<{num_type}>, {num_type}>{{",
-        "        ss_root_func,",
-        "        0,                      // state_index (ignored for terminal)",
-        f"        {num_type}(0),          // value (ignored for terminal)",
-        "        EventMethod::Replace,   // method (ignored for terminal)",
-        "        true,                   // terminal = true: stop integration",
-        "        -1                      // direction = -1: trigger when rate falls below tol",
-        "    });",
-        "  }",
-        "",
-    ]
-    return lines
-
-
-def _generate_rootfunc_expressions_code(expressions, states_list, params_list, 
-                                         n_states, num_type, forcings_list):
-    """
-    Generate C++ code for user-specified root function expressions.
-    
-    Each expression creates a terminal root event that fires when
-    the expression crosses zero (any direction).
-    """
-    # Create symbol tables for parsing
-    states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
-    params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
-    t = sp.Symbol("time", real=True)
-    
-    local_symbols = {}
-    local_symbols.update(states_syms)
-    local_symbols.update(params_syms)
-    for name in forcings_list:
-        local_symbols[name] = sp.Symbol(name, real=True)
-    local_symbols["time"] = t
-    
-    lines = [
-        "",
-        "  // --- User-specified root functions (terminal) ---",
-    ]
-    
-    for i, expr_str in enumerate(expressions):
-        if not _is_valid_value(expr_str):
-            continue
-            
-        expr_str = str(expr_str).strip()
-        
-        try:
-            # Parse and convert to C++
-            expr = _safe_sympify(expr_str, local_symbols)
-            cpp_code = _to_cpp(expr, states_list, params_list, n_states, 
-                              num_type, forcings=forcings_list)
-            cpp_code = str(cpp_code).replace("params[", "full_params[")
-        except Exception as e:
-            raise ValueError(f"Failed to parse rootfunc expression '{expr_str}': {e}")
-        
-        lines.extend([
-            f"  // Root expression {i}: {expr_str}",
-            f"  root_events.push_back(RootEvent<ublas::vector<{num_type}>, {num_type}>{{",
-            f"      [full_params](const ublas::vector<{num_type}>& x, const {num_type}& t) {{",
-            f"          return {cpp_code};",
-            "      },",
-            "      0,                      // state_index (ignored for terminal)",
-            f"      {num_type}(0),          // value (ignored for terminal)",
-            "      EventMethod::Replace,   // method (ignored for terminal)",
-            "      true,                   // terminal = true: stop integration",
-            "      0                       // direction = 0: any direction",
-            "  });",
-            "",
-        ])
-    
     return lines

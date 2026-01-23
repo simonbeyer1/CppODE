@@ -8,14 +8,16 @@ solveODE(
   model,
   times,
   parms,
+  sens1ini = NULL,
+  sens2ini = NULL,
   forcings = NULL,
   abstol = 1e-06,
   reltol = 1e-06,
-  maxprogress = 10L,
+  maxprogress = 100L,
   maxsteps = 1000000L,
   hini = 0,
   roottol = 1e-06,
-  maxroot = 10L
+  maxroot = 100L
 )
 }
 \arguments{
@@ -27,6 +29,14 @@ Must be non-empty and contain finite values.}
 \item{parms}{Named numeric vector containing initial conditions and parameters.
 The order must match \code{c(attr(model, "variables"), attr(model, "parameters"))}.
 Names are checked against the model specification.}
+
+\item{sens1ini}{Optional named numeric vector of initial values for first-order
+sensitivities. Names must match \code{attr(model, "dim_names")$sens}.
+If \code{NULL}, default identity seeding is used.}
+
+\item{sens2ini}{Optional numeric vector of initial values for second-order
+sensitivities. Only allowed if \code{attr(model, "deriv2") == TRUE}.
+If \code{NULL}, zero seeding is used.}
 
 \item{forcings}{Optional named list of forcing function data. Each element
 should be a \code{data.frame} (or coercible object) with columns \code{time} and \code{value},
@@ -48,24 +58,11 @@ is estimated automatically.}
 \item{roottol}{Tolerance for root-finding in root-triggered events.
 Default: \code{1e-6}.}
 
-\item{maxroot}{Maximum triggers per root event
-Default: \code{1}.}
+\item{maxroot}{Maximum triggers per root event. Default: \code{1}.}
 }
 \value{
-A named list with the following components:
-\describe{
-\item{\code{time}}{Numeric vector of output time points (length \eqn{n_t}).}
-\item{\code{variable}}{Numeric matrix of state trajectories with dimensions
-\eqn{(n_t, n_x)}, where rows correspond to time points and columns to
-state variables. Column names match \code{attr(model, "variables")}.}
-\item{\code{sens1}}{(If \code{deriv = TRUE}) Numeric array of first-order sensitivities
-with dimensions \eqn{(n_t, n_x, n_s)}, containing
-\eqn{\partial x_j(t_i) / \partial p_k}.
-Dimension names are provided via \code{attr(model, "dim_names")}.}
-\item{\code{sens2}}{(If \code{deriv2 = TRUE}) Numeric array of second-order sensitivities
-with dimensions \eqn{(n_t, n_x, n_s, n_s)}, containing
-\eqn{\partial^2 x_j(t_i) / \partial p_k \partial p_l}.}
-}
+A named list with components \code{time}, \code{variable}, and optionally
+\code{sens1} and \code{sens2} depending on model configuration.
 }
 \description{
 Numerically integrates a compiled ODE model created by \code{\link[=CppODE]{CppODE()}} over a

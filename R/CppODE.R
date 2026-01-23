@@ -4,32 +4,33 @@
 #' This function generates and compiles a C++ solver for systems of ordinary differential
 #' equations (ODEs) of the form
 #'
-#' \deqn{\dot{x}(t) = f\!\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
+#' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' using the stiff Rosenbrock4 method with dense output and error control (third-order
-#' error estimation) as implemented in \pkg{Boost.Odeint}.
-#' The solver supports \strong{time-based} and \strong{root-triggered events} and can,
-#' optionally, compute \strong{first- and second-order sensitivities} by evaluating the
-#' same system using \strong{dual number} types provided by \pkg{FADBAD++}.
+#' using [**Boost.Odeint's**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
+#' stiff Rosenbrock4 method with dense output and error control (using third order in combination).
+#' The solver supports **time-based** and **root-triggered events** and can, optionally,
+#' compute **first- and second-order sensitivities** by evaluating the *same system* with
+#' **dual number** types provided by
+#' [**FADBAD++**](https://uning.dk/fadbad.html).
 #'
 #' ## Sensitivity Computation
 #'
 #' If `deriv = TRUE`, all state variables and parameters are represented as
-#' \href{https://en.wikipedia.org/wiki/Dual_number}{dual numbers} of type `F<double>`.
+#' [**dual numbers**](https://en.wikipedia.org/wiki/Dual_number) of type `F<double>`.
 #' The ODE right-hand side \eqn{f} is evaluated on these dual numbers; due to the chain rule
-#' encoded in dual number arithmetic, derivative components propagate automatically
+#' encoded in dual number arithmetic, the **derivative components propagate automatically**
 #' through every operation in \eqn{f}. Consequently, the numerical integration solves
-#' exactly the same initial value problem, but over the dual number algebra
-#' \eqn{\mathbb{D}}, yielding both state trajectories and their first derivatives
+#' *exactly the same* initial value problem, only over the dual number algebra
+#' \eqn{\mathbb{D}}, yielding both the state trajectories and their first derivatives
 #' in a single pass.
 #'
 #' If `deriv2 = TRUE` (which implies `deriv = TRUE`), nested dual numbers
-#' `F<F<double>>` are used. This evaluates \eqn{f} over the second-order dual algebra
-#' \eqn{\mathbb{D} \otimes \mathbb{D}} and yields second-order sensitivities directly
-#' through nested automatic differentiation.
+#' `F<F<double>>` are used. This allows the evaluation of \eqn{f} over the
+#' second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing **second-order
+#' sensitivities** directly through nested automatic differentiation.
 #'
-#' Fixed initial conditions or parameters listed in `fixed` are created as plain scalars
-#' and therefore do not contribute sensitivity components.
+#' Fixed initial conditions or parameters (listed in `fixed`) are created as plain scalars
+#' and therefore do **not** contribute sensitivity components.
 #'
 #' If both `deriv = FALSE` and `deriv2 = FALSE`, plain doubles are used and no sensitivities
 #' are produced.
@@ -38,89 +39,95 @@
 #'
 #' Events are specified in a `data.frame` with the following columns:
 #'
-#' \tabular{ll}{
-#' \strong{Column} \tab \strong{Description} \cr
-#' `var` \tab Name of the affected variable \cr
-#' `value` \tab Numeric value to apply at the event \cr
-#' `method` \tab How the value is applied: `"replace"`, `"add"`, or `"multiply"` \cr
-#' `time` \tab Optional time point at which the event occurs \cr
-#' `root` \tab Optional root expression in terms of variables and `time` \cr
-#' }
+#' | Column | Description |
+#' |:--|:--|
+#' | `var` | Name of the affected variable |
+#' | `value` | Numeric value to apply at the event |
+#' | `method` | How the value is applied: `"replace"`, `"add"`, or `"multiply"` |
+#' | `time` | *(optional)* Time point at which the event occurs |
+#' | `root` | *(optional)* Root expression in terms of variables and `time` |
 #'
-#' Each event row must specify exactly one of `time` or `root`
-#' (one must be provided and the other must be `NA`).
-#' Root-triggered events fire when the corresponding `root` expression crosses zero.
+#' Each event must define either `time` or `root`.
+#' Root-triggered events fire when the `root` expression crosses zero.
 #'
-#' ## Root function (`rootfunc`)
+#' ## Root function (rootfunc)
 #'
-#' The `rootfunc` argument enables termination of the integration based on root finding:
+#' The `rootfunc` argument enables integration termination based on root-finding:
 #'
-#' \itemize{
-#' \item \strong{`"equilibrate"`}: Stops integration when the system reaches a numerical
-#'   steady state, defined by all time derivatives (including sensitivities when
-#'   `deriv = TRUE` or `deriv2 = TRUE`) falling below the tolerance `roottol`.
-#' \item Character vector of expressions: One or more expressions (e.g. `"x - 0.5"`
-#'   or `c("x - 0.5", "y - 1")`). Integration stops when any expression crosses zero.
-#'   Variables, parameters, and `time` may be used in these expressions.
-#' }
+#' - **`"equilibrate"`**: Stops integration when the system reaches steady state.
+#'   The steady-state condition checks that all derivatives (including sensitivities
+#'   when `deriv = TRUE` or `deriv2 = TRUE`) fall below the `roottol` tolerance.
+#'   This is useful for equilibrating systems before further analysis.
+#'
+#' - **Character vector of expressions**: Similar to deSolve's `rootfunc`, you can
+#'   specify one or more expressions (e.g., `"x - 0.5"` or `c("x - 0.5", "y - 1")`).
+#'   Integration stops when any expression crosses zero. Variables, parameters, and
+#'   `time` can be used in expressions.
 #'
 #' ## Output
 #'
 #' The generated solver function (accessible via `.Call`) returns a named list:
 #'
-#' \itemize{
-#' \item `deriv = FALSE`, `deriv2 = FALSE`:
-#'   \itemize{
-#'   \item `time`: numeric vector of length \eqn{n_t}
-#'   \item `variable`: numeric matrix of dimension \eqn{(n_t, n_x)} containing
-#'     \eqn{x_j(t_i)}
-#'   }
+#' - `deriv = FALSE`, `deriv2 = FALSE`
+#'   Returns `list(time, variable)`
+#'   - `time`: numeric vector of length \eqn{n_t}
+#'   - `variable`: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_t,n_x)}, containing \eqn{x_j(t_i)}
 #'
-#' \item `deriv = TRUE`, `deriv2 = FALSE`:
-#'   \itemize{
-#'   \item `time`
-#'   \item `variable`
-#'   \item `sens1`: numeric array of dimension \eqn{(n_t, n_x, n_s)} containing
-#'     \eqn{\partial x_j(t_i) / \partial p_k}
-#'   }
+#' - `deriv = TRUE`, `deriv2 = FALSE`
+#'   Returns `list(time, variable, sens1)`
+#'   - `sens1`: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_t,n_x,n_s)}, containing
+#'     \eqn{\partial x_j(t_i)/\partial p_k}
 #'
-#' \item `deriv = TRUE`, `deriv2 = TRUE`:
-#'   \itemize{
-#'   \item `time`
-#'   \item `variable`
-#'   \item `sens1`
-#'   \item `sens2`: numeric array of dimension \eqn{(n_t, n_x, n_s, n_s)} containing
-#'     \eqn{\partial^2 x_j(t_i) / \partial p_k\,\partial p_l}
-#'   }
-#' }
-#'
-#' Sensitivities are returned only with respect to non-fixed initial conditions and
-#' parameters, in the order given by `attr(model, "dim_names")$sens`.
+#' - `deriv = TRUE`, `deriv2 = TRUE`
+#'   Returns `list(time, variable, sens1, sens2)`
+#'   - `sens2`: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_t,n_x,n_s,n_s)},
+#'     containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
 #'
 #' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
-#' variables, and \eqn{n_s} the number of sensitivity parameters.
+#' variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
 #'
 #' @param rhs Named character vector of ODE right-hand sides; names must correspond to variables.
-#' @param events Optional `data.frame` describing events (see \strong{Event handling}).
+#' @param events Optional `data.frame` describing events (see **Events**). Default: `NULL`.
 #' @param rootfunc Optional root function specification for integration termination.
+#'   Either `"equilibrate"` for steady-state detection, or a character vector of
+#'   expressions that trigger termination when crossing zero. Default: `NULL`.
 #' @param forcings Character vector of forcing function names used in `rhs`.
 #' @param fixed Character vector of fixed initial conditions or parameters (excluded from sensitivities).
-#' @param compile Logical; if `TRUE`, compiles and loads the generated C++ code.
-#' @param modelname Optional base name for the generated C++ source file and symbols.
-#' @param outdir Directory where generated C++ source files are written.
-#' @param deriv Logical; if `TRUE`, enable first-order sensitivities via dual numbers.
-#' @param deriv2 Logical; if `TRUE`, enable second-order sensitivities; requires `deriv = TRUE`.
-#' @param fullErr Logical; if `TRUE`, compute error estimates using the full state vector.
-#' @param includeTimeZero Logical; if `TRUE`, ensure that time zero is included.
-#' @param useDenseOutput Logical; if `TRUE`, use dense output (Hermite interpolation).
-#' @param verbose Logical; if `TRUE`, print progress messages.
+#' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
+#' @param modelname Optional base name for the generated C++ source file
+#'   \emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
+#'   as well as the resulting shared library.
+#'   If \code{NULL}, a random identifier is used.
+#' @param outdir Directory where generated C++ source files are written. Defaults to `tempdir()`.
+#' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
+#' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers; requires `deriv = TRUE`.
+#' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector including derivatives. If `FALSE`, use only the value components for error control.
+#' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
+#' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
+#' @param verbose Logical. If `TRUE`, print progress messages.
 #'
 #' @return
-#' The compiled model name (character), carrying attributes that describe the compiled
-#' solver and its symbolic structure.
+#' The compiled model name (character).
+#' The returned object carries a set of attributes that describe the compiled solver
+#' and its symbolic structure:
+#'
+#' | Attribute | Type | Description |
+#' |:--|:--|:--|
+#' | `equations` | `character` | ODE right-hand side definitions |
+#' | `variables` | `character` | Names of the dynamic state variables |
+#' | `parameters` | `character` | Names of model parameters |
+#' | `events` | `data.frame` | Table of event specifications (if any) |
+#' | `rootfunc` | `character` | Root function specification (if any) |
+#' | `solver` | `list` | Description of the numerical solver configuration |
+#' | `fixed` | `character` | Names of fixed initial conditions or parameters |
+#' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
+#' | `deriv` | `logical` | Indicates whether first-order sensitivities (dual numbers) were used |
+#' | `deriv2` | `logical` | Indicates whether nested dual numbers were used for second-order sensitivities |
+#' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
 #'
 #' @example inst/examples/example_ODE.R
-#' @seealso \code{\link{solveODE}}
+#' @importFrom stats setNames
+#' @seealso [solveODE()] for a solver interface of compiled models
 #' @export
 CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
@@ -332,7 +339,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # --- Solver function (externC) ---
   externC <- c(
     sprintf(
-      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
+      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
       modelname
     ),
     "try {",
@@ -344,107 +351,204 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     ""
   )
 
-  # initialization of variables and parameters
-  externC <- c(externC,
-               "  // initialize variables",
-               sprintf("  for (int i = 0; i < %d; ++i) {", n_variables))
+  # --- Custom sensitivity initial values ---
+  if (deriv) {
+    externC <- c(
+      externC,
+      "  // Custom sensitivity initial values",
+      "  bool has_sens1ini = !Rf_isNull(sens1iniSEXP);",
+      "  double* sens1ini = has_sens1ini ? REAL(sens1iniSEXP) : nullptr;"
+    )
 
-  if (deriv2) {
-    # --- Second-order AD (AD2 = fadbad::F<fadbad::F<double>>) ---
-    externC <- c(externC,
-                 "    x[i].x().x() = REAL(paramsSEXP)[i];",
-                 "    // Outer layer seeding (second derivative)",
-                 sprintf("    x[i].diff(i, %d);", n_variables + n_params))
+    externC <- c(
+      externC,
+      "  if (has_sens1ini) {",
+      sprintf(
+        "    if (Rf_length(sens1iniSEXP) != %d * %d)",
+        n_variables, n_total_sens
+      ),
+      "      Rf_error(\"sens1ini has wrong length\");",
+      "  }"
+    )
 
-    if (length(fixed_initial_idx) > 0) {
-      externC <- c(externC,
-                   sprintf("    // Skip fixed initial conditions when seeding inner layer"),
-                   sprintf("    if (!(%s)) x[i].x().diff(i, %d);",
-                           paste(sprintf("i == %d", fixed_initial_idx), collapse = " || "),
-                           n_variables + n_params))
+    if (deriv2) {
+      externC <- c(
+        externC,
+        "  bool has_sens2ini = !Rf_isNull(sens2iniSEXP);",
+        "  double* sens2ini = has_sens2ini ? REAL(sens2iniSEXP) : nullptr;"
+      )
+
+      externC <- c(
+        externC,
+        "  if (has_sens2ini) {",
+        sprintf(
+          "    if (Rf_length(sens2iniSEXP) != %d * %d * %d)",
+          n_variables, n_total_sens, n_total_sens
+        ),
+        "      Rf_error(\"sens2ini has wrong length\");",
+        "  }"
+      )
     } else {
-      externC <- c(externC,
-                   "    // Inner layer seeding (first derivative)",
-                   sprintf("    x[i].x().diff(i, %d);", n_variables + n_params))
+      externC <- c(
+        externC,
+        "  if (!Rf_isNull(sens2iniSEXP))",
+        "    Rf_error(\"sens2ini supplied but deriv2 = FALSE\");"
+      )
     }
 
-  } else if (deriv) {
-    # --- First-order AD only (AD = fadbad::F<double>) ---
-    externC <- c(externC,
-                 "    x[i] = REAL(paramsSEXP)[i];")
-
-    if (length(fixed_initial_idx) > 0) {
-      externC <- c(externC,
-                   sprintf("    // Skip fixed initial conditions when seeding"),
-                   sprintf("    if (!(%s)) x[i].diff(i, %d);",
-                           paste(sprintf("i == %d", fixed_initial_idx), collapse = " || "),
-                           n_variables + n_params))
-    } else {
-      externC <- c(externC,
-                   sprintf("    x[i].diff(i, %d);", n_variables + n_params))
-    }
-
-  } else {
-    # --- Plain double case (no AD) ---
-    externC <- c(externC,
-                 "    x[i] = REAL(paramsSEXP)[i];")
+    externC <- c(externC, "")
   }
 
-  # assign to parameter vector
-  externC <- c(externC,
-               "    full_params[i] = x[i];",
-               "  }",
-               "",
-               "  // initialize parameters",
-               sprintf("  for (int i = 0; i < %d; ++i) {", n_params))
+  # --- Sensitivity dimensions and index helpers ---
+  if (deriv) {
+    externC <- c(
+      externC,
+      sprintf("  const int n_states = %d;", n_variables),
+      sprintf("  const int n_sens   = %d;", n_total_sens),
+      "  auto IDX1 = [n_states](int s, int v) {",
+      "    return s + n_states * v;",
+      "  };"
+    )
 
-  if (deriv2) {
-    externC <- c(externC,
-                 sprintf("    int param_index = %d + i;", n_variables),
-                 "    full_params[param_index].x().x() = REAL(paramsSEXP)[param_index];",
-                 "    // Outer layer seeding (second derivative)",
-                 sprintf("    full_params[param_index].diff(param_index, %d);", n_variables + n_params))
-
-    if (length(fixed_param_idx) > 0) {
-      externC <- c(externC,
-                   "    // Skip fixed parameters when seeding inner layer",
-                   sprintf("    if (!(%s)) full_params[param_index].x().diff(param_index, %d);",
-                           paste(sprintf("i == %d", fixed_param_idx), collapse = " || "),
-                           n_variables + n_params))
-    } else {
-      externC <- c(externC,
-                   "    // Inner layer seeding (first derivative)",
-                   sprintf("    full_params[param_index].x().diff(param_index, %d);",
-                           n_variables + n_params))
+    if (deriv2) {
+      externC <- c(
+        externC,
+        "  auto IDX2 = [n_states, n_sens](int s, int v1, int v2) {",
+        "    return s + n_states * (v1 + n_sens * v2);",
+        "  };"
+      )
     }
 
-  } else if (deriv) {
-    externC <- c(externC,
-                 sprintf("    int param_index = %d + i;", n_variables),
-                 "    full_params[param_index] = REAL(paramsSEXP)[param_index];")
-
-    if (length(fixed_param_idx) > 0) {
-      externC <- c(externC,
-                   "    // Skip fixed parameters when seeding",
-                   sprintf("    if (!(%s)) full_params[param_index].diff(param_index, %d);",
-                           paste(sprintf("i == %d", fixed_param_idx), collapse = " || "),
-                           n_variables + n_params))
-    } else {
-      externC <- c(externC,
-                   sprintf("    full_params[param_index].diff(param_index, %d);",
-                           n_variables + n_params))
-    }
-
-  } else {
-    externC <- c(externC,
-                 sprintf("    full_params[%d + i] = REAL(paramsSEXP)[%d + i];", n_variables, n_variables))
+    externC <- c(externC, "")
   }
 
-  externC <- c(externC,
-               "  }",
-               "")
+  # --- initialize states ---
+  externC <- c(
+    externC,
+    "  // initialize variables",
+    sprintf("  for (int i = 0; i < %d; ++i) {", n_variables),
+    "    bool is_fixed = false;"
+  )
 
-  # === INSERT FORCING INITIALIZATION CODE HERE ===
+  if (deriv && length(fixed_initial_idx) > 0) {
+    externC <- c(
+      externC,
+      sprintf(
+        "    is_fixed = (%s);",
+        paste(sprintf("i == %d", fixed_initial_idx), collapse = " || ")
+      )
+    )
+  }
+
+  if (deriv2) {
+    externC <- c(
+      externC,
+      "    x[i].x().x() = REAL(paramsSEXP)[i];",
+      "    if (!is_fixed) {",
+      "      // First-order sensitivities (inner layer)",
+      "      if (has_sens1ini) {",
+      "        x[i].x().diff(0, n_sens);  // Allocate first-order array",
+      "        for (int v1 = 0; v1 < n_sens; ++v1) {",
+      "          x[i].x().d(v1) = sens1ini[IDX1(i, v1)];",
+      "        }",
+      "      } else {",
+      "        x[i].x().diff(i, n_sens);  // Identity: d(i) = 1",
+      "      }",
+      "      // Second-order sensitivities (outer layer)",
+      "      if (has_sens2ini) {",
+      "        // Custom second-order initialization",
+      "        for (int v1 = 0; v1 < n_sens; ++v1) {",
+      "          x[i].diff(v1, n_sens).diff(0, n_sens);  // Allocate second-order array",
+      "          for (int v2 = 0; v2 < n_sens; ++v2) {",
+      "            x[i].diff(v1, n_sens).d(v2) = sens2ini[IDX2(i, v1, v2)];",
+      "          }",
+      "        }",
+      "      } else {",
+      "        // Default: allocate outer layer with zeros",
+      "        // This seeds x[i].d(v1) = 0 for all v1, which is required for",
+      "        // proper second-order AD propagation",
+      "        x[i].diff(i, n_sens);  // Allocate outer layer (inner derivative of outer = 0 by default)",
+      "      }",
+      "    }"
+    )
+  } else if (deriv) {
+    externC <- c(
+      externC,
+      "    x[i] = REAL(paramsSEXP)[i];",
+      "    if (!is_fixed) {",
+      "      if (has_sens1ini) {",
+      "        x[i].diff(0, n_sens);  // Allocate",
+      "        for (int v = 0; v < n_sens; ++v) {",
+      "          x[i].d(v) = sens1ini[IDX1(i, v)];",
+      "        }",
+      "      } else {",
+      "        x[i].diff(i, n_sens);  // Identity: d(i) = 1",
+      "      }",
+      "    }"
+    )
+  } else {
+    externC <- c(externC, "    x[i] = REAL(paramsSEXP)[i];")
+  }
+
+  externC <- c(
+    externC,
+    "    full_params[i] = x[i];",
+    "  }",
+    "",
+    "  // initialize parameters",
+    sprintf("  for (int i = 0; i < %d; ++i) {", n_params),
+    sprintf("    int param_index = %d + i;", n_variables),
+    "    bool is_fixed = false;"
+  )
+
+  if (deriv && length(fixed_param_idx) > 0) {
+    externC <- c(
+      externC,
+      sprintf(
+        "    is_fixed = (%s);",
+        paste(sprintf("i == %d", fixed_param_idx), collapse = " || ")
+      )
+    )
+  }
+
+  if (deriv2) {
+    externC <- c(
+      externC,
+      "    int sens_idx = n_states + i;",
+      "    full_params[param_index].x().x() = REAL(paramsSEXP)[param_index];",
+      "    if (!is_fixed) {",
+      "      // First-order (inner layer): Parameters use identity matrix dp_i/dp_j = delta_{ij}",
+      "      full_params[param_index].x().diff(sens_idx, n_sens);  // Sets d(sens_idx) = 1",
+      "      // Second-order (outer layer): d^2 p_i/dp_j dp_k = 0 (parameters are constant)",
+      "      // But we still need to allocate the outer layer for AD propagation",
+      "      full_params[param_index].diff(sens_idx, n_sens);  // Allocate outer layer (inner values default to 0)",
+      "    }"
+    )
+  } else if (deriv) {
+    externC <- c(
+      externC,
+      "    int sens_idx = n_states + i;",
+      "    full_params[param_index] = REAL(paramsSEXP)[param_index];",
+      "    if (!is_fixed) {",
+      "      for (int v = 0; v < n_sens; ++v) {",
+      "        // Parameters use identity matrix: dp_i/dp_j = delta_{ij}",
+      "        // (sens1ini only provides state sensitivities, not parameter sensitivities)",
+      "        double seed = (v == sens_idx ? 1.0 : 0.0);",
+      "        if (seed != 0.0) {",
+      "          full_params[param_index].diff(v, n_sens);",
+      "          full_params[param_index].d(v) *= seed;",
+      "        }",
+      "      }",
+      "    }"
+    )
+  } else {
+    externC <- c(externC, "    full_params[param_index] = REAL(paramsSEXP)[param_index];")
+  }
+
+  externC <- c(externC, "  }", "")
+
+
+  # --- Forcing Initialization ---
   externC <- c(externC, forcing_init_code, "")
 
   externC <- c(externC,
@@ -905,6 +1009,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @param parms Named numeric vector containing initial conditions and parameters.
 #'   The order must match `c(attr(model, "variables"), attr(model, "parameters"))`.
 #'   Names are checked against the model specification.
+#' @param sens1ini Optional named numeric vector of initial values for first-order
+#'   sensitivities. Names must match `attr(model, "dim_names")$sens`.
+#'   If `NULL`, default identity seeding is used.
+#' @param sens2ini Optional numeric vector of initial values for second-order
+#'   sensitivities. Only allowed if `attr(model, "deriv2") == TRUE`.
+#'   If `NULL`, zero seeding is used.
 #' @param forcings Optional named list of forcing function data. Each element
 #'   should be a `data.frame` (or coercible object) with columns `time` and `value`,
 #'   or a two-column matrix. Names must match `attr(model, "forcings")`.
@@ -918,31 +1028,20 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #'   is estimated automatically.
 #' @param roottol Tolerance for root-finding in root-triggered events.
 #'   Default: `1e-6`.
-#' @param maxroot Maximum triggers per root event
-#'   Default: `1`.
+#' @param maxroot Maximum triggers per root event. Default: `1`.
 #'
-#' @return A named list with the following components:
-#' \describe{
-#'   \item{`time`}{Numeric vector of output time points (length \eqn{n_t}).}
-#'   \item{`variable`}{Numeric matrix of state trajectories with dimensions
-#'     \eqn{(n_t, n_x)}, where rows correspond to time points and columns to
-#'     state variables. Column names match `attr(model, "variables")`.}
-#'   \item{`sens1`}{(If `deriv = TRUE`) Numeric array of first-order sensitivities
-#'     with dimensions \eqn{(n_t, n_x, n_s)}, containing
-#'     \eqn{\partial x_j(t_i) / \partial p_k}.
-#'     Dimension names are provided via `attr(model, "dim_names")`.}
-#'   \item{`sens2`}{(If `deriv2 = TRUE`) Numeric array of second-order sensitivities
-#'     with dimensions \eqn{(n_t, n_x, n_s, n_s)}, containing
-#'     \eqn{\partial^2 x_j(t_i) / \partial p_k \partial p_l}.}
-#' }
+#' @return A named list with components `time`, `variable`, and optionally
+#'   `sens1` and `sens2` depending on model configuration.
 #'
 #' @seealso [CppODE()] for model specification and compilation.
 #'
 #' @export
-solveODE <- function(model, times, parms, forcings = NULL,
+solveODE <- function(model, times, parms,
+                     sens1ini = NULL, sens2ini = NULL,
+                     forcings = NULL,
                      abstol = 1e-6, reltol = 1e-6,
-                     maxprogress = 10L, maxsteps = 1e6L,
-                     hini = 0, roottol = 1e-6, maxroot = 10L) {
+                     maxprogress = 100L, maxsteps = 1e6L,
+                     hini = 0, roottol = 1e-6, maxroot = 100L) {
 
   ## --- Model validation ---
   if (!is.character(model) || length(model) != 1L) {
@@ -950,7 +1049,8 @@ solveODE <- function(model, times, parms, forcings = NULL,
   }
 
   model_attr_names <- names(attributes(model))
-  required_attrs <- c("variables", "parameters", "forcings", "deriv", "deriv2", "dim_names")
+  required_attrs <- c("variables", "parameters", "forcings",
+                      "deriv", "deriv2", "dim_names")
   missing_attrs <- required_attrs[!required_attrs %in% model_attr_names]
 
   if (length(missing_attrs)) {
@@ -959,39 +1059,115 @@ solveODE <- function(model, times, parms, forcings = NULL,
          ". Was it created by CppODE()?")
   }
 
-  variables      <- attr(model, "variables")
-  parameters     <- attr(model, "parameters")
-  forcing_names  <- attr(model, "forcings")
-  dim_names      <- attr(model, "dim_names")
+  variables     <- attr(model, "variables")
+  parameters    <- attr(model, "parameters")
+  forcing_names <- attr(model, "forcings")
+  deriv         <- attr(model, "deriv")
+  deriv2        <- attr(model, "deriv2")
+  dim_names     <- attr(model, "dim_names")
+
+  ## --- Sensitivity initial values ---
+  if (!deriv) {
+    if (!is.null(sens1ini) || !is.null(sens2ini)) {
+      stop("sens1ini/sens2ini supplied but model has deriv = FALSE")
+    }
+    sens1ini <- NULL
+    sens2ini <- NULL
+  } else {
+    sens_names <- dim_names$sens
+    if (is.null(sens_names))
+      stop("Model has deriv = TRUE but no sensitivity dim_names$sens")
+    if (!is.null(sens1ini)) {
+      if (!is.numeric(sens1ini))
+        stop("'sens1ini' must be numeric")
+      n_states <- length(variables)
+      n_sens   <- length(sens_names)
+      expected_len <- n_states * n_sens
+      # Accept matrix [n_states, n_sens] or vector of length n_states * n_sens
+      if (is.matrix(sens1ini)) {
+        # Validate matrix dimensions
+        if (nrow(sens1ini) != n_states || ncol(sens1ini) != n_sens)
+          stop(sprintf("'sens1ini' matrix must have dimensions [%d, %d] (states x sens)",
+                       n_states, n_sens))
+        # Check dimnames if present
+        if (!is.null(rownames(sens1ini)) && !setequal(rownames(sens1ini), variables))
+          stop("'sens1ini' row names must match model variables")
+        if (!is.null(colnames(sens1ini)) && !setequal(colnames(sens1ini), sens_names))
+          stop("'sens1ini' column names must match model sensitivity names")
+        # Reorder if named
+        if (!is.null(rownames(sens1ini)) && !is.null(colnames(sens1ini)))
+          sens1ini <- sens1ini[variables, sens_names, drop = FALSE]
+        # Flatten column-major (R default) to match C++ IDX1(state, sens) = state + n_states * sens
+        sens1ini <- as.double(sens1ini)
+      } else if (is.array(sens1ini) && length(dim(sens1ini)) == 2) {
+        # Same as matrix case
+        if (dim(sens1ini)[1] != n_states || dim(sens1ini)[2] != n_sens)
+          stop(sprintf("'sens1ini' array must have dimensions [%d, %d]", n_states, n_sens))
+        sens1ini <- as.double(sens1ini)
+      } else {
+        # Vector case
+        if (length(sens1ini) != expected_len)
+          stop(sprintf("'sens1ini' vector must have length %d (n_states * n_sens)", expected_len))
+        sens1ini <- as.double(sens1ini)
+      }
+    }
+    if (!deriv2 && !is.null(sens2ini)) {
+      stop("'sens2ini' supplied but model has deriv2 = FALSE")
+    }
+    if (deriv2 && !is.null(sens2ini)) {
+      if (!is.numeric(sens2ini))
+        stop("'sens2ini' must be numeric")
+      n_states <- length(variables)
+      n_sens   <- length(sens_names)
+      expected_len <- n_states * n_sens * n_sens
+      # Accept array [n_states, n_sens, n_sens] or vector
+      if (is.array(sens2ini) && length(dim(sens2ini)) == 3) {
+        # Validate array dimensions
+        if (dim(sens2ini)[1] != n_states || dim(sens2ini)[2] != n_sens || dim(sens2ini)[3] != n_sens)
+          stop(sprintf("'sens2ini' array must have dimensions [%d, %d, %d] (states x sens x sens)",
+                       n_states, n_sens, n_sens))
+        # Check dimnames if present
+        dn <- dimnames(sens2ini)
+        if (!is.null(dn[[1]]) && !setequal(dn[[1]], variables))
+          stop("'sens2ini' first dimension names must match model variables")
+        if (!is.null(dn[[2]]) && !setequal(dn[[2]], sens_names))
+          stop("'sens2ini' second dimension names must match model sensitivity names")
+        if (!is.null(dn[[3]]) && !setequal(dn[[3]], sens_names))
+          stop("'sens2ini' third dimension names must match model sensitivity names")
+        # Reorder if named
+        if (!is.null(dn[[1]]) && !is.null(dn[[2]]) && !is.null(dn[[3]]))
+          sens2ini <- sens2ini[variables, sens_names, sens_names, drop = FALSE]
+        # Flatten to match C++ IDX2(state, v1, v2) = state + n_states * (v1 + n_sens * v2)
+        sens2ini <- as.double(sens2ini)
+      } else {
+        # Vector case
+        if (length(sens2ini) != expected_len)
+          stop(sprintf("'sens2ini' vector must have length %d (n_states * n_sens * n_sens)", expected_len))
+        sens2ini <- as.double(sens2ini)
+      }
+    }
+  }
 
   ## --- Times ---
-  if (!is.numeric(times) || !length(times)) {
+  if (!is.numeric(times) || !length(times))
     stop("'times' must be a non-empty numeric vector")
-  }
-  if (anyNA(times) || any(!is.finite(times))) {
+  if (anyNA(times) || any(!is.finite(times)))
     stop("'times' must contain only finite values")
-  }
   times <- as.double(times)
 
   ## --- Parameters ---
-  if (!is.numeric(parms) || is.null(names(parms))) {
+  if (!is.numeric(parms) || is.null(names(parms)))
     stop("'parms' must be a named numeric vector")
-  }
 
   required_names <- c(variables, parameters)
-  parm_names     <- names(parms)
-
-  missing_names <- required_names[!required_names %in% parm_names]
-  if (length(missing_names)) {
+  missing_names <- required_names[!required_names %in% names(parms)]
+  if (length(missing_names))
     stop("'parms' is missing required values: ",
          paste(missing_names, collapse = ", "))
-  }
 
   parms_ordered <- as.double(parms[required_names])
-
-  if (anyNA(parms_ordered) || any(!is.finite(parms_ordered))) {
+  if (anyNA(parms_ordered) || any(!is.finite(parms_ordered)))
     stop("'parms' must contain only finite values")
-  }
 
   ## --- Forcings ---
   n_forcings <- length(forcing_names)
@@ -1007,15 +1183,13 @@ solveODE <- function(model, times, parms, forcings = NULL,
     forcing_values_list <- list()
   } else {
 
-    if (!is.list(forcings) || is.null(names(forcings))) {
+    if (!is.list(forcings) || is.null(names(forcings)))
       stop("'forcings' must be a named list")
-    }
 
     missing_forcings <- forcing_names[!forcing_names %in% names(forcings)]
-    if (length(missing_forcings)) {
+    if (length(missing_forcings))
       stop("Missing forcing data for: ",
            paste(missing_forcings, collapse = ", "))
-    }
 
     forcing_times_list  <- vector("list", n_forcings)
     forcing_values_list <- vector("list", n_forcings)
@@ -1032,25 +1206,20 @@ solveODE <- function(model, times, parms, forcings = NULL,
         f <- as.data.frame(f)
       }
 
-      if (!all(c("time", "value") %in% names(f))) {
+      if (!all(c("time", "value") %in% names(f)))
         stop("Forcing '", nm, "' must have columns 'time' and 'value'")
-      }
 
       ft <- as.double(f$time)
       fv <- as.double(f$value)
 
       if (length(ft) < 2L)
         stop("Forcing '", nm, "' needs at least 2 time points")
-
       if (length(ft) != length(fv))
         stop("Forcing '", nm, "': 'time' and 'value' length mismatch")
-
       if (anyNA(ft) || any(!is.finite(ft)))
         stop("Forcing '", nm, "': non-finite 'time'")
-
       if (anyNA(fv) || any(!is.finite(fv)))
         stop("Forcing '", nm, "': non-finite 'value'")
-
       if (anyDuplicated(ft))
         stop("Forcing '", nm, "': duplicate time values")
 
@@ -1074,12 +1243,16 @@ solveODE <- function(model, times, parms, forcings = NULL,
   if (maxroot     <= 0L) stop("'maxroot' must be positive")
 
   ## --- Call C++ solver ---
-  SYM <- getNativeSymbolInfo(paste0("solve_", model))
-  result <- tryCatch(
+  solver_name <- paste0("solve_", model)
+
+  result <- tryCatch({
+    SYM <- getNativeSymbolInfo(solver_name)
     .Call(
       SYM,
       times,
       parms_ordered,
+      sens1ini,
+      sens2ini,
       as.double(abstol),
       as.double(reltol),
       maxprogress,
@@ -1089,23 +1262,27 @@ solveODE <- function(model, times, parms, forcings = NULL,
       maxroot,
       forcing_times_list,
       forcing_values_list
-    ),
-    error = function(e) {
-      if (grepl("not available|not found|symbol", e$message, ignore.case = TRUE)) {
-        stop("Compiled solver '", SYM$name,
-             "' not found. Was the model compiled with compile = TRUE?",
-             call. = FALSE)
-      }
-      stop(e$message, call. = FALSE)
+    )
+  }, error = function(e) {
+    msg <- e$message
+    if (grepl("not available|not found|symbol", msg, ignore.case = TRUE)) {
+      stop("Compiled solver '", solver_name, "' not found.\n",
+           "Possible causes:\n",
+           "  - Model was created with compile = FALSE\n",
+           "  - Shared library was not loaded (try: dyn.load(...))\n",
+           "  - R session was restarted after compilation",
+           call. = FALSE)
     }
-  )
+    # Re-throw other errors with context
+    stop("Error in ODE solver: ", msg, call. = FALSE)
+  })
 
   ## --- Output decoration ---
   if (!is.null(result$variable)) {
     colnames(result$variable) <- variables
   }
 
-  if (!is.null(result$sens1) && !is.null(dim_names$sens)) {
+  if (!is.null(result$sens1)) {
     dimnames(result$sens1) <- list(
       time = NULL,
       variable = variables,
@@ -1113,7 +1290,7 @@ solveODE <- function(model, times, parms, forcings = NULL,
     )
   }
 
-  if (!is.null(result$sens2) && !is.null(dim_names$sens)) {
+  if (!is.null(result$sens2)) {
     dimnames(result$sens2) <- list(
       time = NULL,
       variable = variables,
@@ -1122,7 +1299,7 @@ solveODE <- function(model, times, parms, forcings = NULL,
     )
   }
 
-  return(result)
+  result
 }
 
 

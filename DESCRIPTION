@@ -15,5 +15,5 @@ Imports:
     reticulate,
     BH
 Suggests:
+    spelling,
     testthat
-

@@ -318,11 +318,6 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     os.makedirs(outdir, exist_ok=True)
     filename = os.path.join(outdir, f"{modelname}.cpp")
     
-    # Check if file exists and warn
-    if os.path.exists(filename):
-        abs_path = os.path.abspath(filename)
-        print(f"âš  Overwriting existing file: {abs_path}")
-    
     with open(filename, "w") as f:
         f.write(cpp_code)
 
