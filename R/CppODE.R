@@ -1560,11 +1560,9 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
     funsym_hess <- paste0(modelname, "_hessian")
     sofile <- paste0(modelname, .Platform$dynlib.ext)
 
-    compiled_available <- file.exists(sofile) && is.loaded(funsym_eval)
-
     result <- list()
 
-    if (compiled_available) {
+    if (is.loaded(funsym_eval)) {
       xvec <- as.double(as.vector(M))
       yvec <- double(length(outnames) * n_obs)
       n <- as.integer(n_obs)
@@ -1596,7 +1594,7 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
     if (deriv && !is.null(sym_jac)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
 
-      if (compiled_available && is.loaded(funsym_jac)) {
+      if (is.loaded(funsym_jac)) {
         # Compiled C++ path
         xvec <- as.double(as.vector(M))
         jac_vec <- double(n_obs * n_out * n_sym)
@@ -1639,7 +1637,7 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
     if (deriv2 && !is.null(sym_hess)) {
       n_out <- length(outnames); n_sym <- length(diff_syms)
 
-      if (compiled_available && is.loaded(funsym_hess)) {
+      if (is.loaded(funsym_hess)) {
         # Compiled C++ path
         xvec <- as.double(as.vector(M))
         hess_vec <- double(n_obs * n_out * n_sym * n_sym)
