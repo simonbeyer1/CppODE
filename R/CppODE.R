@@ -427,7 +427,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC,
     "  // initialize variables",
     sprintf("  for (int i = 0; i < %d; ++i) {", n_variables),
-    "    bool is_fixed = false;"
+    "    bool is_fixed = false;",
+    "    (void)is_fixed;  // suppress unused warning"
   )
 
   if (deriv && length(fixed_initial_idx) > 0) {
@@ -498,7 +499,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     "  // initialize parameters",
     sprintf("  for (int i = 0; i < %d; ++i) {", n_params),
     sprintf("    int param_index = %d + i;", n_variables),
-    "    bool is_fixed = false;"
+    "    bool is_fixed = false;",
+    "    (void)is_fixed;  // suppress unused warning"
   )
 
   if (deriv && length(fixed_param_idx) > 0) {

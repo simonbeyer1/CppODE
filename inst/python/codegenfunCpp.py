@@ -145,8 +145,25 @@ def _get_safe_parse_dict_cached():
 
 
 # =====================================================================
-# Code Generation Context (holds precomputed state)
+# Code Generation Context
 # =====================================================================
+
+_MATH_MACRO_MAP = {
+    "M_E": "std::exp(1.0)",
+    "M_LOG2E": "1.0 / std::log(2.0)",
+    "M_LOG10E": "1.0 / std::log(10.0)",
+    "M_LN2": "std::log(2.0)",
+    "M_LN10": "std::log(10.0)",
+    "M_PI": "std::acos(-1.0)",
+    "M_PI_2": "(std::acos(-1.0) * 0.5)",
+    "M_PI_4": "(std::acos(-1.0) * 0.25)",
+    "M_1_PI": "(1.0 / std::acos(-1.0))",
+    "M_2_PI": "(2.0 / std::acos(-1.0))",
+    "M_2_SQRTPI": "(2.0 / std::sqrt(std::acos(-1.0)))",
+    "M_SQRT2": "std::sqrt(2.0)",
+    "M_SQRT1_2": "std::sqrt(0.5)",
+}
+
 
 class CodeGenContext:
     """
@@ -215,6 +232,10 @@ class CodeGenContext:
         
         # Generate C++ code
         cpp_code = self.printer.doprint(expr)
+        
+        # replace non-standard math macros
+        for macro, repl in _MATH_MACRO_MAP.items():
+            cpp_code = cpp_code.replace(macro, repl)
         
         # Apply all replacements using precompiled patterns
         for pattern, replacement in self.compiled_patterns:
@@ -400,11 +421,13 @@ def _write_eval_function(buf, exprs, out_names, ctx, modelname):
     buf.write(f"void {modelname}_eval(double* x, double* y, double* p, int* n, int* k, int* l) {{\n")
     buf.write("    const int n_obs = *n;\n")
     buf.write("    const int n_vars = *k;\n")
-    buf.write("    const int n_out  = *l;\n\n")
+    buf.write("    const int n_out  = *l;\n")
+    buf.write("    (void)n_vars;  // suppress unused warning\n\n")
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
-        buf.write("        const double* x_obs = x + obs * n_vars;\n\n")
+        buf.write("        const double* x_obs = x + obs * n_vars;\n")
+        buf.write("        (void)x_obs;  // suppress unused warning\n\n")
 
     for i, out_name in enumerate(out_names):
         cpp_code = ctx.to_cpp(exprs[out_name])
@@ -429,6 +452,7 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     buf.write(f"void {modelname}_jacobian(double* x, double* jac, double* p, int* n, int* k, int* l) {{\n")
     buf.write("    const int n_obs = *n;\n")
     buf.write("    const int n_vars = *k;\n")
+    buf.write("    (void)n_vars;  // suppress unused warning\n")
     buf.write(f"    const int n_out = {n_out};\n")
     buf.write(f"    const int n_symbols = {n_symbols};\n\n")
     
@@ -441,7 +465,8 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
-        buf.write("        const double* x_obs = x + obs * n_vars;\n\n")
+        buf.write("        const double* x_obs = x + obs * n_vars;\n")
+        buf.write("        (void)x_obs;  // suppress unused warning\n\n")
 
     for i, out_name in enumerate(out_names):
         if out_name not in jacobian:
@@ -479,6 +504,7 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     buf.write("    const int n_obs = *n;\n")
     buf.write("    const int n_vars = *k;\n")
     buf.write(f"    const int n_out = {n_out};\n")
+    buf.write("    (void)n_vars;  // suppress unused warning\n")
     buf.write(f"    const int n_symbols = {n_symbols};\n\n")
     
     buf.write("    // Zero-initialize\n")
@@ -489,7 +515,8 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
-        buf.write("        const double* x_obs = x + obs * n_vars;\n\n")
+        buf.write("        const double* x_obs = x + obs * n_vars;\n")
+        buf.write("        (void)x_obs;  // suppress unused warning\n\n")
 
     for i, out_name in enumerate(out_names):
         if out_name not in hessian:

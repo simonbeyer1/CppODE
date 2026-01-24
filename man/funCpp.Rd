@@ -97,7 +97,7 @@ f <- funCpp(eqns,
             parameters = c("k_p", "k1", "k2", "k_d"),
             deriv      = TRUE,
             deriv2     = TRUE,
-            compile    = TRUE,
+            compile    = F,
             convenient = TRUE)
 
 res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = TRUE)
