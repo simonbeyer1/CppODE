@@ -132,6 +132,27 @@ def _ensure_double_literals(cpp_code):
     return temp
 
 
+
+# =====================================================================
+# Math macro replacement map
+# =====================================================================
+
+_MATH_MACRO_MAP = {
+    "M_E": "std::exp(1.0)",
+    "M_LOG2E": "1.0 / std::log(2.0)",
+    "M_LOG10E": "1.0 / std::log(10.0)",
+    "M_LN2": "std::log(2.0)",
+    "M_LN10": "std::log(10.0)",
+    "M_PI": "std::acos(-1.0)",
+    "M_PI_2": "(std::acos(-1.0) * 0.5)",
+    "M_PI_4": "(std::acos(-1.0) * 0.25)",
+    "M_1_PI": "(1.0 / std::acos(-1.0))",
+    "M_2_PI": "(2.0 / std::acos(-1.0))",
+    "M_2_SQRTPI": "(2.0 / std::sqrt(std::acos(-1.0)))",
+    "M_SQRT2": "std::sqrt(2.0)",
+    "M_SQRT1_2": "std::sqrt(0.5)",
+}
+
 # =====================================================================
 # _to_cpp
 # =====================================================================
@@ -140,6 +161,9 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
     if forcings is None:
         forcings = []
     cpp_code = str(sp.cxxcode(expr, standard="c++17", strict=False)).replace("\n", " ")
+    # replace non-standard math macros
+    for macro, repl in _MATH_MACRO_MAP.items():
+        cpp_code = cpp_code.replace(macro, repl)
     if num_type in ("AD", "AD2"):
         for fn in [
             "sin", "cos", "tan", "asin", "acos", "atan",
