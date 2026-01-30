@@ -10,6 +10,7 @@ solveODE(
   parms,
   sens1ini = NULL,
   sens2ini = NULL,
+  fixed = NULL,
   forcings = NULL,
   abstol = 1e-06,
   reltol = 1e-06,
@@ -37,6 +38,14 @@ If \code{NULL}, default identity seeding is used.}
 \item{sens2ini}{Optional numeric vector of initial values for second-order
 sensitivities. Only allowed if \code{attr(model, "deriv2") == TRUE}.
 If \code{NULL}, zero seeding is used.}
+
+\item{fixed}{Optional character vector of sensitivity parameter names to treat as
+fixed at runtime. These parameters will not have their sensitivities computed,
+resulting in faster integration. Names must be a subset of
+\code{attr(model, "dim_names")$sens}. Unlike compile-time \code{fixed} in \code{\link[=CppODE]{CppODE()}},
+runtime fixed parameters can be changed between calls without recompilation.
+The output arrays will have reduced dimensions, excluding the fixed parameters.
+Default: \code{NULL} (all parameters variable).}
 
 \item{forcings}{Optional named list of forcing function data. Each element
 should be a \code{data.frame} (or coercible object) with columns \code{time} and \code{value},

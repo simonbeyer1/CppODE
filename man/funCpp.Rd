@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{funCpp}
 \alias{funCpp}
-\title{Generate a R/C++ evaluator for algebraic models with optional Jacobian/Hessian}
+\title{Generate functions for algebraic models with optional C++ backend and derivatives}
 \usage{
 funCpp(
   eqns,
@@ -20,73 +20,58 @@ funCpp(
 )
 }
 \arguments{
-\item{eqns}{Named character vector or list of expressions (e.g. \code{c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")}).
-Names become output column names. If \code{names(eqns)} is \code{NULL}, default names \verb{f1, f2, ...} are used.}
+\item{eqns}{Named character vector or list of algebraic expressions.
+Names define the output variables. If unnamed, default names
+\code{f1}, \code{f2}, ... are assigned.}
 
-\item{variables}{Character vector of variable names that appear in \code{eqns} and are supplied per observation.
-If \code{NULL} or length 0, the model is treated as purely parametric (no per-row variables).}
+\item{variables}{Character vector of variable names supplied per observation.
+If empty or \code{NULL}, the model is treated as purely parametric.}
 
-\item{parameters}{Character vector of parameter names used by the model.}
+\item{parameters}{Character vector of parameter names used in the model.}
 
-\item{fixed}{Optional character vector of symbols that should be treated as parameters at evaluation time,
-even if they originally appear in \code{variables}. Useful for "fixing" variables temporarily.}
+\item{fixed}{Optional character vector of symbols that are treated as
+parameters at evaluation time, even if they appear in \code{variables}.}
 
-\item{modelname}{Optional base name for the generated C++ source file
-\emph{and} for all generated C/C++ symbols (e.g. \code{modelname_eval},
-\code{modelname_jacobian}) and the resulting shared library.
-If \code{NULL}, a random identifier is used.}
+\item{modelname}{Optional base name used for generated C++ symbols and files.
+If \code{NULL}, a random identifier is generated.}
 
-\item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
+\item{outdir}{Directory where generated C++ source files are written.}
 
-\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
+\item{compile}{Logical; if \code{TRUE}, compile and load the generated C++ code.}
 
-\item{verbose}{Logical; if \code{TRUE}, prints progress messages.}
+\item{verbose}{Logical; if \code{TRUE}, print progress messages.}
 
-\item{warnings}{Logical; if \code{TRUE}, prints soft warnings about missing inputs filled with zeros.}
+\item{warnings}{Logical; if \code{TRUE}, emit warnings for missing inputs
+that are filled with zero.}
 
-\item{convenient}{Logical; if \code{TRUE}, returns a wrapper so you can call the function using
-\code{f(var1 = ..., var2 = ..., k1 = ..., k2 = ...)} style arguments without
-manually assembling matrices/vectors.}
+\item{convenient}{Logical; if \code{TRUE}, return wrapper functions that
+accept named arguments instead of matrices and parameter vectors.}
 
-\item{deriv}{Logical; if \code{TRUE}, compute and return the Jacobian. Required if \code{deriv2 = TRUE}.}
+\item{deriv}{Logical; if \code{TRUE}, enable computation of the Jacobian.}
 
-\item{deriv2}{Logical; if \code{TRUE}, compute and return the Hessian in addition to the Jacobian.}
+\item{deriv2}{Logical; if \code{TRUE}, enable computation of the Hessian.}
 }
 \value{
-A function with signature
-\preformatted{
-  f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE, verbose = FALSE)
-  }
-where:
-\itemize{
-\item \code{vars}: numeric matrix/data frame whose columns match \code{variables} (or \code{NULL} if none).
-\item \code{params}: named numeric vector containing all \code{parameters} (missing entries are filled with 0 if allowed).
-\item \code{attach.input}: if \code{TRUE}, input variables are prepended to the returned \code{out} matrix.
-\item \code{deriv}, \code{deriv2}: request derivatives at call time (must be compatible with how \code{f} was created).
+A list with components:
+\describe{
+\item{func}{Function evaluating the model output.}
+\item{jac}{Function evaluating the Jacobian (if enabled).}
+\item{hess}{Function evaluating the Hessian (if enabled).}
 }
 
-The returned list has elements:
-\itemize{
-\item \code{out}: numeric matrix of outputs with columns named as in \code{eqns}.
-\item \code{jacobian}: 3D array \verb{[n_obs, n_out, n_diff_syms]} if \code{deriv=TRUE}.
-\item \code{hessian}: 4D array \verb{[n_obs, n_out, n_diff_syms, n_diff_syms]} if \code{deriv2=TRUE}.
-}
-
-Attributes on the returned function include:
-\itemize{
-\item \code{equations}, \code{variables}, \code{parameters}, \code{fixed}, \code{modelname}
-\item \code{jacobian.symb} (if \code{deriv=TRUE})
-\item \code{hessian.symb}  (if \code{deriv2=TRUE})
-}
+The returned object carries attributes describing the model, including
+the original equations, variables, parameters, and symbolic derivatives
+when available.
 }
 \description{
-\code{funCpp()} takes a named vector/list of algebraic expressions and returns an evaluation
-function that can compute model outputs and, optionally, symbolic Jacobians and Hessians.
-It supports two backends:
-\itemize{
-\item A compiled C++ backend generated via a small Python helper (recommended for performance).
-\item A pure-R fallback that evaluates parsed R expressions.
-}
+Generates functions for evaluating a system of algebraic expressions and,
+optionally, their Jacobian and Hessian. Model evaluation can be performed
+either via generated and compiled C++ code for improved performance or via
+a pure R fallback.
+
+The returned object contains callable functions for model evaluation and,
+depending on the requested options, for computing first- and second-order
+derivatives.
 }
 \examples{
 \dontrun{

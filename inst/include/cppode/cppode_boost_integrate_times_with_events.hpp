@@ -206,6 +206,219 @@ inline void apply_event(
   }
 }
 
+//==============================================================================
+// Section 5b: Saltation Matrix Correction for Root Event Sensitivities
+//==============================================================================
+
+// No SFINAE needed - sys is always pair<ode_system, jacobian>
+
+
+/**
+ * @brief Extract the number of sensitivity directions from an AD type
+ *
+ * Returns 0 for non-AD types (double), or the derivative array size for F<T>.
+ */
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, unsigned>::type
+get_n_sens(const T&) { return 0; }
+
+template<class T>
+inline unsigned get_n_sens(const fadbad::F<T>& v) {
+  return const_cast<fadbad::F<T>&>(v).size();
+}
+
+/**
+ * @brief Get derivative component from AD type (returns 0 for non-AD)
+ */
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
+get_deriv(const T&, unsigned) { return 0.0; }
+
+template<class T>
+inline double get_deriv(const fadbad::F<T>& v, unsigned i) {
+  return scalar_value(const_cast<fadbad::F<T>&>(v).d(i));
+}
+
+/**
+ * @brief Add a scalar correction to sensitivity component of AD type
+ *
+ * For F<double>: x.d(i) += correction
+ * For F<F<double>>: x.x().d(i) += correction (first-order only for now)
+ */
+
+// Base case: non-AD types (no-op)
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, void>::type
+add_sens_correction(T&, unsigned, double) { /* no-op for non-AD */ }
+
+// For F<F<T>> (second-order AD) - apply to inner (first-order) derivatives
+// This overload must come BEFORE the F<T> overload to be selected for nested types
+template<class T>
+inline void add_sens_correction(fadbad::F<fadbad::F<T>>& x, unsigned i, double correction) {
+  if (i < x.x().size()) {
+    x.x().d(i) += correction;
+  }
+}
+
+// For F<T> where T is arithmetic (first-order AD)
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, void>::type
+add_sens_correction(fadbad::F<T>& x, unsigned i, double correction) {
+  if (i < x.size()) {
+    x.d(i) += correction;
+  }
+}
+
+/*
+ * Apply saltation matrix correction for root event sensitivities
+ *
+ * When a root event triggers at time t_star, the event time depends on parameters
+ * through the root function g(x,p) = 0. This creates a sensitivity discontinuity
+ * that must be corrected using the saltation matrix.
+ *
+ * Mathematical background:
+ * For a root function g(x(t), p) = 0 triggering at t = t_star(p), the event time
+ * sensitivity is:
+ *
+ *   d(t_star)/dp = -(dg/dp)_explicit / (dg/dt)
+ *
+ * where (dg/dp)_explicit is the EXPLICIT parameter dependence (not through x).
+ * For g = x_i - threshold:
+ *   - (dg/d_threshold)_explicit = -1
+ *   - dg/dt = dx_i/dt = f_i
+ *   - So: d(t_star)/d(threshold) = 1 / f_i
+ *
+ * The sensitivity jump across the event is:
+ *   dx_after/dp = dx_before/dp + f * d(t_star)/dp
+ *
+ * Important: The AD-computed g.d(j) contains the TOTAL derivative dg/dp which
+ * includes both explicit and implicit (through x) dependence:
+ *   g.d(j) = (dg/dp_j)_explicit + (dg/dx) * (dx/dp_j)
+ *
+ * To get the explicit part, we evaluate g with "frozen" state derivatives,
+ * i.e., we create a copy of x where the derivative components are zeroed.
+ *
+ * Template parameters:
+ *   state_type - Vector of AD types (e.g., ublas::vector<F<double>>)
+ *   time_type  - Time type (AD-compatible)
+ *   System     - ODE system functor
+ *   RootFunc   - Root function type
+ *
+ * Parameters:
+ *   x              - State vector at event time (modified in place)
+ *   t              - Event time
+ *   sys            - ODE system (to evaluate f)
+ *   root_func      - Root function (to get dg/dp via AD)
+ *   event_state_idx - Index of state that the root function monitors
+ */
+template<class state_type, class time_type, class System, class RootFunc>
+inline void apply_saltation_correction(
+    state_type& x,
+    const time_type& t,
+    System& sys,
+    RootFunc& root_func,
+    int event_state_idx)
+{
+  using value_type = typename state_type::value_type;
+
+  // Get number of sensitivity directions
+  if (x.empty()) return;
+  unsigned n_sens = get_n_sens(x[0]);
+  if (n_sens == 0) return;  // No sensitivities to correct
+
+  // Evaluate ODE RHS to get f(x, t)
+  state_type f(x.size());
+  sys.first(x, f, t);
+
+  // Compute g_dot = dg/dt numerically
+  // This is the time derivative of the root function: dg/dt = (dg/dx) * f
+  // We compute this using finite differences on the root function evaluation
+  //
+  // For simple roots like "A - Acrit": g_dot = dA/dt = f[0]
+  // For complex roots like "A + B - C": g_dot = f[A] + f[B]
+  //
+  // Numerical approach: g_dot approx (g(x + eps*f) - g(x)) / eps
+  // But this is expensive. Instead, we use a simpler heuristic:
+  // assume the root function depends primarily on state[event_state_idx]
+
+  double g_dot = 0.0;
+
+  // Try the event state index first (most common case)
+  if (event_state_idx >= 0 && static_cast<size_t>(event_state_idx) < f.size()) {
+    g_dot = scalar_value(f[event_state_idx]);
+  }
+
+  // If that didn't work (g_dot approx 0), compute g_dot numerically
+  if (std::abs(g_dot) < 1e-15) {
+    // Numerical differentiation: g_dot = (g(x + eps*f*dt) - g(x)) / dt
+    // where dt is a small time step
+    const double eps_dt = 1e-8;
+
+    // Evaluate g at current state
+    value_type g_curr = root_func(x, t);
+    double g_val = scalar_value(g_curr);
+
+    // Create perturbed state: x_pert = x + eps_dt * f
+    state_type x_pert(x.size());
+    for (size_t i = 0; i < x.size(); ++i) {
+      x_pert[i] = value_type(scalar_value(x[i]) + eps_dt * scalar_value(f[i]));
+    }
+
+    // Evaluate g at perturbed state
+    value_type g_pert = root_func(x_pert, t + time_type(eps_dt));
+    double g_pert_val = scalar_value(g_pert);
+
+    g_dot = (g_pert_val - g_val) / eps_dt;
+  }
+
+  // Avoid division by zero (event at stationary point)
+  if (std::abs(g_dot) < 1e-15) {
+    return;
+  }
+
+  // Create a "frozen" state where sensitivity components are zeroed
+  // This lets us extract the EXPLICIT parameter dependence of g
+  state_type x_frozen(x.size());
+  for (size_t i = 0; i < x.size(); ++i) {
+    // Copy only the scalar value, not the derivatives
+    x_frozen[i] = value_type(scalar_value(x[i]));
+    // Re-seed with identity for the sensitivity directions
+    // (but we actually want zero derivatives here)
+    // The constructor from double should give us zero derivatives
+  }
+
+  // For parameters in full_params that the root function references,
+  // we need them to have their proper derivative seeds.
+  // The root function captures full_params by reference, so it will use
+  // the original parameter derivatives.
+  //
+  // Actually, the root function lambda captures full_params, not x's derivatives.
+  // So g_frozen.d(j) will give us the explicit parameter dependence!
+  value_type g_frozen = root_func(x_frozen, t);
+
+  // For each sensitivity direction, compute dt*/dp_j and apply correction
+  for (unsigned j = 0; j < n_sens; ++j) {
+    // (dg/dp_j)_explicit is in g_frozen.d(j)
+    double dg_dpj_explicit = get_deriv(g_frozen, j);
+
+    // dt*/dp_j = -(dg/dp_j)_explicit / g_dot
+    double dt_star_dpj = -dg_dpj_explicit / g_dot;
+
+    // Skip if no explicit dependence (optimization)
+    if (std::abs(dt_star_dpj) < 1e-20) {
+      continue;
+    }
+
+    // Apply correction to each state:
+    // dx_i+/dp_j += f_i * dt*/dp_j
+    for (size_t i = 0; i < x.size(); ++i) {
+      double fi = scalar_value(f[i]);
+      double correction = fi * dt_star_dpj;
+      add_sens_correction(x[i], j, correction);
+    }
+  }
+}
+
 /**
  * @brief Apply all fixed events scheduled for a specific time
  */
@@ -444,6 +657,16 @@ public:
               fired[i]++;
             }
 
+            // Apply saltation matrix correction for event-time sensitivities
+            // This corrects for the fact that the event time t* depends on parameters
+            for (const auto& te : triggered) {
+              size_t i = te.index;
+              if (!m_root[i].terminal) {
+                apply_saltation_correction(x_after, t_root, m_sys,
+                                           m_root[i].func, m_root[i].state_index);
+              }
+            }
+
             // Output state after all events
             obs(x_after, t_root + Time(1e-15));
             x = x_after;
@@ -607,6 +830,15 @@ public:
           fired[i]++;
         }
 
+        // Apply saltation matrix correction for event-time sensitivities
+        for (const auto& te : triggered) {
+          size_t i = te.index;
+          if (!m_root[i].terminal) {
+            apply_saltation_correction(x_root, t_root, m_sys,
+                                       m_root[i].func, m_root[i].state_index);
+          }
+        }
+
         obs(x_root, t_root + Time(1e-15));
 
         if (has_terminal) {
@@ -729,6 +961,15 @@ public:
                           m_root[i].value_func(x_root, t_root), m_root[i].method);
             }
             fired[i]++;
+          }
+
+          // Apply saltation matrix correction for event-time sensitivities
+          for (const auto& te : triggered) {
+            size_t i = te.index;
+            if (!m_root[i].terminal) {
+              apply_saltation_correction(x_root, t_root, m_sys,
+                                         m_root[i].func, m_root[i].state_index);
+            }
           }
 
           obs(x_root, t_root + Time(1e-15));

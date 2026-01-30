@@ -339,7 +339,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # --- Solver function (externC) ---
   externC <- c(
     sprintf(
-      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
+      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP fixedSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
       modelname
     ),
     "try {",
@@ -422,6 +422,26 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(externC, "")
   }
 
+  # --- Runtime fixed parameters ---
+  if (deriv) {
+    externC <- c(
+      externC,
+      "  // Runtime fixed parameters - O(1) lookup via boolean vector",
+      "  std::vector<bool> is_runtime_fixed(n_sens, false);",
+      "  if (!Rf_isNull(fixedSEXP)) {",
+      "    int* fixed_ptr = INTEGER(fixedSEXP);",
+      "    int n_fixed = Rf_length(fixedSEXP);",
+      "    for (int i = 0; i < n_fixed; ++i) {",
+      "      if (fixed_ptr[i] >= 0 && fixed_ptr[i] < n_sens) {",
+      "        is_runtime_fixed[fixed_ptr[i]] = true;",
+      "      }",
+      "    }",
+      "  }",
+      "  int n_runtime_fixed = std::count(is_runtime_fixed.begin(), is_runtime_fixed.end(), true);",
+      ""
+    )
+  }
+
   # --- initialize states ---
   externC <- c(
     externC,
@@ -445,7 +465,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(
       externC,
       "    x[i].x().x() = REAL(paramsSEXP)[i];",
-      "    if (!is_fixed) {",
+      "    if (!is_fixed && !is_runtime_fixed[i]) {",
       "      // First-order sensitivities (inner layer)",
       "      if (has_sens1ini) {",
       "        x[i].x().diff(0, n_sens);  // Allocate first-order array",
@@ -476,7 +496,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(
       externC,
       "    x[i] = REAL(paramsSEXP)[i];",
-      "    if (!is_fixed) {",
+      "    if (!is_fixed && !is_runtime_fixed[i]) {",
       "      if (has_sens1ini) {",
       "        x[i].diff(0, n_sens);  // Allocate",
       "        for (int v = 0; v < n_sens; ++v) {",
@@ -518,7 +538,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       externC,
       "    int sens_idx = n_states + i;",
       "    full_params[param_index].x().x() = REAL(paramsSEXP)[param_index];",
-      "    if (!is_fixed) {",
+      "    if (!is_fixed && !is_runtime_fixed[sens_idx]) {",
       "      // First-order (inner layer): Parameters use identity matrix dp_i/dp_j = delta_{ij}",
       "      full_params[param_index].x().diff(sens_idx, n_sens);  // Sets d(sens_idx) = 1",
       "      // Second-order (outer layer): d^2 p_i/dp_j dp_k = 0 (parameters are constant)",
@@ -531,7 +551,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       externC,
       "    int sens_idx = n_states + i;",
       "    full_params[param_index] = REAL(paramsSEXP)[param_index];",
-      "    if (!is_fixed) {",
+      "    if (!is_fixed && !is_runtime_fixed[sens_idx]) {",
       "      for (int v = 0; v < n_sens; ++v) {",
       "        // Parameters use identity matrix: dp_i/dp_j = delta_{ij}",
       "        // (sens1ini only provides state sensitivities, not parameter sensitivities)",
@@ -702,8 +722,33 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   } else if (!deriv2) {
     # deriv = TRUE, deriv2 = FALSE: list(time, variable, sens1)
+    # Note: Output dimension is n_total_sens (compile-time) minus n_runtime_fixed
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1) ---",
+                 "  // Effective sens dimension excludes both compile-time and runtime fixed",
+                 "  int n_sens_out = n_sens - n_runtime_fixed;",
+                 "",
+                 "  // Helper to check if index v is fixed (compile-time or runtime)",
+                 "  auto is_any_fixed = [&is_runtime_fixed](int v) {",
+                 sprintf("    // Compile-time fixed checks"),
+                 if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
+                   c(
+                     if (length(fixed_initial_idx) > 0) {
+                       sprintf("    if (%s) return true;",
+                               paste(sprintf("v == %d", fixed_initial_idx), collapse = " || "))
+                     },
+                     if (length(fixed_param_idx) > 0) {
+                       sprintf("    if (%s) return true;",
+                               paste(sprintf("v == %d", n_variables + fixed_param_idx), collapse = " || "))
+                     }
+                   )
+                 } else {
+                   "    // No compile-time fixed parameters"
+                 },
+                 "    // Runtime fixed check",
+                 "    return is_runtime_fixed[v];",
+                 "  };",
+                 "",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 3));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 3));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
@@ -716,7 +761,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
                  "  INTEGER(sens1_dim)[0] = n_out;",
                  sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
-                 sprintf("  INTEGER(sens1_dim)[2] = %d;", n_total_sens),
+                 "  INTEGER(sens1_dim)[2] = n_sens_out;",
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
@@ -724,63 +769,22 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  double* sens1_out = REAL(sens1_arr);",
                  "",
                  "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
-                 sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
-                 ""
-    )
-
-    # Extract with fixed parameter handling
-    if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
-      externC <- c(externC,
-                   "  for (int i = 0; i < n_out; ++i) {",
-                   "    time_out[i] = result_times[i].x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = xi.x();",
-                   "      int v_sens = 0;",
-                   sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params))
-
-      fixed_checks <- character(0)
-      if (length(fixed_initial_idx) > 0) {
-        fixed_checks <- c(fixed_checks,
-                          sprintf("        bool is_fixed_init = (v < %d) && (%s);",
-                                  n_variables,
-                                  paste(sprintf("v == %d", fixed_initial_idx), collapse = " || ")))
-      } else {
-        fixed_checks <- c(fixed_checks, "        bool is_fixed_init = false;")
-      }
-
-      if (length(fixed_param_idx) > 0) {
-        fixed_checks <- c(fixed_checks,
-                          sprintf("        bool is_fixed_param = (v >= %d) && (%s);",
-                                  n_variables,
-                                  paste(sprintf("(v - %d) == %d", n_variables, fixed_param_idx), collapse = " || ")))
-      } else {
-        fixed_checks <- c(fixed_checks, "        bool is_fixed_param = false;")
-      }
-
-      externC <- c(externC, fixed_checks,
-                   "        if (!(is_fixed_init || is_fixed_param)) {",
-                   "          sens1_out[IDX_sens1(i, s, v_sens)] = xi.d(v);",
-                   "          v_sens++;",
-                   "        }",
-                   "      }",
-                   "    }",
-                   "  }")
-    } else {
-      externC <- c(externC,
-                   "  for (int i = 0; i < n_out; ++i) {",
-                   "    time_out[i] = result_times[i].x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = xi.x();",
-                   sprintf("      for (int v = 0; v < %d; ++v) {", n_total_sens),
-                   "        sens1_out[IDX_sens1(i, s, v)] = xi.d(v);",
-                   "      }",
-                   "    }",
-                   "  }")
-    }
-
-    externC <- c(externC,
+                 sprintf("  auto IDX_sens1 = [n_out, n_sens_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
+                 "",
+                 "  for (int i = 0; i < n_out; ++i) {",
+                 "    time_out[i] = result_times[i].x();",
+                 sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                 sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
+                 "      variable_out[IDX_variable(i, s)] = xi.x();",
+                 "      int v_out = 0;",
+                 sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params),
+                 "        if (!is_any_fixed(v)) {",
+                 "          sens1_out[IDX_sens1(i, s, v_out)] = xi.d(v);",
+                 "          v_out++;",
+                 "        }",
+                 "      }",
+                 "    }",
+                 "  }",
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
@@ -790,8 +794,33 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   } else {
     # deriv2 = TRUE: list(time, variable, sens1, sens2)
+    # Note: Output dimension is n_total_sens (compile-time) minus n_runtime_fixed
     externC <- c(externC,
-                 "  // --- Copy results to R list for deriv2 ---",
+                 "  // --- Return list(time, variable, sens1, sens2) ---",
+                 "  // Effective sens dimension excludes both compile-time and runtime fixed",
+                 "  int n_sens_out = n_sens - n_runtime_fixed;",
+                 "",
+                 "  // Helper to check if index v is fixed (compile-time or runtime)",
+                 "  auto is_any_fixed = [&is_runtime_fixed](int v) {",
+                 sprintf("    // Compile-time fixed checks"),
+                 if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
+                   c(
+                     if (length(fixed_initial_idx) > 0) {
+                       sprintf("    if (%s) return true;",
+                               paste(sprintf("v == %d", fixed_initial_idx), collapse = " || "))
+                     },
+                     if (length(fixed_param_idx) > 0) {
+                       sprintf("    if (%s) return true;",
+                               paste(sprintf("v == %d", n_variables + fixed_param_idx), collapse = " || "))
+                     }
+                   )
+                 } else {
+                   "    // No compile-time fixed parameters"
+                 },
+                 "    // Runtime fixed check",
+                 "    return is_runtime_fixed[v];",
+                 "  };",
+                 "",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
@@ -805,13 +834,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
                  "  INTEGER(sens1_dim)[0] = n_out;",
                  sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
-                 sprintf("  INTEGER(sens1_dim)[2] = %d;", n_total_sens),
+                 "  INTEGER(sens1_dim)[2] = n_sens_out;",
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "  SEXP sens2_dim = PROTECT(Rf_allocVector(INTSXP, 4));",
                  "  INTEGER(sens2_dim)[0] = n_out;",
                  sprintf("  INTEGER(sens2_dim)[1] = %d;", n_variables),
-                 sprintf("  INTEGER(sens2_dim)[2] = %d;", n_total_sens),
-                 sprintf("  INTEGER(sens2_dim)[3] = %d;", n_total_sens),
+                 "  INTEGER(sens2_dim)[2] = n_sens_out;",
+                 "  INTEGER(sens2_dim)[3] = n_sens_out;",
                  "  SEXP sens2_arr = PROTECT(Rf_allocArray(REALSXP, sens2_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
@@ -820,95 +849,30 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  double* sens2_out = REAL(sens2_arr);",
                  "",
                  "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
-                 sprintf("  auto IDX_sens1 = [n_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
-                 sprintf("  auto IDX_sens2 = [n_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + %d * v2)); };", n_variables, n_total_sens),
-                 ""
-    )
-
-    # Extract with fixed parameter handling
-    if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
-      externC <- c(externC,
-                   "  for (int i = 0; i < n_out; ++i) {",
-                   "    time_out[i] = result_times[i].x().x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = xi.x().x();",
-                   "      int v1_sens = 0;",
-                   sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params))
-
-      fixed_checks_outer <- character(0)
-      if (length(fixed_initial_idx) > 0) {
-        fixed_checks_outer <- c(fixed_checks_outer,
-                                sprintf("        bool is_fixed_init1 = (v1 < %d) && (%s);",
-                                        n_variables,
-                                        paste(sprintf("v1 == %d", fixed_initial_idx), collapse = " || ")))
-      } else {
-        fixed_checks_outer <- c(fixed_checks_outer, "        bool is_fixed_init1 = false;")
-      }
-
-      if (length(fixed_param_idx) > 0) {
-        fixed_checks_outer <- c(fixed_checks_outer,
-                                sprintf("        bool is_fixed_param1 = (v1 >= %d) && (%s);",
-                                        n_variables,
-                                        paste(sprintf("(v1 - %d) == %d", n_variables, fixed_param_idx), collapse = " || ")))
-      } else {
-        fixed_checks_outer <- c(fixed_checks_outer, "        bool is_fixed_param1 = false;")
-      }
-
-      externC <- c(externC, fixed_checks_outer,
-                   "        if (!(is_fixed_init1 || is_fixed_param1)) {",
-                   "          sens1_out[IDX_sens1(i, s, v1_sens)] = xi.d(v1).x();",
-                   "          int v2_sens = 0;",
-                   sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params))
-
-      fixed_checks_inner <- character(0)
-      if (length(fixed_initial_idx) > 0) {
-        fixed_checks_inner <- c(fixed_checks_inner,
-                                sprintf("            bool is_fixed_init2 = (v2 < %d) && (%s);",
-                                        n_variables,
-                                        paste(sprintf("v2 == %d", fixed_initial_idx), collapse = " || ")))
-      } else {
-        fixed_checks_inner <- c(fixed_checks_inner, "            bool is_fixed_init2 = false;")
-      }
-
-      if (length(fixed_param_idx) > 0) {
-        fixed_checks_inner <- c(fixed_checks_inner,
-                                sprintf("            bool is_fixed_param2 = (v2 >= %d) && (%s);",
-                                        n_variables,
-                                        paste(sprintf("(v2 - %d) == %d", n_variables, fixed_param_idx), collapse = " || ")))
-      } else {
-        fixed_checks_inner <- c(fixed_checks_inner, "            bool is_fixed_param2 = false;")
-      }
-
-      externC <- c(externC, fixed_checks_inner,
-                   "            if (!(is_fixed_init2 || is_fixed_param2)) {",
-                   "              sens2_out[IDX_sens2(i, s, v1_sens, v2_sens)] = xi.d(v1).d(v2);",
-                   "              v2_sens++;",
-                   "            }",
-                   "          }",
-                   "          v1_sens++;",
-                   "        }",
-                   "      }",
-                   "    }",
-                   "  }")
-    } else {
-      externC <- c(externC,
-                   "  for (int i = 0; i < n_out; ++i) {",
-                   "    time_out[i] = result_times[i].x().x();",
-                   sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                   sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                   "      variable_out[IDX_variable(i, s)] = xi.x().x();",
-                   sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_total_sens),
-                   "        sens1_out[IDX_sens1(i, s, v1)] = xi.d(v1).x();",
-                   sprintf("        for (int v2 = 0; v2 < %d; ++v2) {", n_total_sens),
-                   "          sens2_out[IDX_sens2(i, s, v1, v2)] = xi.d(v1).d(v2);",
-                   "        }",
-                   "      }",
-                   "    }",
-                   "  }")
-    }
-
-    externC <- c(externC,
+                 sprintf("  auto IDX_sens1 = [n_out, n_sens_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
+                 sprintf("  auto IDX_sens2 = [n_out, n_sens_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + n_sens_out * v2)); };", n_variables),
+                 "",
+                 "  for (int i = 0; i < n_out; ++i) {",
+                 "    time_out[i] = result_times[i].x().x();",
+                 sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
+                 sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
+                 "      variable_out[IDX_variable(i, s)] = xi.x().x();",
+                 "      int v1_out = 0;",
+                 sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params),
+                 "        if (!is_any_fixed(v1)) {",
+                 "          sens1_out[IDX_sens1(i, s, v1_out)] = xi.d(v1).x();",
+                 "          int v2_out = 0;",
+                 sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params),
+                 "            if (!is_any_fixed(v2)) {",
+                 "              sens2_out[IDX_sens2(i, s, v1_out, v2_out)] = xi.d(v1).d(v2);",
+                 "              v2_out++;",
+                 "            }",
+                 "          }",
+                 "          v1_out++;",
+                 "        }",
+                 "      }",
+                 "    }",
+                 "  }",
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
@@ -1017,6 +981,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @param sens2ini Optional numeric vector of initial values for second-order
 #'   sensitivities. Only allowed if `attr(model, "deriv2") == TRUE`.
 #'   If `NULL`, zero seeding is used.
+#' @param fixed Optional character vector of sensitivity parameter names to treat as
+#'   fixed at runtime. These parameters will not have their sensitivities computed,
+#'   resulting in faster integration. Names must be a subset of
+#'   `attr(model, "dim_names")$sens`. Unlike compile-time `fixed` in [CppODE()],
+#'   runtime fixed parameters can be changed between calls without recompilation.
+#'   The output arrays will have reduced dimensions, excluding the fixed parameters.
+#'   Default: `NULL` (all parameters variable).
 #' @param forcings Optional named list of forcing function data. Each element
 #'   should be a `data.frame` (or coercible object) with columns `time` and `value`,
 #'   or a two-column matrix. Names must match `attr(model, "forcings")`.
@@ -1040,6 +1011,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @export
 solveODE <- function(model, times, parms,
                      sens1ini = NULL, sens2ini = NULL,
+                     fixed = NULL,
                      forcings = NULL,
                      abstol = 1e-6, reltol = 1e-6,
                      maxprogress = 100L, maxsteps = 1e6L,
@@ -1150,6 +1122,29 @@ solveODE <- function(model, times, parms,
     }
   }
 
+  ## --- Runtime fixed parameters ---
+  # Convert fixed names to 0-based indices into the sensitivity dimension
+  # sens_names contains both state initials and parameters (in that order)
+
+  if (!is.null(fixed)) {
+    if (!deriv) {
+      warning("'fixed' argument ignored when model has deriv = FALSE")
+      fixed_indices <- integer(0)
+    } else {
+      if (!is.character(fixed))
+        stop("'fixed' must be a character vector of sensitivity names")
+      sens_names <- dim_names$sens
+      unknown <- setdiff(fixed, sens_names)
+      if (length(unknown))
+        stop("Unknown names in 'fixed': ", paste(unknown, collapse = ", "),
+             "\nValid names: ", paste(sens_names, collapse = ", "))
+      # Convert to 0-based indices
+      fixed_indices <- match(fixed, sens_names) - 1L
+    }
+  } else {
+    fixed_indices <- integer(0)
+  }
+
   ## --- Times ---
   if (!is.numeric(times) || !length(times))
     stop("'times' must be a non-empty numeric vector")
@@ -1255,6 +1250,7 @@ solveODE <- function(model, times, parms,
       parms_ordered,
       sens1ini,
       sens2ini,
+      fixed_indices,
       as.double(abstol),
       as.double(reltol),
       maxprogress,
@@ -1284,11 +1280,24 @@ solveODE <- function(model, times, parms,
     colnames(result$variable) <- variables
   }
 
+  # Compute effective sens names (excluding runtime fixed)
+  sens_names_out <- if (deriv) {
+    all_sens <- dim_names$sens
+    if (length(fixed_indices) > 0) {
+      # fixed_indices are 0-based, convert to 1-based for R
+      all_sens[-(fixed_indices + 1L)]
+    } else {
+      all_sens
+    }
+  } else {
+    NULL
+  }
+
   if (!is.null(result$sens1)) {
     dimnames(result$sens1) <- list(
       time = NULL,
       variable = variables,
-      sens = dim_names$sens
+      sens = sens_names_out
     )
   }
 
@@ -1296,8 +1305,8 @@ solveODE <- function(model, times, parms,
     dimnames(result$sens2) <- list(
       time = NULL,
       variable = variables,
-      sens1 = dim_names$sens,
-      sens2 = dim_names$sens
+      sens1 = sens_names_out,
+      sens2 = sens_names_out
     )
   }
 
@@ -1305,55 +1314,49 @@ solveODE <- function(model, times, parms,
 }
 
 
-#' Generate a R/C++ evaluator for algebraic models with optional Jacobian/Hessian
+#' Generate functions for algebraic models with optional C++ backend and derivatives
 #'
 #' @description
-#' `funCpp()` takes a named vector/list of algebraic expressions and returns an evaluation
-#' function that can compute model outputs and, optionally, symbolic Jacobians and Hessians.
-#' It supports two backends:
-#' - A compiled C++ backend generated via a small Python helper (recommended for performance).
-#' - A pure-R fallback that evaluates parsed R expressions.
+#' Generates functions for evaluating a system of algebraic expressions and,
+#' optionally, their Jacobian and Hessian. Model evaluation can be performed
+#' either via generated and compiled C++ code for improved performance or via
+#' a pure R fallback.
 #'
-#' @param eqns Named character vector or list of expressions (e.g. `c(A="k_p*(k2+k_d)/(k1*k_d)", B="k_p/k_d")`).
-#'           Names become output column names. If `names(eqns)` is `NULL`, default names `f1, f2, ...` are used.
-#' @param variables Character vector of variable names that appear in `eqns` and are supplied per observation.
-#'                  If `NULL` or length 0, the model is treated as purely parametric (no per-row variables).
-#' @param parameters Character vector of parameter names used by the model.
-#' @param fixed Optional character vector of symbols that should be treated as parameters at evaluation time,
-#'              even if they originally appear in `variables`. Useful for "fixing" variables temporarily.
-#' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
-#' @param modelname Optional base name for the generated C++ source file
-#'   \emph{and} for all generated C/C++ symbols (e.g. \code{modelname_eval},
-#'   \code{modelname_jacobian}) and the resulting shared library.
-#'   If \code{NULL}, a random identifier is used.
-#' @param outdir Directory where generated C++ source files are written. Defaults to `tempdir()`.
-#' @param verbose Logical; if `TRUE`, prints progress messages.
-#' @param warnings Logical; if `TRUE`, prints soft warnings about missing inputs filled with zeros.
-#' @param convenient Logical; if `TRUE`, returns a wrapper so you can call the function using
-#'                   `f(var1 = ..., var2 = ..., k1 = ..., k2 = ...)` style arguments without
-#'                   manually assembling matrices/vectors.
-#' @param deriv Logical; if `TRUE`, compute and return the Jacobian. Required if `deriv2 = TRUE`.
-#' @param deriv2 Logical; if `TRUE`, compute and return the Hessian in addition to the Jacobian.
+#' The returned object contains callable functions for model evaluation and,
+#' depending on the requested options, for computing first- and second-order
+#' derivatives.
 #'
-#' @return A function with signature
-#'   \preformatted{
-#'   f(vars, params = numeric(0), attach.input = FALSE, deriv = TRUE, deriv2 = FALSE, verbose = FALSE)
-#'   }
-#' where:
-#' - `vars`: numeric matrix/data frame whose columns match `variables` (or `NULL` if none).
-#' - `params`: named numeric vector containing all `parameters` (missing entries are filled with 0 if allowed).
-#' - `attach.input`: if `TRUE`, input variables are prepended to the returned `out` matrix.
-#' - `deriv`, `deriv2`: request derivatives at call time (must be compatible with how `f` was created).
+#' @param eqns Named character vector or list of algebraic expressions.
+#'   Names define the output variables. If unnamed, default names
+#'   \code{f1}, \code{f2}, ... are assigned.
+#' @param variables Character vector of variable names supplied per observation.
+#'   If empty or \code{NULL}, the model is treated as purely parametric.
+#' @param parameters Character vector of parameter names used in the model.
+#' @param fixed Optional character vector of symbols that are treated as
+#'   parameters at evaluation time, even if they appear in \code{variables}.
+#' @param modelname Optional base name used for generated C++ symbols and files.
+#'   If \code{NULL}, a random identifier is generated.
+#' @param outdir Directory where generated C++ source files are written.
+#' @param compile Logical; if \code{TRUE}, compile and load the generated C++ code.
+#' @param verbose Logical; if \code{TRUE}, print progress messages.
+#' @param warnings Logical; if \code{TRUE}, emit warnings for missing inputs
+#'   that are filled with zero.
+#' @param convenient Logical; if \code{TRUE}, return wrapper functions that
+#'   accept named arguments instead of matrices and parameter vectors.
+#' @param deriv Logical; if \code{TRUE}, enable computation of the Jacobian.
+#' @param deriv2 Logical; if \code{TRUE}, enable computation of the Hessian.
 #'
-#' The returned list has elements:
-#' - `out`: numeric matrix of outputs with columns named as in `eqns`.
-#' - `jacobian`: 3D array `[n_obs, n_out, n_diff_syms]` if `deriv=TRUE`.
-#' - `hessian`: 4D array `[n_obs, n_out, n_diff_syms, n_diff_syms]` if `deriv2=TRUE`.
+#' @return
+#' A list with components:
+#' \describe{
+#'   \item{func}{Function evaluating the model output.}
+#'   \item{jac}{Function evaluating the Jacobian (if enabled).}
+#'   \item{hess}{Function evaluating the Hessian (if enabled).}
+#' }
 #'
-#' Attributes on the returned function include:
-#' - `equations`, `variables`, `parameters`, `fixed`, `modelname`
-#' - `jacobian.symb` (if `deriv=TRUE`)
-#' - `hessian.symb`  (if `deriv2=TRUE`)
+#' The returned object carries attributes describing the model, including
+#' the original equations, variables, parameters, and symbolic derivatives
+#' when available.
 #'
 #' @example inst/examples/example_fun.R
 #' @export
@@ -1538,32 +1541,20 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
     jacobian   = py_jac,
     hessian    = py_hess,
     modelname  = modelname,
-    outdir     = normalizePath(outdir, winslash = "/", mustWork = FALSE)
+    outdir     = normalizePath(outdir, winslash = "/", mustWork = FALSE),
+    version    = as.character(utils::packageVersion("CppODE"))
   )
 
-  outRfn <- function(vars, params = numeric(0),
-                     attach.input = FALSE,
-                     deriv = TRUE, deriv2 = FALSE,
-                     fixed = NULL,
-                     verbose = FALSE) {
-
-    if (deriv2 && !deriv) {
-      deriv <- TRUE
-    }
-
+  # ===================================================================
+  # FUNCTION
+  # ===================================================================
+  fun_impl <- function(vars, params = numeric(0), attach.input = FALSE, fixed = NULL) {
     checked <- checkArguments(vars, params)
     M <- checked$M; p <- checked$p; n_obs <- checked$n_obs
 
-    fixed_runtime <- if (is.null(fixed)) character(0) else intersect(fixed, parameters)
-    diff_syms_dyn <- setdiff(diff_syms, fixed_runtime)
-
     funsym_eval <- paste0(modelname, "_eval")
-    funsym_jac  <- paste0(modelname, "_jacobian")
-    funsym_hess <- paste0(modelname, "_hessian")
-    sofile <- paste0(modelname, .Platform$dynlib.ext)
 
-    result <- list()
-
+    # C++ compiled path
     if (is.loaded(funsym_eval)) {
       xvec <- as.double(as.vector(M))
       yvec <- double(length(outnames) * n_obs)
@@ -1575,6 +1566,7 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
       res <- matrix(out$y, nrow = n_obs, ncol = length(outnames), byrow = TRUE)
       colnames(res) <- outnames
     } else {
+      # R fallback path
       res <- matrix(NA_real_, nrow = n_obs, ncol = length(outnames))
       colnames(res) <- outnames
       for (i in seq_len(n_obs)) {
@@ -1588,22 +1580,33 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
     if (attach.input && ncol(M) > 0)
       res <- cbind(res, t(M))
 
-    result[["out"]] <- res
+    return(res)
+  }
 
-    # ===================================================================
-    # JACOBIAN: Array layout [n_obs, n_out, n_symbols]
-    # ===================================================================
-    if (deriv && !is.null(sym_jac)) {
-      n_out <- length(outnames); n_sym <- length(diff_syms)
+  # ===================================================================
+  # JACOBIAN
+  # ===================================================================
+  jac_impl <- if (deriv && !is.null(sym_jac)) {
+    function(vars, params = numeric(0), fixed = NULL) {
+      checked <- checkArguments(vars, params)
+      M <- checked$M; p <- checked$p; n_obs <- checked$n_obs
 
+      fixed_runtime <- if (is.null(fixed)) character(0) else intersect(fixed, parameters)
+      diff_syms_dyn <- setdiff(diff_syms, fixed_runtime)
+
+      funsym_jac <- paste0(modelname, "_jacobian")
+      n_out <- length(outnames)
+      n_sym <- length(diff_syms)
+
+      # C++ compiled path
       if (is.loaded(funsym_jac)) {
-        # Compiled C++ path
         xvec <- as.double(as.vector(M))
         jac_vec <- double(n_obs * n_out * n_sym)
-        n <- as.integer(n_obs); k <- as.integer(length(innames)); l <- as.integer(n_out)
+        n <- as.integer(n_obs)
+        k <- as.integer(length(innames))
+        l <- as.integer(n_out)
         out_jac <- .C(funsym_jac, x = xvec, jac = jac_vec, p = as.double(p),
                       n = n, k = k, l = l)
-        # New layout: [n_obs, n_out, n_symbols]
         jac_arr <- array(out_jac$jac, dim = c(n_obs, n_out, n_sym),
                          dimnames = list(NULL, outnames, diff_syms))
       } else {
@@ -1630,23 +1633,36 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
 
       # Subset to dynamic symbols (excluding runtime-fixed)
       jac_arr <- jac_arr[, , diff_syms_dyn, drop = FALSE]
-      result[["jacobian"]] <- jac_arr
+      return(jac_arr)
     }
+  } else {
+    NULL
+  }
 
-    # ===================================================================
-    # HESSIAN: Array layout [n_obs, n_out, n_symbols, n_symbols]
-    # ===================================================================
-    if (deriv2 && !is.null(sym_hess)) {
-      n_out <- length(outnames); n_sym <- length(diff_syms)
+  # ===================================================================
+  # HESSIAN
+  # ===================================================================
+  hessian_impl <- if (deriv2 && !is.null(sym_hess)) {
+    function(vars, params = numeric(0), fixed = NULL) {
+      checked <- checkArguments(vars, params)
+      M <- checked$M; p <- checked$p; n_obs <- checked$n_obs
 
+      fixed_runtime <- if (is.null(fixed)) character(0) else intersect(fixed, parameters)
+      diff_syms_dyn <- setdiff(diff_syms, fixed_runtime)
+
+      funsym_hess <- paste0(modelname, "_hessian")
+      n_out <- length(outnames)
+      n_sym <- length(diff_syms)
+
+      # C++ compiled path
       if (is.loaded(funsym_hess)) {
-        # Compiled C++ path
         xvec <- as.double(as.vector(M))
         hess_vec <- double(n_obs * n_out * n_sym * n_sym)
-        n <- as.integer(n_obs); k <- as.integer(length(innames)); l <- as.integer(n_out)
+        n <- as.integer(n_obs)
+        k <- as.integer(length(innames))
+        l <- as.integer(n_out)
         out_hess <- .C(funsym_hess, x = xvec, hess = hess_vec, p = as.double(p),
                        n = n, k = k, l = l)
-        # New layout: [n_obs, n_out, n_symbols, n_symbols]
         hes_arr <- array(out_hess$hess, dim = c(n_obs, n_out, n_sym, n_sym),
                          dimnames = list(NULL, outnames, diff_syms, diff_syms))
       } else {
@@ -1676,29 +1692,64 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
 
       # Subset to dynamic symbols (excluding runtime-fixed)
       hes_arr <- hes_arr[, , diff_syms_dyn, diff_syms_dyn, drop = FALSE]
-      result[["hessian"]] <- hes_arr
+      return(hes_arr)
     }
-
-    return(result)
+  } else {
+    NULL
   }
 
-  outfn <- outRfn
-
-  if (convenient) {
-    outfn <- function(..., attach.input = FALSE,
-                      deriv = TRUE, deriv2 = FALSE,
-                      fixed = NULL) {
+  # ===================================================================
+  # CONVENIENT WRAPPER
+  # ===================================================================
+  fun_convenient <- if (convenient) {
+    function(..., attach.input = FALSE, fixed = NULL) {
       arglist <- list(...)
       M <- if (!is.null(innames) && length(innames) > 0)
         do.call(cbind, arglist[innames]) else NULL
       p <- if (!is.null(parameters) && length(parameters) > 0)
         do.call(c, arglist[parameters]) else numeric(0)
-      outRfn(M, p, attach.input = attach.input,
-             deriv = deriv, deriv2 = deriv2,
-             fixed = fixed)
+      fun_impl(M, p, attach.input = attach.input, fixed = fixed)
     }
+  } else {
+    fun_impl
   }
 
+  jac_convenient <- if (convenient && !is.null(jac_impl)) {
+    function(..., fixed = NULL) {
+      arglist <- list(...)
+      M <- if (!is.null(innames) && length(innames) > 0)
+        do.call(cbind, arglist[innames]) else NULL
+      p <- if (!is.null(parameters) && length(parameters) > 0)
+        do.call(c, arglist[parameters]) else numeric(0)
+      jac_impl(M, p, fixed = fixed)
+    }
+  } else {
+    jac_impl
+  }
+
+  hessian_convenient <- if (convenient && !is.null(hessian_impl)) {
+    function(..., fixed = NULL) {
+      arglist <- list(...)
+      M <- if (!is.null(innames) && length(innames) > 0)
+        do.call(cbind, arglist[innames]) else NULL
+      p <- if (!is.null(parameters) && length(parameters) > 0)
+        do.call(c, arglist[parameters]) else numeric(0)
+      hessian_impl(M, p, fixed = fixed)
+    }
+  } else {
+    hessian_impl
+  }
+
+  # ===================================================================
+  # RETURN
+  # ===================================================================
+  outfn <- list(
+    func = fun_convenient,
+    jac = jac_convenient,
+    hess = hessian_convenient
+  )
+
+  # Attributes
   attr(outfn, "equations")     <- eqns
   attr(outfn, "variables")     <- variables
   attr(outfn, "parameters")    <- parameters
