@@ -9,14 +9,16 @@ library(dMod)
 library(dplyr)
 
 
-trafo <- c(TCA_buffer = "0",
-           TCA_cell = "10^TCA_CELL",
-           TCA_cana = "10^TCA_CANA",
-           k_import = "10^K_IMPORT",
-           k_export_sinus = "10^K_EXPORT_SINUS",
-           k_export_cana = "10^K_EXPORT_CANA",
-           k_reflux = "10^K_REFLUX",
-           s = "10^S")
+# trafo <- c(TCA_buffer = "0",
+#            TCA_cell = "10^TCA_CELL",
+#            TCA_cana = "10^TCA_CANA",
+#            k_import = "10^K_IMPORT",
+#            k_export_sinus = "10^K_EXPORT_SINUS",
+#            k_export_cana = "10^K_EXPORT_CANA",
+#            k_reflux = "10^K_REFLUX",
+#            s = "10^S")
+
+trafo <- c(x = "10^X * scale")
 
 f <- funCpp(trafo,
             variables  = NULL,
@@ -32,6 +34,16 @@ f <- funCpp(trafo,
 
 pars <- structure(rep(-1, length(getSymbols(trafo))), names = getSymbols(trafo))
 
-f$fun(vars = NULL, params = pars)
-f$jac(NULL, pars)[1,,]
+jac.symb <- attr(f, "jacobian.symb")
+
+rownames(jac.symb)[which(apply(jac.symb, 1, function(r) all(r == "0")))]
+
+fun <- f$fun
+jac <- f$jac
+
+pars <- pars[names(pars) != "S"]
+fixed = c(S = 0)
+
+out <- fun(vars = NULL, params = c(pars, fixed), fixed = names(fixed), attach.input = T)[1,]
+out.jac <- jac(NULL, pars)[1,,]
 f$hess(NULL, pars)[1,"k_import",,]
