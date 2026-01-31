@@ -18,7 +18,7 @@ solveODE(
   maxsteps = 1000000L,
   hini = 0,
   roottol = 1e-06,
-  maxroot = 100L
+  maxroot = 1L
 )
 }
 \arguments{

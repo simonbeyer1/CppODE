@@ -1015,7 +1015,7 @@ solveODE <- function(model, times, parms,
                      forcings = NULL,
                      abstol = 1e-6, reltol = 1e-6,
                      maxprogress = 100L, maxsteps = 1e6L,
-                     hini = 0, roottol = 1e-6, maxroot = 100L) {
+                     hini = 0, roottol = 1e-6, maxroot = 1L) {
 
   ## --- Model validation ---
   if (!is.character(model) || length(model) != 1L) {
