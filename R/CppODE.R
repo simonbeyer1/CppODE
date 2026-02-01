@@ -1504,8 +1504,6 @@ funCpp <- function(eqns, variables  = getSymbols(eqns, omit = parameters),
   if (!fallback_available)
     warning("R fallback not available. Please compile the function.")
 
-  cppfile <- NULL
-
   # Lazy import
   codegen <- get_codegenfunCpp_py()
 

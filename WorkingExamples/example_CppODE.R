@@ -28,7 +28,7 @@ events <- data.frame(
 )
 
 # # Generate and compile solver
-model_c <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(), modelname = "Amodel_c", compile = T, useDenseOutput = F)
+model_c <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(), modelname = "Amodel_c", compile = T, useDenseOutput = F, verbose = T)
 model_d <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(), modelname = "Amodel_d", compile = T, useDenseOutput = T)
 
 
