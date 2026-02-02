@@ -17,13 +17,16 @@ eqns <- c(x = "-k*x")
 events <- data.frame(var = "x", time = "te", value = "1", root = NA, method = "add", stringsAsFactors = FALSE)
 
 # # Generate and compile solver
-model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(), modelname = "xmodel_c", compile = T, useDenseOutput = T)
+model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
+                modelname = "xmodel_c", compile = T, useDenseOutput = T)
 
 
 # Example run
 params <- c(x=1, k=1, te = 1)
 times  <- seq(0, 10, length.out = 300)
 res <- solveODE(model, times, params)
-res$variable[1:40, , drop = F]
+cbind(res$time, res$variable[1:40, , drop = F])
 res$sens1[1:40, "x", ]
 
+res$sens2[, "x", "te", "te"]
+#
