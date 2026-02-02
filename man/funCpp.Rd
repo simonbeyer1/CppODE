@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{funCpp}
 \alias{funCpp}
-\title{Generate functions for algebraic models with optional C++ backend and derivatives}
+\title{Generate Algebraic Model Functions with Optional C++ Backend and Derivatives}
 \usage{
 funCpp(
   eqns,
@@ -22,86 +22,66 @@ funCpp(
 \arguments{
 \item{eqns}{Named character vector or list of algebraic expressions.
 Names define the output variables. If unnamed, default names
-\code{f1}, \code{f2}, ... are assigned.}
+\code{f1}, \code{f2}, \ldots are assigned.}
 
 \item{variables}{Character vector of variable names supplied per observation.
-If empty or \code{NULL}, the model is treated as purely parametric.}
+Defaults to all symbols found in \code{eqns} not listed in \code{parameters}.}
 
-\item{parameters}{Character vector of parameter names used in the model.}
+\item{parameters}{Character vector of parameter names (constant across observations).}
 
-\item{fixed}{Optional character vector of symbols that are treated as
-parameters at evaluation time, even if they appear in \code{variables}.}
+\item{fixed}{Optional character vector of symbols to treat as fixed
+(excluded from derivative computation).}
 
-\item{modelname}{Optional base name used for generated C++ symbols and files.
-If \code{NULL}, a random identifier is generated.}
+\item{modelname}{Optional base name for generated C++ symbols and files.}
 
-\item{outdir}{Directory where generated C++ source files are written.}
+\item{outdir}{Directory for generated C++ source files. Defaults to \code{tempdir()}.}
 
-\item{compile}{Logical; if \code{TRUE}, compile and load the generated C++ code.}
+\item{compile}{Logical; if \code{TRUE}, compile and load generated C++ code.}
 
 \item{verbose}{Logical; if \code{TRUE}, print progress messages.}
 
-\item{warnings}{Logical; if \code{TRUE}, emit warnings for missing inputs
-that are filled with zero.}
+\item{warnings}{Logical; reserved for future use.}
 
-\item{convenient}{Logical; if \code{TRUE}, return wrapper functions that
-accept named arguments instead of matrices and parameter vectors.}
+\item{convenient}{Logical; if \code{TRUE}, return wrappers accepting named arguments.}
 
-\item{deriv}{Logical; if \code{TRUE}, enable computation of the Jacobian.}
+\item{deriv}{Logical; if \code{TRUE}, enable Jacobian computation.}
 
-\item{deriv2}{Logical; if \code{TRUE}, enable computation of the Hessian.}
+\item{deriv2}{Logical; if \code{TRUE}, enable Hessian computation (implies \code{deriv}).}
 }
 \value{
-A list with components:
-\describe{
-\item{func}{Function evaluating the model output.}
-\item{jac}{Function evaluating the Jacobian (if enabled).}
-\item{hess}{Function evaluating the Hessian (if enabled).}
-}
-
-The returned object carries attributes describing the model, including
-the original equations, variables, parameters, and symbolic derivatives
-when available.
+A list with components \code{func}, \code{jac}, and \code{hess},
+carrying the following attributes:
+\code{equations} (original expressions),
+\code{variables} (variables),
+\code{parameters} (parameters),
+\code{fixed} (fixed symbols),
+\code{modelname} (C++ identifier),
+\code{srcfile} (source file),
+\code{jacobian.symb}, \code{hessian.symb} (symbolic derivatives).
 }
 \description{
 Generates functions for evaluating a system of algebraic expressions and,
-optionally, their Jacobian and Hessian. Model evaluation can be performed
-either via generated and compiled C++ code for improved performance or via
-a pure R fallback.
-
-The returned object contains callable functions for model evaluation and,
-depending on the requested options, for computing first- and second-order
-derivatives.
+optionally, their Jacobian and Hessian matrices. Model evaluation can be
+performed either via generated and compiled C++ code for improved performance
+or via a pure R fallback.
 }
-\examples{
-\dontrun{
-# funCpp() makes use of the Python module 'sympy'
-eqns <- c(A = "k_p * (k2 + k_d) / (k1*k_d)", B = "k_p/k_d")
+\details{
+The function generates C++ code for efficient evaluation of algebraic
+expressions. When \code{compile = TRUE}, the code is compiled using
+\code{\link{compile}} and the shared library is loaded.
 
-f <- funCpp(eqns,
-            parameters = c("k_p", "k1", "k2", "k_d"),
-            deriv      = TRUE,
-            deriv2     = TRUE,
-            compile    = TRUE,
-            convenient = TRUE)
-
-res <- f(k_p = 0.3, k1 = 0.1, k2 = 0.2, k_d = 0.4, deriv2 = TRUE)
-
-# Output values
-res$out
-
-# Jacobian for first (and only) observation
-res$jacobian[1, , ]
-
-# Symbolic Jacobian
-attributes(f)$jacobian.symb
-
-# Hessian for output "A" at first observation
-res$hessian[1, "A", , ]
-
-# Symbolic Hessian
-attributes(f)$hessian.symb$A
+The \code{attach.input} argument allows pass-through of additional inputs
+that are not part of the model equations:
+\itemize{
+\item Unknown variables (vectors with length matching \code{n_obs}) are
+appended to outputs. Their Jacobian columns are zero (no model
+dependence). Their Hessian slices are zero.
+\item Unknown parameters (scalar values) are appended to outputs
+(broadcast across observations). Their Jacobian shows identity
+(derivative of parameter w.r.t. itself is 1). Their Hessian is zero.
 }
-
-
+}
+\seealso{
+\code{\link{compile}} for compilation, \code{\link{derivSymb}}
+for symbolic differentiation.
 }

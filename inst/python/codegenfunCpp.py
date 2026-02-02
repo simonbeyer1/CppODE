@@ -429,8 +429,7 @@ def _write_eval_function(buf, exprs, out_names, ctx, modelname):
 
     for i, out_name in enumerate(out_names):
         cpp_code = ctx.to_cpp(exprs[out_name])
-        buf.write(f"        // {out_name}\n")
-        buf.write(f"        y[obs * n_out + {i}] = {cpp_code};\n\n")
+        buf.write(f"        y[obs * n_out + {i}] = {cpp_code};\n")
 
     buf.write("    }\n}\n\n")
 
@@ -464,7 +463,7 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     
     if n_vars > 0:
         buf.write("        const double* x_obs = x + obs * n_vars;\n")
-        buf.write("        (void)x_obs;  // suppress unused warning\n\n")
+        buf.write("        (void)x_obs;  // suppress unused warning\n")
 
     for i, out_name in enumerate(out_names):
         if out_name not in jacobian:
@@ -478,7 +477,7 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
                 continue
             has_nonzero = True
             # R column-major: obs + n_obs * (output + n_out * symbol)
-            buf.write(f"        jac[obs + n_obs * ({i} + n_out * {j})] = {cpp_code};\n")
+            buf.write(f"        jac[obs + n_obs * ({i} + n_out * {j})] = {cpp_code};")
         
         if has_nonzero:
             buf.write("\n")
@@ -530,7 +529,7 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
                 has_nonzero = True
                 # R column-major: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
                 buf.write(
-                    f"        hess[obs + n_obs * ({i} + n_out * ({j} + n_symbols * {k}))] = {cpp_code};\n"
+                    f"        hess[obs + n_obs * ({i} + n_out * ({j} + n_symbols * {k}))] = {cpp_code};"
                 )
         
         if has_nonzero:
