@@ -20,43 +20,12 @@
  - FADBAD++ automatic differentiation support
  - Root tracking and fire count management
  - Dense output optimization for root-finding
- - **Simultaneous root events**: Multiple events with the same or similar
- root conditions are now detected and applied together efficiently.
- - **Complete saltation matrix corrections**: Proper sensitivity propagation
- for parametrized event times, root conditions, and event values.
+ - Simultaneous root events
+ - Complete saltation matrix corrections
  */
 
 #ifndef CPPODE_INTEGRATE_TIMES_WITH_EVENTS_HPP_INCLUDED
 #define CPPODE_INTEGRATE_TIMES_WITH_EVENTS_HPP_INCLUDED
-
-/**
- * @file cppode_boost_integrate_times_with_events.hpp
- * @brief Unified event-aware integration engine for Boost.Odeint
- *
- * This header provides a comprehensive event handling system for ODE integration,
- * supporting both fixed-time events and root-finding events with automatic
- * differentiation (AD) compatibility.
- *
- * @section features Features
- *
- * - **Fixed-time events**: Trigger state modifications at predetermined times
- * - **Root-finding events**: Detect zero-crossings of user-defined functions
- *   and trigger state modifications when roots are found
- * - **Simultaneous root events**: Multiple events triggered by the same root
- *   condition are detected and applied together in a single pass
- * - **Root localization**: Bisection-based refinement to locate roots with
- *   configurable tolerance
- * - **Dual stepper support**: Works with both controlled steppers (try_step)
- *   and dense-output steppers (do_step + interpolation)
- * - **AD compatibility**: Full support for nested automatic differentiation
- *   types (fadbad::F<F<...>>) through scalar_value unwrapping
- * - **Complete saltation corrections**: Proper sensitivity propagation for:
- *   - Parametrized root conditions (event time depends on parameters)
- *   - Parametrized event values (event magnitude depends on parameters)
- *   - Parametrized fixed-event times
- *
- * @author Simon Beyer
- */
 
 #include <vector>
 #include <functional>
@@ -77,13 +46,13 @@ namespace numeric {
 namespace odeint {
 namespace detail {
 
-//==============================================================================
-// Section 1: Scalar Value Extraction
-//==============================================================================
+// Void step checker for default template argument
+struct StepCheckerVoid {
+  void operator()() {}
+  void reset() {}
+};
 
-/**
- * @brief Extract the underlying scalar value from arithmetic types
- */
+// Scalar value extraction for arithmetic types
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
 scalar_value(const T& v)
@@ -91,31 +60,21 @@ scalar_value(const T& v)
   return static_cast<double>(v);
 }
 
-/**
- * @brief Extract the underlying scalar value from FADBAD++ AD types
- */
+// Scalar value extraction for FADBAD++ AD types
 template<class T>
 inline double scalar_value(const fadbad::F<T>& v)
 {
   return scalar_value(const_cast<fadbad::F<T>&>(v).x());
 }
 
-//==============================================================================
-// Section 2: Event Type Definitions
-//==============================================================================
-
-/**
- * @brief Enumeration of event application methods
- */
+// Event application methods
 enum class EventMethod {
-  Replace,   ///< Replace: x[i] = value
-  Add,       ///< Add: x[i] += value
-  Multiply   ///< Multiply: x[i] *= value
+  Replace,
+  Add,
+  Multiply
 };
 
-/**
- * @brief Fixed-time event specification
- */
+// Fixed-time event specification
 template<class state_type, class value_type>
 struct FixedEvent {
   value_type  time;
@@ -124,82 +83,38 @@ struct FixedEvent {
   EventMethod method;
 };
 
-/**
- * @brief Root-finding event specification
- */
+// Root-finding event specification
 template<class state_type, class time_type>
 struct RootEvent {
-  using value_t = typename state_type::value_type;
-
-  std::function<value_t(const state_type&, const time_type&)> func;
+  std::function<typename state_type::value_type(const state_type&, const time_type&)> func;
+  std::function<typename state_type::value_type(const state_type&, const time_type&)> value_func;
   int         state_index;
-  std::function<value_t(const state_type&, const time_type&)> value_func;
   EventMethod method;
-  bool terminal = false;
-  int direction = 0;
+  int         direction;
+  bool        terminal;
 };
 
-//==============================================================================
-// Section 3: Helper Structures for Simultaneous Events
-//==============================================================================
-
-/**
- * @brief Information about a triggered root event (for batch processing)
- *
- * This structure holds all information needed to process a triggered event,
- * allowing multiple events to be collected and processed together.
- */
+// Helper for simultaneous event tracking
 struct TriggeredEvent {
-  size_t index;        ///< Index in the root events vector
-  double last_val;     ///< Function value before crossing
-  double curr_val;     ///< Function value after crossing
+  size_t index;
+  double last_val;
+  double curr_val;
 };
 
-/**
- * @brief Check if a sign change matches the specified direction
- */
-inline bool direction_matches(double last_val, double curr_val, int direction)
+// Helper for steady-state root functions
+template<class state_type, class time_type, class System>
+auto make_steady_state_root_func(System& sys, int state_idx)
 {
-  if (direction == 0) {
-    return true;
-  }
-  else if (direction < 0) {
-    return last_val > 0.0 && curr_val < 0.0;
-  }
-  else {
-    return last_val < 0.0 && curr_val > 0.0;
-  }
-}
-
-//==============================================================================
-// Section 4: Steady-State Root Function Factory
-//==============================================================================
-
-/**
- * @brief Create a root function for steady-state detection
- */
-template<class System, class State, class Time>
-auto make_steady_state_root_func(System& sys, double tol)
-{
-  return [&sys, tol](const State& x, const Time& t) ->
-    typename State::value_type
+  return [&sys, state_idx](const state_type& x, const time_type& t)
+    -> typename state_type::value_type
     {
-      State dxdt(x.size());
-      sys(x, dxdt, t);
-      double max_rate = cppode::max_abs_all_levels_vec(dxdt);
-      return typename State::value_type(max_rate - tol);
+      state_type dxdt(x.size());
+      sys.first(x, dxdt, t);
+      return dxdt[state_idx];
     };
 }
 
-//==============================================================================
-// Section 5: AD Helper Functions for Saltation Corrections
-//==============================================================================
-
-/**
- * @brief Extract the number of sensitivity directions from an AD type
- *
- * Returns 0 for non-AD types (double), or the derivative array size for F<T>.
- */
+// Get number of sensitivity directions
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, unsigned>::type
 get_n_sens(const T&) { return 0; }
@@ -209,9 +124,7 @@ inline unsigned get_n_sens(const fadbad::F<T>& v) {
   return const_cast<fadbad::F<T>&>(v).size();
 }
 
-/**
- * @brief Get derivative component from AD type (returns 0 for non-AD)
- */
+// Get derivative component from AD type
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
 get_deriv(const T&, unsigned) { return 0.0; }
@@ -221,20 +134,12 @@ inline double get_deriv(const fadbad::F<T>& v, unsigned i) {
   return scalar_value(const_cast<fadbad::F<T>&>(v).d(i));
 }
 
-/**
- * @brief Add a scalar correction to sensitivity component of AD type
- *
- * For F<double>: x.d(i) += correction
- * For F<F<double>>: x.x().d(i) += correction (first-order only for now)
- */
-
-// Base case: non-AD types (no-op)
+// Add correction to sensitivity component - base case for non-AD types
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, void>::type
-add_sens_correction(T&, unsigned, double) { /* no-op for non-AD */ }
+add_sens_correction(T&, unsigned, double) { }
 
-// For F<F<T>> (second-order AD) - apply to inner (first-order) derivatives
-// This overload must come BEFORE the F<T> overload to be selected for nested types
+// Add correction for F<F<T>> (second-order AD)
 template<class T>
 inline void add_sens_correction(fadbad::F<fadbad::F<T>>& x, unsigned i, double correction) {
   if (i < x.x().size()) {
@@ -242,7 +147,7 @@ inline void add_sens_correction(fadbad::F<fadbad::F<T>>& x, unsigned i, double c
   }
 }
 
-// For F<T> where T is arithmetic (first-order AD)
+// Add correction for F<T> where T is arithmetic (first-order AD)
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, void>::type
 add_sens_correction(fadbad::F<T>& x, unsigned i, double correction) {
@@ -251,13 +156,7 @@ add_sens_correction(fadbad::F<T>& x, unsigned i, double correction) {
   }
 }
 
-//==============================================================================
-// Section 5a: Event Application (without saltation)
-//==============================================================================
-
-/**
- * @brief Apply an event modification to a state vector (value only, no saltation)
- */
+// Apply event modification to state vector
 template<class state_type>
 inline void apply_event(
     state_type& x,
@@ -272,32 +171,18 @@ inline void apply_event(
   }
 }
 
-//==============================================================================
-// Section 5b: Complete Saltation Matrix Corrections
-//==============================================================================
-
-/**
- * @brief Create a "frozen" state where sensitivity components are zeroed
- *
- * This allows extraction of EXPLICIT parameter dependence by evaluating
- * functions with frozen state derivatives.
- */
+// Create frozen state (derivatives zeroed)
 template<class state_type>
 inline state_type create_frozen_state(const state_type& x)
 {
   state_type x_frozen(x.size());
   for (size_t i = 0; i < x.size(); ++i) {
-    // Copy only the scalar value, derivatives will be zero by default
     x_frozen[i] = typename state_type::value_type(scalar_value(x[i]));
   }
   return x_frozen;
 }
 
-/**
- * @brief Compute time derivative of root function: g_dot = dg/dt = (dg/dx)*f + dg/dt
- *
- * Uses finite differences for robustness with complex root functions.
- */
+// Compute time derivative of root function
 template<class state_type, class time_type, class System, class RootFunc>
 inline double compute_g_dot(
     const state_type& x,
@@ -308,12 +193,9 @@ inline double compute_g_dot(
 {
   using value_type = typename state_type::value_type;
 
-  // Evaluate ODE RHS to get f(x, t)
   state_type f(x.size());
   sys.first(x, f, t);
 
-  // Simple case: root function is primarily state[event_state_idx]
-  // Then g_dot ~ f[event_state_idx]
   if (event_state_idx >= 0 && static_cast<size_t>(event_state_idx) < f.size()) {
     double g_dot = scalar_value(f[event_state_idx]);
     if (std::abs(g_dot) > 1e-15) {
@@ -321,14 +203,10 @@ inline double compute_g_dot(
     }
   }
 
-  // General case: numerical differentiation
-  // g_dot = (g(x + eps*f, t + eps) - g(x, t)) / eps
   const double eps = 1e-8;
-
   value_type g_curr = root_func(x, t);
   double g_val = scalar_value(g_curr);
 
-  // Create perturbed state: x_pert = x + eps * f
   state_type x_pert(x.size());
   for (size_t i = 0; i < x.size(); ++i) {
     x_pert[i] = value_type(scalar_value(x[i]) + eps * scalar_value(f[i]));
@@ -338,164 +216,77 @@ inline double compute_g_dot(
   return (scalar_value(g_pert) - g_val) / eps;
 }
 
-/**
- * @brief Saltation matrix correction for ROOT events
- *
- * Mathematical background:
- * For a root event with root condition g(x, t, p) = 0 triggering at t = t*(p),
- * the event time depends on parameters through the root function.
- *
- * The ONLY correction needed is for the event-time sensitivity:
- *
- *   dt_star/dp = -(dg/dp)_explicit / g_dot
- *
- * where g_dot = dg/dt is the time derivative of the root function.
- *
- * For ALL states (including the event state):
- *   dx_k_after/dp += f_k * dt_star/dp
- *
- * IMPORTANT: The value_func contribution is already handled by AD!
- * When apply_event() calls value_func(x, t), the result is an AD type
- * with correctly propagated derivatives. No additional correction needed.
- *
- * This correction accounts for the "extra" or "missing" integration time
- * due to the parametrized event time.
- */
-template<class state_type, class time_type, class System, class RootFunc, class ValueFunc>
+// Saltation matrix correction for ROOT events
+// Formula: dx+/dp = dx-/dp + [f(x-) - f(x+)] * dt_star/dp
+template<class state_type, class time_type, class System, class RootFunc>
 inline void apply_saltation_correction_root(
     state_type& x,
-    const time_type& t,
-    System& sys,
-    RootFunc& root_func,
-    ValueFunc& /* value_func - unused, AD handles this */,
-    int event_state_idx,
-    EventMethod /* method - unused, AD handles this */)
-{
-  using value_type = typename state_type::value_type;
-
-  // Get number of sensitivity directions
-  if (x.empty()) return;
-  unsigned n_sens = get_n_sens(x[0]);
-  if (n_sens == 0) return;  // No sensitivities to correct
-
-  // Evaluate ODE RHS to get f(x, t)
-  state_type f(x.size());
-  sys.first(x, f, t);
-
-  // Compute g_dot = dg/dt
-  double g_dot = compute_g_dot(x, t, sys, root_func, event_state_idx);
-
-  // Avoid division by zero (event at stationary point)
-  if (std::abs(g_dot) < 1e-15) {
-    // No time correction possible, but value_func is already handled by AD
-    return;
-  }
-
-  // Create frozen state for explicit derivative extraction of root function
-  state_type x_frozen = create_frozen_state(x);
-
-  // Evaluate root function with frozen state to get (dg/dp)_explicit
-  value_type g_frozen = root_func(x_frozen, t);
-
-  // For each sensitivity direction, compute and apply time correction
-  for (unsigned j = 0; j < n_sens; ++j) {
-    // (dg/dp_j)_explicit from frozen evaluation
-    double dg_dpj_explicit = get_deriv(g_frozen, j);
-
-    // dt_star/dp_j = -(dg/dp_j)_explicit / g_dot
-    double dt_star_dpj = -dg_dpj_explicit / g_dot;
-
-    // Apply time-based correction to ALL states: dx_k_after/dp_j += f_k * dt_star/dp_j
-    if (std::abs(dt_star_dpj) > 1e-20) {
-      for (size_t k = 0; k < x.size(); ++k) {
-        double fk = scalar_value(f[k]);
-        add_sens_correction(x[k], j, fk * dt_star_dpj);
-      }
-    }
-  }
-}
-
-/**
- * @brief Saltation matrix correction for FIXED-TIME events
- *
- * Mathematical background:
- * For a fixed-time event at t_event(p), if the event time depends on parameters,
- * we need to correct for the "extra" or "missing" integration time.
- *
- * The ONLY correction needed is for the event-time sensitivity:
- *   dt_event/dp_j = d(t_event)/d(p_j) (directly from AD on the time value)
- *
- * For ALL states:
- *   dx_k_after/dp += f_k * dt_event/dp
- *
- * IMPORTANT: The value_func contribution is already handled by AD!
- * When apply_event() calls value_func(x, t), the result is an AD type
- * with correctly propagated derivatives. No additional correction needed.
- */
-template<class state_type, class time_type, class System, class ValueFunc>
-inline void apply_saltation_correction_fixed(
-    state_type& x,
-    const time_type& t_event,
-    System& sys,
-    ValueFunc& /* value_func - unused, AD handles this */,
-    int /* event_state_idx - unused */,
-    EventMethod /* method - unused */)
-{
-  // Get number of sensitivity directions
-  if (x.empty()) return;
-  unsigned n_sens = get_n_sens(x[0]);
-  if (n_sens == 0) return;  // No sensitivities to correct
-
-  // Evaluate ODE RHS to get f(x, t)
-  state_type f(x.size());
-  sys.first(x, f, t_event);
-
-  // For each sensitivity direction, apply time correction only
-  for (unsigned j = 0; j < n_sens; ++j) {
-    // Event time sensitivity: dt_event/dp_j directly from AD
-    double dt_event_dpj = get_deriv(t_event, j);
-
-    // Apply time-based correction to ALL states: dx_k_after/dp_j += f_k * dt_event/dp_j
-    if (std::abs(dt_event_dpj) > 1e-20) {
-      for (size_t k = 0; k < x.size(); ++k) {
-        double fk = scalar_value(f[k]);
-        add_sens_correction(x[k], j, fk * dt_event_dpj);
-      }
-    }
-  }
-}
-
-/**
- * @brief Legacy wrapper for backward compatibility
- *
- * Calls the new complete correction with a simple value function wrapper.
- */
-template<class state_type, class time_type, class System, class RootFunc>
-inline void apply_saltation_correction(
-    state_type& x,
+    const state_type& x_before,
     const time_type& t,
     System& sys,
     RootFunc& root_func,
     int event_state_idx)
 {
-  // Create a dummy value function that returns 0 (no explicit value dependence)
-  auto dummy_value_func = [](const state_type&, const time_type&) {
-    return typename state_type::value_type(0.0);
-  };
+  using value_type = typename state_type::value_type;
 
-  apply_saltation_correction_root(x, t, sys, root_func, dummy_value_func,
-                                  event_state_idx, EventMethod::Replace);
+  if (x.empty()) return;
+  unsigned n_sens = get_n_sens(x[0]);
+  if (n_sens == 0) return;
+
+  state_type f_before(x_before.size());
+  sys.first(x_before, f_before, t);
+
+  state_type f_after(x.size());
+  sys.first(x, f_after, t);
+
+  double g_dot = compute_g_dot(x_before, t, sys, root_func, event_state_idx);
+
+  if (std::abs(g_dot) < 1e-15) {
+    return;
+  }
+
+  state_type x_frozen = create_frozen_state(x_before);
+  value_type g_frozen = root_func(x_frozen, t);
+
+  for (unsigned j = 0; j < n_sens; ++j) {
+    double dg_dpj_explicit = get_deriv(g_frozen, j);
+    double dt_star_dpj = -dg_dpj_explicit / g_dot;
+
+    if (std::abs(dt_star_dpj) > 1e-20) {
+      for (size_t k = 0; k < x.size(); ++k) {
+        double delta_fk = scalar_value(f_before[k]) - scalar_value(f_after[k]);
+        add_sens_correction(x[k], j, delta_fk * dt_star_dpj);
+      }
+    }
+  }
 }
 
-//==============================================================================
-// Section 5c: Fixed Event Application WITH Saltation
-//==============================================================================
+// Saltation matrix correction for FIXED-TIME events
+// Formula: dx+/dp = dx-/dp + [f(x-) - f(x+)] * dt_event/dp
+template<class state_type, class time_type>
+inline void apply_saltation_correction_fixed(
+    state_type& x,
+    const time_type& t_event,
+    const state_type& f_before,
+    const state_type& f_after)
+{
+  if (x.empty()) return;
+  unsigned n_sens = get_n_sens(x[0]);
+  if (n_sens == 0) return;
 
-/**
- * @brief Apply all fixed events scheduled for a specific time WITH saltation corrections
- *
- * This version properly handles parametrized event times and values.
- */
+  for (unsigned j = 0; j < n_sens; ++j) {
+    double dt_event_dpj = get_deriv(t_event, j);
+
+    if (std::abs(dt_event_dpj) > 1e-20) {
+      for (size_t k = 0; k < x.size(); ++k) {
+        double delta_fk = scalar_value(f_before[k]) - scalar_value(f_after[k]);
+        add_sens_correction(x[k], j, delta_fk * dt_event_dpj);
+      }
+    }
+  }
+}
+
+// Apply fixed events with saltation
 template<class state_type, class Time, class System>
 bool apply_fixed_events_at_time_with_saltation(
     state_type& x,
@@ -508,12 +299,16 @@ bool apply_fixed_events_at_time_with_saltation(
 
   for (const auto& e : evs) {
     if (std::abs(scalar_value(e.time) - tt) < 1e-14) {
-      // Apply event value
+      state_type f_before(x.size());
+      sys.first(x, f_before, e.time);
+
       apply_event(x, e.state_index, e.value_func(x, e.time), e.method);
 
-      // Apply saltation correction for parametrized time and value
-      apply_saltation_correction_fixed(x, e.time, sys, e.value_func,
-                                       e.state_index, e.method);
+      state_type f_after(x.size());
+      sys.first(x, f_after, e.time);
+
+      apply_saltation_correction_fixed(x, e.time, f_before, f_after);
+
       fired = true;
     }
   }
@@ -521,9 +316,7 @@ bool apply_fixed_events_at_time_with_saltation(
   return fired;
 }
 
-/**
- * @brief Apply all fixed events (legacy version without saltation for non-AD cases)
- */
+// Apply fixed events without saltation (legacy)
 template<class state_type, class Time>
 bool apply_fixed_events_at_time(
     state_type& x,
@@ -543,13 +336,7 @@ bool apply_fixed_events_at_time(
   return fired;
 }
 
-//==============================================================================
-// Section 6: Time Point Management
-//==============================================================================
-
-/**
- * @brief Merge user-requested output times with fixed event times
- */
+// Merge user times with event times
 template<class Time, class It, class state_type, class V>
 std::vector<Time> merge_user_and_event_times(
     It ubegin, It uend,
@@ -574,13 +361,7 @@ std::vector<Time> merge_user_and_event_times(
   return out;
 }
 
-//==============================================================================
-// Section 7: Stepper Reset Dispatch
-//==============================================================================
-
-/**
- * @brief Unified stepper reset after discontinuous events
- */
+// Unified stepper reset
 template<class S, class State, class Time>
 inline void reset_stepper_unified(S& st, State& x, Time t, Time& dt)
 {
@@ -595,38 +376,14 @@ inline void reset_stepper_unified(S& st, State& x, Time t, Time& dt)
   }
 }
 
-//==============================================================================
-// Section 8: Event Engine Core
-//==============================================================================
+// Direction matching for root events
+inline bool direction_matches(double last, double curr, int dir) {
+  if (dir == 0) return true;
+  if (dir > 0) return last < 0 && curr >= 0;
+  return last > 0 && curr <= 0;
+}
 
-/**
- * @class EventEngine
- * @brief Core event-aware integration engine with simultaneous event support
- *
- * This class implements the main integration loops for both controlled
- * and dense-output steppers, with full support for fixed-time and
- * root-finding events. **Multiple events with the same root condition
- * are now detected and applied together efficiently.**
- *
- * @section simultaneous Simultaneous Event Handling
- *
- * When multiple root events have the same (or very similar) trigger condition:
- * 1. All root functions are evaluated in a single pass
- * 2. All events with sign changes are collected
- * 3. Root localization is performed once (using the first triggered event)
- * 4. All triggered events are applied at the same root time
- * 5. A single stepper reset is performed
- *
- * This is more efficient than the naive approach of handling one event,
- * resetting, and then detecting the next event in a subsequent step.
- *
- * @section saltation Complete Saltation Corrections
- *
- * All events (fixed and root) now receive proper saltation matrix corrections
- * for sensitivity propagation when:
- * - Event time depends on parameters (root condition or parametrized fixed time)
- * - Event value depends on parameters (parametrized value_func)
- */
+// EventEngine - Core event-aware integration engine
 template<class Stepper, class System, class State, class Time>
 class EventEngine {
 public:
@@ -644,13 +401,7 @@ public:
     , m_root(root)
   {}
 
-  //--------------------------------------------------------------------------
   // Controlled Stepper Integration
-  //--------------------------------------------------------------------------
-
-  /**
-   * @brief Integrate using a controlled stepper with simultaneous event support
-   */
   template<class Obs, class Checker>
   size_t process_controlled(
       state_type& x,
@@ -661,14 +412,11 @@ public:
       double root_tol,
       size_t max_trigger)
   {
-    using boost::numeric::odeint::detail::less_with_sign;
-
     size_t steps = 0;
     auto it = times.begin();
     const auto end = times.end();
     Time t = *it;
 
-    // --- Handle events at initial time ---
     if (apply_fixed_events_at_time_with_saltation(x, t, m_fixed, m_sys)) {
       reset_stepper_unified(m_st, x, t, dt);
     }
@@ -677,28 +425,26 @@ public:
     ++it;
     if (it == end) return 0;
 
-    // --- Initialize root tracking ---
     std::vector<double> last_val(m_root.size(),
                                  std::numeric_limits<double>::quiet_NaN());
     std::vector<State>  last_state(m_root.size(), x);
     std::vector<Time>   last_time(m_root.size(), t);
     std::vector<size_t> fired(m_root.size(), 0);
 
-    // Pre-allocate for triggered events (avoids allocations in hot loop)
     std::vector<TriggeredEvent> triggered;
     triggered.reserve(m_root.size());
-
-    // Pre-allocate current values vector
     std::vector<double> curr_val(m_root.size());
 
-    // --- Main integration loop ---
     while (it != end)
     {
       Time t_target = *it;
+      double t_target_scalar = scalar_value(t_target);
 
-      while (less_with_sign(t, t_target, dt))
+      while (scalar_value(t) < t_target_scalar - 1e-14)
       {
-        Time dt_step = min_abs(dt, t_target - t);
+        double remaining = t_target_scalar - scalar_value(t);
+        Time dt_step = (scalar_value(dt) < remaining) ? dt : Time(remaining);
+
         auto result = m_st.try_step(m_sys, x, t, dt_step);
 
         if (result == success) {
@@ -707,12 +453,10 @@ public:
           checker.reset();
           dt = dt_step;
 
-          // === PHASE 1: Evaluate ALL root functions (single pass) ===
           for (size_t i = 0; i < m_root.size(); ++i) {
             curr_val[i] = scalar_value(m_root[i].func(x, t));
           }
 
-          // === PHASE 2: Collect ALL triggered events ===
           triggered.clear();
           for (size_t i = 0; i < m_root.size(); ++i) {
             if (fired[i] < max_trigger &&
@@ -724,13 +468,9 @@ public:
             }
           }
 
-          // === PHASE 3: Process all triggered events together ===
           if (!triggered.empty()) {
-            // Use first triggered event for root localization
-            // (all have roots in the same interval)
             size_t ref_idx = triggered[0].index;
 
-            // Localize root once
             localize_root_controlled(
               ref_idx,
               last_state[ref_idx], last_time[ref_idx],
@@ -740,11 +480,8 @@ public:
                                             checker);
 
             Time t_root = t;
-
-            // Output state at root (before any events)
             obs(x, t_root);
 
-            // Check for terminal events first
             bool has_terminal = false;
             for (const auto& te : triggered) {
               if (m_root[te.index].terminal) {
@@ -753,7 +490,6 @@ public:
               }
             }
 
-            // Apply ALL triggered events to the state
             State x_after = x;
             for (const auto& te : triggered) {
               size_t i = te.index;
@@ -766,32 +502,24 @@ public:
               fired[i]++;
             }
 
-            // Apply complete saltation corrections for all triggered events
-            // This corrects for parametrized root conditions AND value functions
             for (const auto& te : triggered) {
               size_t i = te.index;
               if (!m_root[i].terminal) {
-                apply_saltation_correction_root(x_after, t_root, m_sys,
+                apply_saltation_correction_root(x_after, x, t_root, m_sys,
                                                 m_root[i].func,
-                                                m_root[i].value_func,
-                                                m_root[i].state_index,
-                                                m_root[i].method);
+                                                m_root[i].state_index);
               }
             }
 
-            // Output state after all events
             obs(x_after, t_root + Time(1e-15));
             x = x_after;
 
-            // Terminal check
             if (has_terminal) {
               return steps;
             }
 
-            // Single reset after all events
             reset_stepper_unified(m_st, x, t, dt);
 
-            // Reset root tracking (keep fired counts)
             for (size_t j = 0; j < m_root.size(); ++j) {
               last_val[j] = std::numeric_limits<double>::quiet_NaN();
               last_state[j] = x;
@@ -799,7 +527,6 @@ public:
             }
           }
           else {
-            // No events triggered - update tracking for all
             for (size_t i = 0; i < m_root.size(); ++i) {
               last_val[i] = curr_val[i];
               last_state[i] = x;
@@ -818,7 +545,6 @@ public:
       if (apply_fixed_events_at_time_with_saltation(x, t, m_fixed, m_sys)) {
         obs(x, t);
         reset_stepper_unified(m_st, x, t, dt);
-        // Reset root tracking after fixed events
         for (size_t j = 0; j < m_root.size(); ++j) {
           last_val[j] = std::numeric_limits<double>::quiet_NaN();
           last_state[j] = x;
@@ -836,13 +562,7 @@ public:
     return steps;
   }
 
-  //--------------------------------------------------------------------------
   // Dense Output Stepper Integration
-  //--------------------------------------------------------------------------
-
-  /**
-   * @brief Integrate using dense output with simultaneous event support
-   */
   template<class Obs, class Checker>
   size_t process_dense(
       state_type& x,
@@ -860,68 +580,90 @@ public:
     auto end = times.end();
 
     if (apply_fixed_events_at_time_with_saltation(x, *it, m_fixed, m_sys))
-      ;
+    {
+      m_st.initialize(x, *it, dt);
+    }
 
-    m_st.initialize(x, *it, dt);
     obs(x, *it);
     ++it;
     if (it == end) return 0;
 
-    // --- Initialize root tracking ---
+    m_st.initialize(x, times.front(), dt);
+    m_st.do_step(m_sys);
+    ++steps;
+    checker();
+    checker.reset();
+
+    Time t_start = m_st.previous_time();
+    Time t_end = m_st.current_time();
+    dt = m_st.current_time_step();
+
+    State x_at_start(x.size());
+    m_st.calc_state(t_start, x_at_start);
+
     std::vector<double> last_val(m_root.size());
-    std::vector<State>  last_state(m_root.size(), x);
-    std::vector<Time>   last_time(m_root.size(), times.front());
+    std::vector<State>  last_state(m_root.size(), x_at_start);
+    std::vector<Time>   last_time(m_root.size(), t_start);
     std::vector<size_t> fired(m_root.size(), 0);
 
     for (size_t i = 0; i < m_root.size(); ++i) {
-      last_val[i] = scalar_value(m_root[i].func(x, times.front()));
+      last_val[i] = scalar_value(m_root[i].func(x_at_start, t_start));
     }
 
-    // Pre-allocate for triggered events
     std::vector<TriggeredEvent> triggered;
     triggered.reserve(m_root.size());
-
-    // Pre-allocate current values
     std::vector<double> curr_val(m_root.size());
 
-    // --- Main integration loop ---
     while (it != end)
     {
-      m_st.do_step(m_sys);
-      ++steps;
-      checker();
-      checker.reset();
+      while (!less_eq_with_sign(*it, t_end, dt))
+      {
+        m_st.do_step(m_sys);
+        ++steps;
+        checker();
+        checker.reset();
 
-      Time t_start = m_st.previous_time();
-      Time t_end = m_st.current_time();
-      dt = m_st.current_time_step();
+        t_start = m_st.previous_time();
+        t_end = m_st.current_time();
+        dt = m_st.current_time_step();
 
-      // --- Check for roots crossing between intervals ---
-      State x_at_start = x;
-      m_st.calc_state(t_start, x_at_start);
-
-      // Evaluate all root functions at interval start
-      for (size_t i = 0; i < m_root.size(); ++i) {
-        curr_val[i] = scalar_value(m_root[i].func(x_at_start, t_start));
+        m_st.calc_state(t_start, x_at_start);
+        for (size_t j = 0; j < m_root.size(); ++j) {
+          last_val[j] = scalar_value(m_root[j].func(x_at_start, t_start));
+          last_state[j] = x_at_start;
+          last_time[j] = t_start;
+        }
       }
 
-      // Collect all events triggered between intervals
+      m_st.calc_state(t_end, x);
+      for (size_t i = 0; i < m_root.size(); ++i) {
+        curr_val[i] = scalar_value(m_root[i].func(x, t_end));
+      }
+
       triggered.clear();
       for (size_t i = 0; i < m_root.size(); ++i) {
         if (fired[i] < max_trigger &&
             !std::isnan(last_val[i]) &&
             last_val[i] * curr_val[i] < 0.0 &&
-            scalar_value(last_time[i]) < scalar_value(t_start) &&
             direction_matches(last_val[i], curr_val[i], m_root[i].direction))
         {
           triggered.push_back({i, last_val[i], curr_val[i]});
         }
       }
 
-      // Process all triggered events at interval boundary
       if (!triggered.empty()) {
-        Time t_root = t_start;
+        size_t ref_idx = triggered[0].index;
+
         State x_root = x_at_start;
+        Time t_root = t_start;
+
+        localize_root_dense(
+          ref_idx,
+          x_root, t_root, t_end,
+          triggered[0].last_val, triggered[0].curr_val,
+          root_tol);
+
+        State x_before = x_root;
 
         obs(x_root, t_root);
 
@@ -936,21 +678,20 @@ public:
         for (const auto& te : triggered) {
           size_t i = te.index;
           if (!m_root[i].terminal) {
-            apply_event(x_root, m_root[i].state_index,
-                        m_root[i].value_func(x_root, t_root), m_root[i].method);
+            apply_event(x_root,
+                        m_root[i].state_index,
+                        m_root[i].value_func(x_before, t_root),
+                        m_root[i].method);
           }
           fired[i]++;
         }
 
-        // Apply complete saltation corrections
         for (const auto& te : triggered) {
           size_t i = te.index;
           if (!m_root[i].terminal) {
-            apply_saltation_correction_root(x_root, t_root, m_sys,
+            apply_saltation_correction_root(x_root, x_before, t_root, m_sys,
                                             m_root[i].func,
-                                            m_root[i].value_func,
-                                            m_root[i].state_index,
-                                            m_root[i].method);
+                                            m_root[i].state_index);
           }
         }
 
@@ -980,7 +721,6 @@ public:
         }
       }
 
-      // Ensure tracking is within current interval
       for (size_t i = 0; i < m_root.size(); ++i) {
         if (scalar_value(last_time[i]) < scalar_value(t_start)) {
           m_st.calc_state(t_start, x_at_start);
@@ -990,7 +730,6 @@ public:
         }
       }
 
-      // --- Process all output times within this interval ---
       while (it != end && less_eq_with_sign(*it, t_end, dt))
       {
         Time t_eval = *it;
@@ -1002,7 +741,6 @@ public:
 
         m_st.calc_state(t_eval, x);
 
-        // Check for fixed events (with saltation corrections)
         if (apply_fixed_events_at_time_with_saltation(x, t_eval, m_fixed, m_sys))
         {
           obs(x, t_eval);
@@ -1030,12 +768,10 @@ public:
           continue;
         }
 
-        // === Evaluate ALL root functions at t_eval ===
         for (size_t i = 0; i < m_root.size(); ++i) {
           curr_val[i] = scalar_value(m_root[i].func(x, t_eval));
         }
 
-        // === Collect ALL triggered events ===
         triggered.clear();
         for (size_t i = 0; i < m_root.size(); ++i) {
           if (fired[i] < max_trigger &&
@@ -1047,17 +783,19 @@ public:
           }
         }
 
-        // === Process all triggered events together ===
         if (!triggered.empty()) {
-          // Use first event for root localization
           size_t ref_idx = triggered[0].index;
 
-          Time t_root = t_eval;
-          State x_root = x;
-          localize_root_dense(ref_idx, last_state[ref_idx], last_time[ref_idx],
-                              x_root, t_root, triggered[0].last_val,
-                              triggered[0].curr_val, root_tol);
+          State x_root = last_state[ref_idx];
+          Time t_root = last_time[ref_idx];
 
+          localize_root_dense(
+            ref_idx,
+            x_root, t_root, t_eval,
+            triggered[0].last_val, triggered[0].curr_val,
+            root_tol);
+
+          State x_before = x_root;
           obs(x_root, t_root);
 
           bool has_terminal = false;
@@ -1068,25 +806,23 @@ public:
             }
           }
 
-          // Apply ALL events at the same root time
           for (const auto& te : triggered) {
             size_t i = te.index;
             if (!m_root[i].terminal) {
-              apply_event(x_root, m_root[i].state_index,
-                          m_root[i].value_func(x_root, t_root), m_root[i].method);
+              apply_event(x_root,
+                          m_root[i].state_index,
+                          m_root[i].value_func(x_before, t_root),
+                          m_root[i].method);
             }
             fired[i]++;
           }
 
-          // Apply complete saltation corrections for all triggered events
           for (const auto& te : triggered) {
             size_t i = te.index;
             if (!m_root[i].terminal) {
-              apply_saltation_correction_root(x_root, t_root, m_sys,
+              apply_saltation_correction_root(x_root, x_before, t_root, m_sys,
                                               m_root[i].func,
-                                              m_root[i].value_func,
-                                              m_root[i].state_index,
-                                              m_root[i].method);
+                                              m_root[i].state_index);
             }
           }
 
@@ -1097,7 +833,6 @@ public:
             return steps;
           }
 
-          // Single reinitialization after all events
           x = x_root;
           m_st.initialize(x, t_root, dt);
           m_st.do_step(m_sys);
@@ -1109,20 +844,15 @@ public:
           t_end = m_st.current_time();
           dt = m_st.current_time_step();
 
-          // Reset root tracking (preserve fired counts)
-          State x_new_start = x;
-          m_st.calc_state(t_start, x_new_start);
+          m_st.calc_state(t_start, x_at_start);
           for (size_t j = 0; j < m_root.size(); ++j) {
-            last_val[j] = scalar_value(m_root[j].func(x_new_start, t_start));
-            last_state[j] = x_new_start;
+            last_val[j] = scalar_value(m_root[j].func(x_at_start, t_start));
+            last_state[j] = x_at_start;
             last_time[j] = t_start;
           }
-
-          // Don't advance iterator - reprocess in new interval
           continue;
         }
 
-        // No events - update tracking and output
         for (size_t i = 0; i < m_root.size(); ++i) {
           last_val[i] = curr_val[i];
           last_state[i] = x;
@@ -1138,156 +868,164 @@ public:
   }
 
 private:
-
-  //--------------------------------------------------------------------------
-  // Helper Methods
-  //--------------------------------------------------------------------------
-
-  /**
-   * @brief Localize a root using controlled stepping (re-integration)
-   */
   template<class Checker>
   void localize_root_controlled(
       size_t idx,
-      State xa, Time ta,
-      State& xb, Time& tb,
-      double fa, double fb,
+      State& x_lo, Time& t_lo,
+      State& x_hi, Time& t_hi,
+      double g_lo, double g_hi,
       double tol,
       Checker& checker)
   {
-    while (std::abs(scalar_value(tb - ta)) > tol)
-    {
-      Time tm = (ta + tb) / 2.0;
+    const int max_iter = 50;
 
-      State xm = xa;
-      Time t_tmp = ta;
-      Time dt_tmp = (tm - ta) / 10.0;
+    for (int iter = 0; iter < max_iter; ++iter) {
+      double dt_interval = scalar_value(t_hi) - scalar_value(t_lo);
+      if (dt_interval < tol) break;
 
-      while (detail::less_with_sign(t_tmp, tm, dt_tmp))
-      {
-        Time step_dt = min_abs(dt_tmp, tm - t_tmp);
-        auto result = m_st.try_step(m_sys, xm, t_tmp, step_dt);
+      double alpha = -g_lo / (g_hi - g_lo);
+      alpha = std::max(0.1, std::min(0.9, alpha));
 
+      Time t_mid = t_lo + Time(alpha * dt_interval);
+      State x_mid = x_lo;
+
+      Time t_tmp = t_lo;
+      Time dt_tmp = t_mid - t_lo;
+
+      while (scalar_value(t_tmp) < scalar_value(t_mid) - 1e-15) {
+        double dt_tmp_scalar = scalar_value(dt_tmp);
+        double remaining = scalar_value(t_mid) - scalar_value(t_tmp);
+        Time step_dt = (dt_tmp_scalar < remaining) ? dt_tmp : Time(remaining);
+
+        auto result = m_st.try_step(m_sys, x_mid, t_tmp, step_dt);
         if (result == success) {
           checker();
           checker.reset();
+          dt_tmp = step_dt;
         } else {
-          checker();
+          dt_tmp = step_dt;
         }
       }
 
-      double fm = scalar_value(m_root[idx].func(xm, tm));
+      double g_mid = scalar_value(m_root[idx].func(x_mid, t_mid));
 
-      if (fa * fm <= 0.0) {
-        tb = tm; xb = xm; fb = fm;
+      if (g_lo * g_mid < 0.0) {
+        x_hi = x_mid;
+        t_hi = t_mid;
+        g_hi = g_mid;
       } else {
-        ta = tm; xa = xm; fa = fm;
+        x_lo = x_mid;
+        t_lo = t_mid;
+        g_lo = g_mid;
       }
     }
+
+    x_hi = x_lo;
+    t_hi = t_lo;
   }
 
-  /**
-   * @brief Localize a root using dense output (interpolation)
-   */
   void localize_root_dense(
       size_t idx,
-      State xa, Time ta,
-      State& xb, Time& tb,
-      double fa, double fb,
+      State& x_root, Time& t_root, Time t_hi,
+      double g_lo, double g_hi,
       double tol)
   {
-    while (std::abs(scalar_value(tb - ta)) > tol)
-    {
-      Time tm = (ta + tb) / 2.0;
+    const int max_iter = 50;
+    Time t_lo = t_root;
 
-      State xm = xa;
-      m_st.calc_state(tm, xm);
+    for (int iter = 0; iter < max_iter; ++iter) {
+      double dt_interval = scalar_value(t_hi) - scalar_value(t_lo);
+      if (dt_interval < tol) break;
 
-      double fm = scalar_value(m_root[idx].func(xm, tm));
+      double alpha = -g_lo / (g_hi - g_lo);
+      alpha = std::max(0.1, std::min(0.9, alpha));
 
-      if (fa * fm <= 0.0) {
-        tb = tm; xb = xm; fb = fm;
+      Time t_mid = t_lo + Time(alpha * dt_interval);
+      State x_mid(x_root.size());
+      m_st.calc_state(t_mid, x_mid);
+
+      double g_mid = scalar_value(m_root[idx].func(x_mid, t_mid));
+
+      if (g_lo * g_mid < 0.0) {
+        t_hi = t_mid;
+        g_hi = g_mid;
       } else {
-        ta = tm; xa = xm; fa = fm;
+        t_lo = t_mid;
+        g_lo = g_mid;
+        x_root = x_mid;
+        t_root = t_mid;
       }
     }
+
+    m_st.calc_state(t_lo, x_root);
+    t_root = t_lo;
   }
 
-private:
   Stepper& m_st;
-  System&  m_sys;
+  System& m_sys;
   const std::vector<FixedEvent<State, typename State::value_type>>& m_fixed;
   const std::vector<RootEvent<State, Time>>& m_root;
 };
 
-//==============================================================================
-// Section 9: Public API
-//==============================================================================
-
-/**
- * @brief Integrate ODE at specified times with event handling (controlled stepper)
- */
-template<class Stepper, class System, class State,
-         class TimeIterator, class Time, class Observer>
-size_t integrate_times(
-    Stepper stepper,
-    System system,
-    State& x,
-    TimeIterator t_begin,
-    TimeIterator t_end,
-    Time dt,
-    Observer obs,
-    const std::vector<FixedEvent<State, typename State::value_type>>& fixed,
-    const std::vector<RootEvent<State, Time>>& root,
-    StepChecker& checker,
-    double root_tol = 1e-8,
-    size_t max_trigger_root = 1,
-    controlled_stepper_tag = controlled_stepper_tag())
-{
-  auto times = merge_user_and_event_times<Time>(t_begin, t_end, fixed);
-  EventEngine<Stepper, System, State, Time> eng(stepper, system, fixed, root);
-  return eng.process_controlled(x, times, dt, obs, checker,
-                                root_tol, max_trigger_root);
-}
-
-/**
- * @brief Integrate ODE at specified times with event handling (dense output)
- */
-template<class Stepper, class System, class State,
-         class TimeIterator, class Time, class Observer>
-size_t integrate_times_dense(
-    Stepper stepper,
-    System system,
-    State& x,
-    TimeIterator t_begin,
-    TimeIterator t_end,
-    Time dt,
-    Observer obs,
-    const std::vector<FixedEvent<State, typename State::value_type>>& fixed,
-    const std::vector<RootEvent<State, Time>>& root,
-    StepChecker& checker,
-    double root_tol = 1e-8,
-    size_t max_trigger_root = 1,
-    dense_output_stepper_tag = dense_output_stepper_tag())
-{
-  auto times = merge_user_and_event_times<Time>(t_begin, t_end, fixed);
-  EventEngine<Stepper, System, State, Time> eng(stepper, system, fixed, root);
-  return eng.process_dense(x, times, dt, obs, checker,
-                           root_tol, max_trigger_root);
-}
-
 } // namespace detail
 
-//==============================================================================
-// Public Namespace Exports
-//==============================================================================
-
+// Export types from detail namespace for user code
+using detail::EventMethod;
 using detail::FixedEvent;
 using detail::RootEvent;
-using detail::EventMethod;
-using detail::integrate_times;
-using detail::integrate_times_dense;
-using detail::make_steady_state_root_func;
+
+// Public API - integrate_times with events support
+template<class Stepper, class System, class State, class TimeIterator, class Time, class Observer,
+         class StepChecker>
+size_t integrate_times(
+    Stepper stepper,
+    System sys,
+    State& x,
+    TimeIterator times_begin,
+    TimeIterator times_end,
+    Time dt,
+    Observer observer,
+    const std::vector<detail::FixedEvent<State, typename State::value_type>>& fixed_events,
+    const std::vector<detail::RootEvent<State, Time>>& root_events,
+    StepChecker checker,
+    double root_tol = 1e-8,
+    size_t max_trigger = 1000)
+{
+  using stepper_category = typename boost::numeric::odeint::unwrap_reference<Stepper>::type::stepper_category;
+
+  auto merged = detail::merge_user_and_event_times<Time>(
+    times_begin, times_end, fixed_events);
+
+  detail::EventEngine<
+    typename boost::numeric::odeint::unwrap_reference<Stepper>::type,
+    System, State, Time> engine(stepper, sys, fixed_events, root_events);
+
+  if constexpr (std::is_same_v<stepper_category, boost::numeric::odeint::dense_output_stepper_tag>) {
+    return engine.process_dense(x, merged, dt, observer, checker, root_tol, max_trigger);
+  } else {
+    return engine.process_controlled(x, merged, dt, observer, checker, root_tol, max_trigger);
+  }
+}
+
+// Overload without step checker (uses default void checker)
+template<class Stepper, class System, class State, class TimeIterator, class Time, class Observer>
+size_t integrate_times(
+    Stepper stepper,
+    System sys,
+    State& x,
+    TimeIterator times_begin,
+    TimeIterator times_end,
+    Time dt,
+    Observer observer,
+    const std::vector<detail::FixedEvent<State, typename State::value_type>>& fixed_events,
+    const std::vector<detail::RootEvent<State, Time>>& root_events,
+    double root_tol = 1e-8,
+    size_t max_trigger = 1000)
+{
+  detail::StepCheckerVoid checker;
+  return integrate_times(stepper, sys, x, times_begin, times_end, dt, observer,
+                         fixed_events, root_events, checker, root_tol, max_trigger);
+}
 
 } // namespace odeint
 } // namespace numeric
