@@ -17,8 +17,9 @@ eqns <- c(x = "-k*x")
 events <- data.frame(var = "x", time = "te", value = "1", root = NA, method = "add", stringsAsFactors = FALSE)
 
 # # Generate and compile solver
-model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
-                modelname = "xmodel_c", compile = T, useDenseOutput = T)
+model <- CppODE(eqns, events = events, deriv = T, deriv2 = T, outdir = getwd(),
+                modelname = "xmodel_c", compile = T, useDenseOutput = T, verbose = T
+                )
 
 
 # Example run

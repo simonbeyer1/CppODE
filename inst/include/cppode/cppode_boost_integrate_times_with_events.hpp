@@ -126,6 +126,18 @@ auto make_steady_state_root_func(System& sys, double tol)
     };
 }
 
+// Get AD nesting depth: double=0, F<double>=1, F<F<double>>=2, etc.
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, unsigned>::type
+get_ad_depth(const T&) { return 0; }
+
+template<class T>
+inline unsigned get_ad_depth(const fadbad::F<T>& v) {
+  // Use const_cast because FADBAD++'s x() is not const-qualified
+  T& inner = const_cast<fadbad::F<T>&>(v).x();
+  return 1 + get_ad_depth(inner);
+}
+
 // Get number of sensitivity directions
 template<class T>
 inline typename std::enable_if<std::is_arithmetic<T>::value, unsigned>::type
@@ -248,9 +260,9 @@ inline double compute_g_dot(
 // Formula: x+ = x- + [f(x-) - f(x+)] * dt*
 // where dt* = -g / g_dot (implicit function theorem)
 //
-// For higher-order derivatives, we need iterative application because
-// Δf = f(x_before) - f(x_after) depends on x_after, which changes with each iteration.
-// The iteration converges because dt*.value() ≈ 0.
+// For higher-order derivatives, we need iterative application using
+// INCREMENTAL differences to avoid adding first-order multiple times.
+// Number of iterations = AD nesting depth (F<T>=1, F<F<T>>=2, etc.)
 template<class state_type, class time_type, class System, class RootFunc>
 inline void apply_saltation_correction_root(
     state_type& x,
@@ -258,22 +270,18 @@ inline void apply_saltation_correction_root(
     const time_type& t,
     System& sys,
     RootFunc& root_func,
-    int event_state_idx,
-    int max_iterations = 3)  // 3 iterations covers up to 3rd order derivatives
+    int event_state_idx)
 {
   using value_type = typename state_type::value_type;
 
   if (x.empty()) return;
 
-  // Compute f_before once (from x_before, which doesn't change)
-  state_type f_before(x_before.size());
-  sys.first(x_before, f_before, t);
+  // Determine number of iterations from AD depth
+  unsigned ad_depth = get_ad_depth(x[0]);
+  if (ad_depth == 0) return;  // No AD, no correction needed
 
-  // Compute g and g_dot (from x_before, which doesn't change)
-  // g = root_func(x_before, t) contains all parameter derivatives via chain rule
+  // Compute g and g_dot using x_before (with full AD for parameter derivatives)
   value_type g = root_func(x_before, t);
-
-  // g_dot = dg/dt (total time derivative along the flow)
   value_type g_dot = compute_g_dot_ad(x_before, t, sys, root_func, event_state_idx);
 
   // Check if g_dot is too small (would cause division issues)
@@ -283,18 +291,24 @@ inline void apply_saltation_correction_root(
 
   // dt* = -g / g_dot
   // At the root: g.value() ≈ 0, so dt_star.value() ≈ 0
-  // But dt_star retains all derivatives via the quotient rule!
   value_type dt_star = -g / g_dot;
 
-  // Iterative saltation: each iteration adds the next order of derivatives
-  for (int iter = 0; iter < max_iterations; ++iter) {
-    state_type f_after(x.size());
-    sys.first(x, f_after, t);
+  // f_prev starts with f_before
+  state_type f_prev(x_before.size());
+  sys.first(x_before, f_prev, t);
 
-    // Apply saltation correction
+  // Iterative saltation using INCREMENTAL differences
+  for (unsigned iter = 0; iter < ad_depth; ++iter) {
+    state_type f_curr(x.size());
+    sys.first(x, f_curr, t);
+
+    // Apply incremental saltation correction
     for (size_t k = 0; k < x.size(); ++k) {
-      x[k] += (f_before[k] - f_after[k]) * dt_star;
+      x[k] += (f_prev[k] - f_curr[k]) * dt_star;
     }
+
+    // Update f_prev for next iteration
+    f_prev = f_curr;
   }
 }
 
@@ -305,38 +319,49 @@ inline void apply_saltation_correction_root(
 // - First order: x.d1 += Δf.value * dt*.d1
 // - Second order: x.d2 += Δf.d1 * dt*.d1 (but Δf.d1 depends on x.d1!)
 //
-// The iteration converges quickly because dt*.value = 0, so each iteration
-// only affects the next higher order of derivatives.
+// IMPORTANT: Each iteration must use INCREMENTAL differences to avoid
+// adding the first-order contribution multiple times.
+// - Iteration 0: x += (f_before - f_after_0) * dt*  → adds 1st order
+// - Iteration 1: x += (f_after_0 - f_after_1) * dt* → adds 2nd order only
+// - etc.
+//
+// Number of iterations = AD nesting depth (F<T>=1, F<F<T>>=2, etc.)
 template<class state_type, class time_type, class System>
 inline void apply_saltation_correction_fixed_iterative(
-    state_type& x,
+    state_type& x,                    // x AFTER event (will be corrected in-place)
+    const state_type& x_before,       // x BEFORE event (full AD state!)
     const time_type& t_event,
-    System& sys,
-    int max_iterations = 3)  // 3 iterations covers up to 3rd order derivatives
+    System& sys)
 {
   if (x.empty()) return;
+
+  // Determine number of iterations from AD depth
+  unsigned ad_depth = get_ad_depth(x[0]);
+  if (ad_depth == 0) return;  // No AD, no correction needed
 
   // Create a "derivative-only" version of t_event:
   // value = 0, but all derivatives preserved
   time_type t_deriv_only = t_event - time_type(scalar_value(t_event));
 
-  // Store f_before (computed with x before any saltation)
-  state_type x_frozen = create_frozen_state(x);
-  state_type f_before(x.size());
-  sys.first(x_frozen, f_before, t_event);
+  // f_prev starts with f_before
+  state_type f_prev(x_before.size());
+  sys.first(x_before, f_prev, t_event);
 
-  // Iterative saltation: each iteration adds the next order of derivatives
-  for (int iter = 0; iter < max_iterations; ++iter) {
-    state_type f_after(x.size());
-    sys.first(x, f_after, t_event);
+  // Iterative saltation using INCREMENTAL differences:
+  // Each iteration only adds the contribution from the CHANGE in f_after
+  for (unsigned iter = 0; iter < ad_depth; ++iter) {
+    state_type f_curr(x.size());
+    sys.first(x, f_curr, t_event);
 
-    // Apply saltation correction
-    // On iteration 0: adds first-order derivatives
-    // On iteration 1: adds second-order derivatives (using first-order from iter 0)
-    // On iteration 2: adds third-order derivatives, etc.
+    // Apply incremental saltation correction
+    // Iter 0: (f_before - f_after_0) → first-order contribution
+    // Iter 1: (f_after_0 - f_after_1) → second-order contribution only
     for (size_t k = 0; k < x.size(); ++k) {
-      x[k] += (f_before[k] - f_after[k]) * t_deriv_only;
+      x[k] += (f_prev[k] - f_curr[k]) * t_deriv_only;
     }
+
+    // Update f_prev for next iteration
+    f_prev = f_curr;
   }
 }
 
@@ -375,11 +400,15 @@ bool apply_fixed_events_at_time_with_saltation(
 
   for (const auto& e : evs) {
     if (std::abs(scalar_value(e.time) - tt) < 1e-14) {
+      // IMPORTANT: Save x_before BEFORE applying the event!
+      // Keep full AD state (parameter derivatives), only freeze later if needed
+      state_type x_before = x;
+
       // Apply the event value change
       apply_event(x, e.state_index, e.value_func(x, e.time), e.method);
 
       // Apply iterative saltation correction for all AD orders
-      apply_saltation_correction_fixed_iterative(x, e.time, sys);
+      apply_saltation_correction_fixed_iterative(x, x_before, e.time, sys);
 
       fired = true;
     }
