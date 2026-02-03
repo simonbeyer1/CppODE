@@ -2,7 +2,7 @@
 ODE and Jacobian C++ code generator for CppODE
 ==============================================
 
-This module provides two main entry points:
+This module provides entry points for generating C++ code:
 
 - generate_ode_cpp(...)
     Generates C++ code for the ODE right-hand side and its Jacobian,
@@ -10,7 +10,10 @@ This module provides two main entry points:
 
 - generate_event_code(...)
     Generates C++ code for fixed-time and root-triggered events,
-    based on an R-style events data frame (converted to a dict).
+    including analytical gradients for saltation matrix corrections.
+
+- generate_rootfunc_code(...)
+    Generates C++ code for root function based termination.
 
 Author: Simon Beyer
 """
@@ -30,7 +33,7 @@ from sympy.parsing.sympy_parser import (
 
 def _get_safe_parse_dict():
     """Construct a local dictionary for SymPy parsing."""
-    safe_local_dict = {
+    return {
         "exp": sp.exp,
         "exp10": lambda x: sp.Pow(10, x),
         "exp2": lambda x: sp.Pow(2, x),
@@ -60,10 +63,10 @@ def _get_safe_parse_dict():
         "Piecewise": sp.Piecewise,
         "pi": sp.pi, "E": sp.E, "oo": sp.oo,
     }
-    return safe_local_dict
 
 
 def _safe_sympify(expr_str, local_symbols=None):
+    """Safely parse a string expression to SymPy."""
     expr_str = str(expr_str).strip()
     if expr_str == "0":
         return sp.Integer(0)
@@ -82,55 +85,28 @@ def _safe_sympify(expr_str, local_symbols=None):
 
 
 def _safe_replace(text, symbol, replacement):
-    # Use negative lookahead to avoid matching symbols that are already array-indexed.
-    # This prevents replacing 'x' in 'x[0]' when we want to replace the symbol 'x'.
-    # The pattern ensures:
-    # - Not preceded by alphanumeric or underscore (word boundary before)
-    # - Not followed by alphanumeric, underscore, or '[' (word boundary after, plus array check)
+    """Replace symbol in text avoiding already-indexed variables."""
     pattern = r"(?<![a-zA-Z0-9_])" + re.escape(symbol) + r"(?![a-zA-Z0-9_\[])"
     return re.sub(pattern, replacement, str(text))
 
 
 def _ensure_double_literals(cpp_code):
-    """
-    Convert integer literals to double literals in C++ code.
-    
-    This fixes issues with std::max/std::min template argument deduction
-    where mixing int and double arguments causes compilation errors.
-    E.g., std::max(0, x[1]) fails but std::max(0.0, x[1]) works.
-    
-    The function uses a two-pass approach:
-    1. Temporarily replace scientific notation with placeholders
-    2. Convert remaining integers to doubles
-    3. Restore scientific notation
-    
-    This avoids converting numbers like 1e-5 incorrectly.
-    """
-    # Match scientific notation: digits, optionally with decimal, 
-    # followed by e/E and optional sign and digits
+    """Convert integer literals to double literals in C++ code."""
     sci_pattern = r'(\d+\.?\d*[eE][+-]?\d+)'
     
-    # Store all scientific notation numbers
     sci_numbers = []
     def store_sci(match):
         sci_numbers.append(match.group(0))
         return f'__SCI_PLACEHOLDER_{len(sci_numbers)-1}__'
     
-    # Replace scientific notation with placeholders
     temp = re.sub(sci_pattern, store_sci, cpp_code)
-    
-    # Convert integers (not preceded by identifier chars or '[', not followed by digits, '.', or ']')
-    # This converts: 0, 1, 42
-    # But NOT: x[0], 3.14, array[123]
     int_pattern = r'(?<![a-zA-Z0-9_.\[])(\d+)(?![0-9.\]])'
     temp = re.sub(int_pattern, lambda m: m.group(1) + '.0', temp)
     
-    # Restore scientific notation
     for i, sci in enumerate(sci_numbers):
         temp = temp.replace(f'__SCI_PLACEHOLDER_{i}__', sci)
     
     return temp
-
 
 
 # =====================================================================
@@ -153,17 +129,23 @@ _MATH_MACRO_MAP = {
     "M_SQRT1_2": "std::sqrt(0.5)",
 }
 
+
 # =====================================================================
-# _to_cpp
+# _to_cpp - Convert SymPy expression to C++ code
 # =====================================================================
 
 def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial_states=False):
+    """Convert a SymPy expression to C++ code."""
     if forcings is None:
         forcings = []
+    
     cpp_code = str(sp.cxxcode(expr, standard="c++17", strict=False)).replace("\n", " ")
-    # replace non-standard math macros
+    
+    # Replace non-standard math macros
     for macro, repl in _MATH_MACRO_MAP.items():
         cpp_code = cpp_code.replace(macro, repl)
+    
+    # Use FADBAD++ math functions for AD types
     if num_type in ("AD", "AD2"):
         for fn in [
             "sin", "cos", "tan", "asin", "acos", "atan",
@@ -171,30 +153,103 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
             "exp", "log", "sqrt", "pow", "abs", "min", "max"
         ]:
             cpp_code = cpp_code.replace(f"std::{fn}", f"fadbad::{fn}")
-    # forcings
+    
+    # Replace forcings
     for i, forcing in enumerate(forcings):
         cpp_code = _safe_replace(cpp_code, forcing, f"(*F[{i}])(t)")
-    # params
+    
+    # Replace params
     for j, param in enumerate(params):
         cpp_code = _safe_replace(cpp_code, param, f"params[{n_states + j}]")
-    # states
+    
+    # Replace states
     if use_initial_states:
         for i, state in enumerate(states):
             cpp_code = _safe_replace(cpp_code, state, f"params[{i}]")
     else:
         for i, state in enumerate(states):
             cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
-    # explicit notation for initial values
+    
+    # Explicit notation for initial values
     for i, state in enumerate(states):
         cpp_code = _safe_replace(cpp_code, f"{state}_0", f"params[{i}]")
+    
     cpp_code = _safe_replace(cpp_code, "time", "t")
     cpp_code = re.sub(r"\s+", "", cpp_code)
     cpp_code = _ensure_double_literals(cpp_code)
+    
     return cpp_code
 
 
 # =====================================================================
-# Main generator
+# Generate gradient code for a scalar expression
+# =====================================================================
+
+def _generate_gradient_cpp(expr, states_list, params_list, n_states, num_type,
+                           forcings_list, local_symbols, states_syms):
+    """
+    Generate C++ code for the gradient ∂expr/∂x of a scalar expression.
+    
+    Returns a list of C++ expressions, one for each state variable.
+    """
+    gradient = []
+    for state_name in states_list:
+        state_sym = states_syms[state_name]
+        deriv = sp.diff(expr, state_sym)
+        deriv_cpp = _to_cpp(deriv, states_list, params_list, n_states,
+                           num_type, forcings_list, use_initial_states=False)
+        deriv_cpp = str(deriv_cpp).replace("params[", "full_params[")
+        gradient.append(deriv_cpp)
+    return gradient
+
+
+def _generate_time_deriv_cpp(expr, t_sym, states_list, params_list, n_states,
+                             num_type, forcings_list):
+    """
+    Generate C++ code for ∂expr/∂t.
+    
+    Returns the C++ expression as a string.
+    """
+    deriv = sp.diff(expr, t_sym)
+    deriv_cpp = _to_cpp(deriv, states_list, params_list, n_states,
+                       num_type, forcings_list, use_initial_states=False)
+    return str(deriv_cpp).replace("params[", "full_params[")
+
+
+def _generate_gradient_lambda(gradient_cpp, n_states, num_type):
+    """
+    Generate a C++ lambda that returns a gradient vector.
+    
+    Parameters:
+    -----------
+    gradient_cpp : list of str
+        C++ expressions for each gradient component
+    n_states : int
+        Number of state variables
+    num_type : str
+        Numeric type (e.g., "AD", "AD2", "double")
+    
+    Returns:
+    --------
+    str : C++ lambda expression
+    """
+    state_type = f"ublas::vector<{num_type}>"
+    
+    # Build the lambda body
+    lines = [f"[full_params, &F](const {state_type}& x, const {num_type}& t) -> {state_type} {{"]
+    lines.append(f"      {state_type} grad({n_states});")
+    
+    for i, grad_expr in enumerate(gradient_cpp):
+        lines.append(f"      grad[{i}] = {grad_expr};")
+    
+    lines.append("      return grad;")
+    lines.append("    }")
+    
+    return "\n".join(lines)
+
+
+# =====================================================================
+# Main ODE generator
 # =====================================================================
 
 def generate_ode_cpp(
@@ -205,7 +260,30 @@ def generate_ode_cpp(
     fixed_params=None,
     forcings_list=None,
 ):
-
+    """
+    Generate C++ code for ODE system and Jacobian.
+    
+    Parameters:
+    -----------
+    rhs_dict : dict
+        Dictionary mapping state names to RHS expressions
+    params_list : list of str
+        Parameter names
+    num_type : str
+        Numeric type ("AD", "AD2", "double")
+    fixed_states : list of str, optional
+        States to exclude from sensitivity
+    fixed_params : list of str, optional
+        Parameters to exclude from sensitivity
+    forcings_list : list of str, optional
+        Forcing function names
+    
+    Returns:
+    --------
+    dict with keys: "ode_code", "jac_code", "jac_matrix", "time_derivs",
+                    "states", "params", "forcings"
+    """
+    # Normalize inputs
     if fixed_states is None:
         fixed_states = []
     if fixed_params is None:
@@ -215,7 +293,6 @@ def generate_ode_cpp(
     if params_list is None:
         params_list = []
 
-    # --- Ensure all list arguments are proper lists (not strings) ---
     if isinstance(params_list, str):
         params_list = [params_list]
     else:
@@ -238,14 +315,11 @@ def generate_ode_cpp(
 
     states_list = list(rhs_dict.keys())
     odes_list = list(rhs_dict.values())
-
     n_states = len(states_list)
 
-    # ------------------------------------------------------------------
-    # STEP 1+2: define ALL symbols once
-    # ------------------------------------------------------------------
-    states_syms  = {n: sp.Symbol(n, real=True) for n in states_list}
-    params_syms  = {n: sp.Symbol(n, real=True) for n in params_list}
+    # Define symbols
+    states_syms = {n: sp.Symbol(n, real=True) for n in states_list}
+    params_syms = {n: sp.Symbol(n, real=True) for n in params_list}
     forcing_syms = {n: sp.Symbol(n, real=True) for n in forcings_list}
     t = sp.Symbol("time", real=True)
 
@@ -255,26 +329,21 @@ def generate_ode_cpp(
     local_symbols.update(forcing_syms)
     local_symbols["time"] = t
 
-    # ------------------------------------------------------------------
-    # parse RHS
-    # ------------------------------------------------------------------
-    exprs = [
-        _safe_sympify(expr, local_symbols)
-        for expr in odes_list
-    ]
+    # Parse RHS expressions
+    exprs = [_safe_sympify(expr, local_symbols) for expr in odes_list]
 
     states_syms_list = [states_syms[s] for s in states_list]
 
+    # Compute Jacobian matrix
     jac_matrix = [
         [sp.diff(expr, s) for s in states_syms_list]
         for expr in exprs
     ]
 
+    # Compute time derivatives
     time_derivs = [sp.diff(expr, t) for expr in exprs]
 
-    # ------------------------------------------------------------------
-    # ODE system
-    # ------------------------------------------------------------------
+    # Generate ODE system code
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
@@ -297,9 +366,7 @@ def generate_ode_cpp(
 
     ode_cpp_lines += ["  }", "};"]
 
-    # ------------------------------------------------------------------
-    # Jacobian
-    # ------------------------------------------------------------------
+    # Generate Jacobian code
     jac_cpp_lines = [
         "// Jacobian for stiff solver",
         "struct jacobian {",
@@ -316,20 +383,20 @@ def generate_ode_cpp(
         f"                  ublas::vector<{num_type}>& dfdt) {{",
     ]
 
-    # STEP 3: J = df/dx, NO forcings
+    # J = df/dx (no forcings in Jacobian)
     for i in range(n_states):
         for j in range(n_states):
             jac_cpp_lines.append(
                 f"    J({i},{j}) = {_to_cpp(jac_matrix[i][j], states_list, params_list, n_states, num_type, forcings=[])};"
             )
 
-    # STEP 4: dfdt with forcing chain rule
+    # dfdt with forcing chain rule
     for i, expr in enumerate(exprs):
         cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type, forcings_list)
 
         forcing_terms = []
         for j, fname in enumerate(forcings_list):
-            df_dF = sp.diff(expr, forcing_syms[fname])   # <<< FIX
+            df_dF = sp.diff(expr, forcing_syms[fname])
             if df_dF != 0:
                 forcing_terms.append(
                     f"({_to_cpp(df_dF, states_list, params_list, n_states, num_type, forcings_list)})*F[{j}]->derivative(t)"
@@ -358,13 +425,8 @@ def generate_ode_cpp(
 # =====================================================================
 
 def generate_forcing_init_code(n_forcings, num_type="AD"):
-    """
-    Generate C++ code to initialize PchipForcing objects from R raw data.
-    
-    Always generates the forcing infrastructure, even for n_forcings=0.
-    This keeps the solve_* signature uniform.
-    """
-    lines = [
+    """Generate C++ code to initialize PchipForcing objects from R raw data."""
+    return [
         "",
         "  // --- Initialize forcings (PCHIP interpolation) ---",
         f"  int n_forcings = Rf_length(forcingTimesSEXP);",
@@ -384,11 +446,10 @@ def generate_forcing_init_code(n_forcings, num_type="AD"):
         "  }",
         "",
     ]
-    return lines
 
 
 # =====================================================================
-# Event code generation
+# Event code generation with analytical gradients
 # =====================================================================
 
 def _get_list_value(dict_or_df, key, index, n_events):
@@ -411,7 +472,7 @@ def _is_valid_value(value):
         return False
     if isinstance(value, numbers.Number):
         try:
-            if value != value:
+            if value != value:  # NaN check
                 return False
         except Exception:
             pass
@@ -435,12 +496,14 @@ def _parse_value_or_expression(value, local_symbols, states_list, params_list,
 
     value_str = str(value).strip()
 
+    # Try numeric literal first
     try:
         float(value_str)
         return value_str
     except (ValueError, TypeError):
         pass
 
+    # Parse as symbolic expression
     try:
         value_expr = _safe_sympify(value_str, local_symbols)
         value_code = _to_cpp(value_expr, states_list, params_list, n_states, 
@@ -452,7 +515,17 @@ def _parse_value_or_expression(value, local_symbols, states_list, params_list,
 
 def generate_event_code(events_df, states_list, params_list, n_states, 
                         num_type="AD", forcings_list=None):
-    """Generate C++ initialization lines for events."""
+    """
+    Generate C++ initialization lines for events with analytical gradients.
+    
+    This generates FixedEvent and RootEvent structures including:
+    - dg_dx_func: gradient of root function w.r.t. states
+    - dg_dt_func: time derivative of root function
+    - dh_dx_func: gradient of value function w.r.t. states
+    
+    These analytical derivatives are required for correct saltation
+    matrix corrections when computing sensitivities (deriv=TRUE).
+    """
     if forcings_list is None:
         forcings_list = []
     if states_list is None:
@@ -460,7 +533,7 @@ def generate_event_code(events_df, states_list, params_list, n_states,
     if params_list is None:
         params_list = []
     
-    # Ensure lists are proper lists (not strings)
+    # Normalize inputs
     if isinstance(states_list, str):
         states_list = [states_list]
     else:
@@ -482,6 +555,7 @@ def generate_event_code(events_df, states_list, params_list, n_states,
     else:
         events_dict = events_df
 
+    # Create symbols
     states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
     params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
     t = sp.Symbol("time", real=True)
@@ -494,7 +568,9 @@ def generate_event_code(events_df, states_list, params_list, n_states,
     local_symbols["time"] = t
 
     event_lines = []
+    state_type = f"ublas::vector<{num_type}>"
 
+    # Determine number of events
     list_lengths = []
     for v in events_dict.values():
         if isinstance(v, (list, tuple)):
@@ -518,8 +594,10 @@ def generate_event_code(events_df, states_list, params_list, n_states,
         )
         if value_code is None:
             raise ValueError(f"Event {i}: 'value' is required but is NA/None")
-
         value_code = str(value_code).replace("params[", "full_params[")
+
+        # Parse value expression for gradient computation
+        value_expr = _safe_sympify(str(value_raw), local_symbols)
 
         method_raw = _get_list_value(events_dict, "method", i, n_events)
         method = str(method_raw).lower() if method_raw is not None else "replace"
@@ -535,65 +613,97 @@ def generate_event_code(events_df, states_list, params_list, n_states,
             time_raw, local_symbols, states_list, params_list, n_states, 
             num_type, forcings_list
         )
-        if time_raw is not None and time_code is None:
-            time_code = None
 
         root_raw = _get_list_value(events_dict, "root", i, n_events)
         root_code = _parse_value_or_expression(
             root_raw, local_symbols, states_list, params_list, n_states, 
             num_type, forcings_list
         )
-        if root_raw is not None and root_code is None:
-            root_code = None
 
         if time_code is not None:
+            # ============================================================
+            # Fixed-time event
+            # ============================================================
             time_code = str(time_code).replace("params[", "full_params[")
             
-            # value_func: dynamischer Zugriff auf x[i]
-            value_expr = _safe_sympify(str(value_raw), local_symbols)
-            value_cpp = _to_cpp(value_expr, states_list, params_list, n_states,
-                               num_type, forcings_list, use_initial_states=False)
-            value_cpp = str(value_cpp).replace("params[", "full_params[")
+            # Compute value function gradient: ∂h/∂x
+            dh_dx_cpp = _generate_gradient_cpp(
+                value_expr, states_list, params_list, n_states,
+                num_type, forcings_list, local_symbols, states_syms
+            )
+            dh_dx_lambda = _generate_gradient_lambda(dh_dx_cpp, n_states, num_type)
             
-            state_type = f"ublas::vector<{num_type}>"
-            event_lines.append(
-                f"  fixed_events.emplace_back(FixedEvent<{state_type}, {num_type}>{{"
-                f"{time_code}, {var_idx},"
-            )
-            event_lines.append(
-                f"    [full_params, &F](const {state_type}& x, const {num_type}& t){{ return {value_cpp}; }},"
-            )
-            event_lines.append(
-                f"    {method_code}}});"
-            )
+            event_lines.append(f"  // Fixed event {i}: {var_name} at t = {time_raw}")
+            event_lines.append(f"  fixed_events.emplace_back(FixedEvent<{state_type}, {num_type}>{{")
+            event_lines.append(f"    {time_code},  // time")
+            event_lines.append(f"    {var_idx},    // state_index")
+            event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
+            event_lines.append(f"      return {value_code};")
+            event_lines.append(f"    }},  // value_func")
+            event_lines.append(f"    {method_code},  // method")
+            event_lines.append(f"    {dh_dx_lambda}  // dh_dx_func")
+            event_lines.append(f"  }});")
+            event_lines.append("")
+            
         elif root_code is not None:
+            # ============================================================
+            # Root-finding event
+            # ============================================================
             root_code = str(root_code).replace("params[", "full_params[")
             
-            # value_func: dynamischer Zugriff auf x[i]
-            value_expr = _safe_sympify(str(value_raw), local_symbols)
-            value_cpp = _to_cpp(value_expr, states_list, params_list, n_states,
-                               num_type, forcings_list, use_initial_states=False)
-            value_cpp = str(value_cpp).replace("params[", "full_params[")
+            # Parse root expression
+            root_expr = _safe_sympify(str(root_raw), local_symbols)
             
-            state_type = f"ublas::vector<{num_type}>"
-            event_lines.append(
-                f"  root_events.push_back("
-                f"RootEvent<{state_type}, {num_type}>{{"
+            # Compute root function gradient: ∂g/∂x
+            dg_dx_cpp = _generate_gradient_cpp(
+                root_expr, states_list, params_list, n_states,
+                num_type, forcings_list, local_symbols, states_syms
             )
-            event_lines.append(
-                f"    [full_params, &F](const {state_type}& x, "
-                f"const {num_type}& t){{ return {root_code}; }},"
+            dg_dx_lambda = _generate_gradient_lambda(dg_dx_cpp, n_states, num_type)
+            
+            # Compute root function time derivative: ∂g/∂t
+            dg_dt_cpp = _generate_time_deriv_cpp(
+                root_expr, t, states_list, params_list, n_states,
+                num_type, forcings_list
             )
-            event_lines.append(
-                f"    {var_idx},"
+            
+            # Compute value function gradient: ∂h/∂x
+            dh_dx_cpp = _generate_gradient_cpp(
+                value_expr, states_list, params_list, n_states,
+                num_type, forcings_list, local_symbols, states_syms
             )
-            event_lines.append(
-                f"    [full_params, &F](const {state_type}& x, "
-                f"const {num_type}& t){{ return {value_cpp}; }},"
-            )
-            event_lines.append(
-                f"    {method_code}}});"
-            )
+            dh_dx_lambda = _generate_gradient_lambda(dh_dx_cpp, n_states, num_type)
+            
+            # Get optional parameters
+            terminal_raw = _get_list_value(events_dict, "terminal", i, n_events)
+            terminal = "true" if terminal_raw and str(terminal_raw).lower() == "true" else "false"
+            
+            direction_raw = _get_list_value(events_dict, "direction", i, n_events)
+            try:
+                direction = int(direction_raw) if direction_raw is not None else 0
+            except (ValueError, TypeError):
+                direction = 0
+            
+            event_lines.append(f"  // Root event {i}: {var_name} when {root_raw} = 0")
+            event_lines.append(f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{")
+            event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
+            event_lines.append(f"      return {root_code};")
+            event_lines.append(f"    }},  // func (root condition g)")
+            event_lines.append(f"    {var_idx},  // state_index")
+            event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
+            event_lines.append(f"      return {value_code};")
+            event_lines.append(f"    }},  // value_func (h)")
+            event_lines.append(f"    {method_code},  // method")
+            event_lines.append(f"    {terminal},     // terminal")
+            event_lines.append(f"    {direction},    // direction")
+            event_lines.append(f"    {dg_dx_lambda},  // dg_dx_func")
+            event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
+            event_lines.append(f"      return {num_type}({dg_dt_cpp});")
+            event_lines.append(f"    }},  // dg_dt_func")
+            event_lines.append(f"    {dh_dx_lambda}  // dh_dx_func")
+            event_lines.append(f"  }});")
+            event_lines.append("")
+            
         else:
             raise ValueError(f"Event {i}: must specify either 'time' or 'root'")
 
@@ -635,33 +745,31 @@ def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
 
 
 def _generate_equilibrate_code(num_type):
-    """
-    Generate C++ code for steady-state detection using make_steady_state_root_func.
-    """
+    """Generate C++ code for steady-state detection."""
     state_type = f"ublas::vector<{num_type}>"
     
-    lines = [
+    return [
         "",
         "  // --- Steady-state termination (rootfunc = 'equilibrate') ---",
         f"  auto ss_root_func = make_steady_state_root_func<ode_system, {state_type}, {num_type}>(sys, root_tol);",
         f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
         f"    ss_root_func,",
         f"    0,            // state_index (ignored for terminal)",
-        f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},  // value_func (ignored for terminal)",
+        f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},  // value_func",
         f"    EventMethod::Replace,  // method (ignored for terminal)",
-        f"    true,         // terminal = true: stop integration",
-        f"    -1            // direction = -1: trigger when rate falls below tol",
+        f"    true,         // terminal = true",
+        f"    -1,           // direction = -1",
+        f"    nullptr,      // dg_dx_func (not needed for terminal)",
+        f"    nullptr,      // dg_dt_func (not needed for terminal)",
+        f"    nullptr       // dh_dx_func (not needed for terminal)",
         f"  }});",
         ""
     ]
-    return lines
 
 
 def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list, 
                                   n_states, num_type, forcings_list):
-    """
-    Generate C++ code for user-defined root expressions.
-    """
+    """Generate C++ code for user-defined root expressions (terminal events)."""
     states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
     params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
     t = sp.Symbol("time", real=True)
@@ -692,17 +800,34 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
         except Exception as e:
             raise ValueError(f"Failed to parse rootfunc expression '{expr_str}': {e}")
         
+        # Generate analytical gradients for terminal root functions
+        dg_dx_cpp = _generate_gradient_cpp(
+            expr, states_list, params_list, n_states,
+            num_type, forcings_list, local_symbols, states_syms
+        )
+        dg_dx_lambda = _generate_gradient_lambda(dg_dx_cpp, n_states, num_type)
+        
+        dg_dt_cpp = _generate_time_deriv_cpp(
+            expr, t, states_list, params_list, n_states,
+            num_type, forcings_list
+        )
+        
         lines.extend([
             f"  // rootfunc[{i}]: {expr_str}",
             f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
             f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{",
             f"      return {root_code};",
-            f"    }},",
+            f"    }},  // func",
             f"    0,            // state_index (ignored for terminal)",
-            f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},",
-            f"    EventMethod::Replace,",
-            f"    true,         // terminal = true: stop integration",
-            f"    0             // direction = 0: any crossing",
+            f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},  // value_func",
+            f"    EventMethod::Replace,  // method",
+            f"    true,         // terminal = true",
+            f"    0,            // direction = 0 (any crossing)",
+            f"    {dg_dx_lambda},  // dg_dx_func",
+            f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{",
+            f"      return {num_type}({dg_dt_cpp});",
+            f"    }},  // dg_dt_func",
+            f"    nullptr       // dh_dx_func (not needed for terminal)",
             f"  }});",
         ])
     

@@ -14,19 +14,19 @@ library(tidyr)
 eqns <- c(x = "-k*x")
 
 # Define an event
-events <- data.frame(var = "x", time = NA, value = "1", root = "x-xc", method = "add", stringsAsFactors = FALSE)
+events <- data.frame(var = "x", time = "te", value = "v", root = NA, method = "add", stringsAsFactors = FALSE)
 
 # # Generate and compile solver
 model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
-                modelname = "xmodel_c", compile = T, useDenseOutput = T, verbose = T)
+                modelname = "model_FTEvent", compile = T, useDenseOutput = T, verbose = T)
 
 
 # Example run
-params <- c(x=1, k=1, xc = 0.25)
+params <- c(x=1, k=1, te = 1, v=2)
 times  <- seq(0, 10, length.out = 300)
 res <- solveODE(model, times, params, abstol = 1e-10, reltol = 1e-10, roottol = 1e-10)
 vars <- res$variable
 sensmatrix <- res$sens1[, "x", ]
 
-res$sens2[, "x", "xc", "xc"]
+# res$sens2[, "x", "xc", "xc"]
 #
