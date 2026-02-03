@@ -182,6 +182,39 @@ add_sens_correction(fadbad::F<T>& x, unsigned i, double correction) {
   }
 }
 
+// Add correction at a specific derivative level
+// Level 0 = first order (x.d(j).x() for F<F<T>>)
+// Level 1 = second order (x.d(j).d(j) for F<F<T>>)
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, void>::type
+add_sens_correction_level(T&, unsigned, unsigned, double) { }
+
+// For F<T> (single level AD) - only level 0 is valid
+template<class T>
+inline typename std::enable_if<std::is_arithmetic<T>::value, void>::type
+add_sens_correction_level(fadbad::F<T>& x, unsigned i, unsigned level, double correction) {
+  if (level == 0 && i < x.size()) {
+    x.d(i) += correction;
+  }
+}
+
+// For F<F<T>> (two level AD)
+template<class T>
+inline void add_sens_correction_level(fadbad::F<fadbad::F<T>>& x, unsigned i, unsigned level, double correction) {
+  if (i >= x.size()) return;
+
+  if (level == 0) {
+    // First order: x.d(i).x()
+    x.d(i).x() += correction;
+  } else if (level == 1) {
+    // Second order: x.d(i).d(i)
+    if (i < x.d(i).size()) {
+      x.d(i).d(i) += correction;
+    }
+  }
+  // Higher levels would need F<F<F<T>>> etc.
+}
+
 // Apply event modification to state vector
 template<class state_type>
 inline void apply_event(
@@ -315,17 +348,16 @@ inline void apply_saltation_correction_root(
 // Saltation matrix correction for FIXED-TIME events (all AD orders)
 // Formula: dx+/dp = dx-/dp + [f(x-) - f(x+)] * dt_event/dp
 //
-// For higher-order derivatives, we need iterative application because:
-// - First order: x.d1 += Δf.value * dt*.d1
-// - Second order: x.d2 += Δf.d1 * dt*.d1 (but Δf.d1 depends on x.d1!)
+// CRITICAL: We cannot use FADBAD++ multiplication for (Δf * dt*) because
+// the product rule gives incorrect results:
+//   ∂²(a*b)/∂p² = 2·∂a/∂p·∂b/∂p (when a.value=0 or b.value=0)
+// But the correct saltation formula has factor 1, not 2.
 //
-// IMPORTANT: Each iteration must use INCREMENTAL differences to avoid
-// adding the first-order contribution multiple times.
-// - Iteration 0: x += (f_before - f_after_0) * dt*  → adds 1st order
-// - Iteration 1: x += (f_after_0 - f_after_1) * dt* → adds 2nd order only
-// - etc.
+// Instead, we compute each derivative level manually:
+//   Level 0 (1st order): x.d(j) += Δf.value * dt.d(j)
+//   Level 1 (2nd order): x.d(j).d(j) += Δf.d(j) * dt.d(j)
+//   etc.
 //
-// Number of iterations = AD nesting depth (F<T>=1, F<F<T>>=2, etc.)
 template<class state_type, class time_type, class System>
 inline void apply_saltation_correction_fixed_iterative(
     state_type& x,                    // x AFTER event (will be corrected in-place)
@@ -335,33 +367,60 @@ inline void apply_saltation_correction_fixed_iterative(
 {
   if (x.empty()) return;
 
-  // Determine number of iterations from AD depth
   unsigned ad_depth = get_ad_depth(x[0]);
-  if (ad_depth == 0) return;  // No AD, no correction needed
+  if (ad_depth == 0) return;
 
-  // Create a "derivative-only" version of t_event:
-  // value = 0, but all derivatives preserved
-  time_type t_deriv_only = t_event - time_type(scalar_value(t_event));
+  unsigned n_sens = get_n_sens(x[0]);
+  if (n_sens == 0) return;
 
-  // f_prev starts with f_before
-  state_type f_prev(x_before.size());
-  sys.first(x_before, f_prev, t_event);
+  // Compute f_before once (with x_before, which has no te-sensitivity)
+  state_type f_before(x_before.size());
+  sys.first(x_before, f_before, t_event);
 
-  // Iterative saltation using INCREMENTAL differences:
-  // Each iteration only adds the contribution from the CHANGE in f_after
-  for (unsigned iter = 0; iter < ad_depth; ++iter) {
-    state_type f_curr(x.size());
-    sys.first(x, f_curr, t_event);
+  // Compute f_after for initial state (before any corrections)
+  state_type f_after(x.size());
+  sys.first(x, f_after, t_event);
 
-    // Apply incremental saltation correction
-    // Iter 0: (f_before - f_after_0) → first-order contribution
-    // Iter 1: (f_after_0 - f_after_1) → second-order contribution only
+  // Compute delta_f VALUE (this is constant across all levels)
+  std::vector<double> delta_f_val(x.size());
+  for (size_t k = 0; k < x.size(); ++k) {
+    delta_f_val[k] = scalar_value(f_before[k]) - scalar_value(f_after[k]);
+  }
+
+  // Level 0: Apply first-order correction
+  // ∂x+/∂p_j = ∂x-/∂p_j + Δf.value * ∂te/∂p_j
+  for (unsigned j = 0; j < n_sens; ++j) {
+    double dt_dpj = get_deriv(t_event, j);
+    if (std::abs(dt_dpj) < 1e-20) continue;
+
     for (size_t k = 0; k < x.size(); ++k) {
-      x[k] += (f_prev[k] - f_curr[k]) * t_deriv_only;
+      add_sens_correction(x[k], j, delta_f_val[k] * dt_dpj);
     }
+  }
 
-    // Update f_prev for next iteration
-    f_prev = f_curr;
+  // Higher levels: Apply corrections using derivative differences
+  // For level L > 0, we need to recompute f_after with updated x (from level L-1)
+  // and extract the derivative difference at that level
+  for (unsigned level = 1; level < ad_depth; ++level) {
+    // Recompute f_after with the updated x (which now has level L-1 corrections)
+    sys.first(x, f_after, t_event);
+
+    for (unsigned j = 0; j < n_sens; ++j) {
+      double dt_dpj = get_deriv(t_event, j);
+      if (std::abs(dt_dpj) < 1e-20) continue;
+
+      for (size_t k = 0; k < x.size(); ++k) {
+        // Δf.d(j) = f_before.d(j) - f_after.d(j)
+        // f_before.d(j) = 0 (x_before has no te-dependency)
+        // f_after.d(j) = (∂f/∂x) * x.d(j) (reflects corrections from level L-1)
+        double f_before_deriv = get_deriv(f_before[k], j);
+        double f_after_deriv = get_deriv(f_after[k], j);
+        double delta_f_deriv = f_before_deriv - f_after_deriv;
+
+        // Apply to level L
+        add_sens_correction_level(x[k], j, level, delta_f_deriv * dt_dpj);
+      }
+    }
   }
 }
 
