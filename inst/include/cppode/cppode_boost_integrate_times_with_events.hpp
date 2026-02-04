@@ -19,7 +19,7 @@
  * - Root tracking and fire count management
  * - Dense output optimization for root-finding
  * - Simultaneous root events
- * - Fully analytical saltation matrix corrections (no numerical differentiation)
+ * - Fully analytical saltation matrix corrections
  */
 
 #ifndef CPPODE_INTEGRATE_TIMES_WITH_EVENTS_HPP_INCLUDED
@@ -692,15 +692,21 @@ public:
                                                        root_tol, checker);
 
             Time t_root = t;
-            obs(x, t_root);
+            State x_before = x;
+
+            // Output state BEFORE event (at t_root - epsilon)
+            obs(x_before, t_root - Time(1e-15));
 
             State x_after = x;
             if (apply_root_events(x_after, x, t_root, triggered, fired)) {
+              // Terminal event - output final state at t_root
+              obs(x_after, t_root);
               x = x_after;
               return steps;
             }
 
-            obs(x_after, t_root + Time(1e-15));
+            // Output state AFTER event (at t_root)
+            obs(x_after, t_root);
             x = x_after;
 
             detail::reset_stepper_unified(m_st, x, t, dt);
@@ -820,21 +826,33 @@ public:
             root_tol);
 
           State x_before = x_root;
-          obs(x_root, t_root);
+
+          // Output state BEFORE event (at t_root - epsilon)
+          obs(x_before, t_root - Time(1e-15));
 
           if (apply_root_events(x_root, x_before, t_root, triggered, fired)) {
+            // Terminal event - output final state at t_root
+            obs(x_root, t_root);
             x = x_root;
             return steps;
           }
 
-          obs(x_root, t_root + Time(1e-15));
+          // Output state AFTER event (at t_root)
+          obs(x_root, t_root);
+
           x = x_root;
           reinit_after_event(x, t_root, dt, t_start, t_end, x_at_start,
                              last_val, last_state, last_time, steps, checker);
           continue;
         }
 
-        // No root in this interval - proceed to next step
+        // No root in this interval - update tracking and proceed to next step
+        for (size_t i = 0; i < m_root.size(); ++i) {
+          last_val[i] = curr_val[i];
+          last_state[i] = x;
+          last_time[i] = t_end;
+        }
+
         m_st.do_step(m_sys);
         ++steps;
         checker();
@@ -852,50 +870,16 @@ public:
         }
       }
 
-      // Now t_end >= *it, check for roots in final interval before processing output times
-      m_st.calc_state(t_end, x);
-      eval_root_funcs(curr_val, x, t_end);
-      check_root_triggers(triggered, last_val, curr_val, fired, max_trigger);
-
-      if (!triggered.empty()) {
-        State x_root = x_at_start;
-        Time t_root = t_start;
-
-        localize_root_dense(
-          triggered[0].index,
-          x_root, t_root, t_end,
-          triggered[0].last_val, triggered[0].curr_val,
-          root_tol);
-
-        State x_before = x_root;
-        obs(x_root, t_root);
-
-        if (apply_root_events(x_root, x_before, t_root, triggered, fired)) {
-          x = x_root;
-          return steps;
-        }
-
-        obs(x_root, t_root + Time(1e-15));
-        x = x_root;
-        reinit_after_event(x, t_root, dt, t_start, t_end, x_at_start,
-                           last_val, last_state, last_time, steps, checker);
-        continue;
-      }
-
-      // Update last_val for any roots that weren't updated
-      for (size_t i = 0; i < m_root.size(); ++i) {
-        if (scalar_value(last_time[i]) < scalar_value(t_start)) {
-          m_st.calc_state(t_start, x_at_start);
-          last_val[i] = scalar_value(m_root[i].func(x_at_start, t_start));
-          last_state[i] = x_at_start;
-          last_time[i] = t_start;
-        }
-      }
-
+      // Now t_end >= *it, process all requested output times in current interval
       while (it != end && less_eq_with_sign(*it, t_end, dt)) {
         Time t_eval = *it;
 
+        // Skip times that are before our current interval start
+        // BUT still output them using the current state (they were requested!)
         if (scalar_value(t_eval) < scalar_value(t_start)) {
+          // Output at t_start since we can't go back
+          m_st.calc_state(t_start, x);
+          obs(x, t_eval);
           ++it;
           continue;
         }
@@ -903,9 +887,61 @@ public:
         Time t_eval_scalar = Time(scalar_value(t_eval));
         m_st.calc_state(t_eval_scalar, x);
 
-        if (detail::apply_fixed_events_at_time_with_saltation(x, t_eval, m_fixed, m_sys)) {
-          obs(x, t_eval);
+        // Check for root events FIRST (they happen before t_eval)
+        eval_root_funcs(curr_val, x, t_eval);
+        check_root_triggers(triggered, last_val, curr_val, fired, max_trigger);
 
+        if (!triggered.empty()) {
+          State x_root = last_state[triggered[0].index];
+          Time t_root = last_time[triggered[0].index];
+
+          localize_root_dense(
+            triggered[0].index,
+            x_root, t_root, t_eval,
+            triggered[0].last_val, triggered[0].curr_val,
+            root_tol);
+
+          State x_before = x_root;
+          Time t_before = t_root - Time(1e-15);
+
+          // Output state BEFORE event (at t_root - epsilon)
+          // Skip if t_eval is very close to t_before (would be duplicate)
+          if (std::abs(scalar_value(t_eval) - scalar_value(t_before)) >= 1e-14) {
+            obs(x_before, t_before);
+          }
+
+          if (apply_root_events(x_root, x_before, t_root, triggered, fired)) {
+            // Terminal event - output final state at t_root
+            if (std::abs(scalar_value(t_eval) - scalar_value(t_root)) >= 1e-14) {
+              obs(x_root, t_root);
+            }
+            x = x_root;
+            return steps;
+          }
+
+          // Output state AFTER event (at t_root)
+          // Skip if t_eval is very close to t_root (would be duplicate)
+          if (std::abs(scalar_value(t_eval) - scalar_value(t_root)) >= 1e-14) {
+            obs(x_root, t_root);
+          }
+
+          x = x_root;
+          reinit_after_event(x, t_root, dt, t_start, t_end, x_at_start,
+                             last_val, last_state, last_time, steps, checker);
+          // Don't increment it - t_eval still needs to be output
+          // Break out to re-check bounds in outer loop
+          break;
+        }
+
+        // Check for fixed events at this time
+        bool fixed_event_fired = detail::apply_fixed_events_at_time_with_saltation(x, t_eval, m_fixed, m_sys);
+
+        // Output the requested time point (with state after any fixed event)
+        obs(x, t_eval);
+        ++it;
+
+        if (fixed_event_fired) {
+          // Reinitialize stepper after the event
           m_st.initialize(x, t_eval_scalar, dt);
           m_st.do_step(m_sys);
           ++steps;
@@ -924,47 +960,16 @@ public:
             last_time[j] = t_start;
             fired[j] = 0;
           }
-
-          ++it;
-          continue;
+          // Break out to re-check bounds in outer loop
+          break;
         }
 
-        eval_root_funcs(curr_val, x, t_eval);
-        check_root_triggers(triggered, last_val, curr_val, fired, max_trigger);
-
-        if (!triggered.empty()) {
-          State x_root = last_state[triggered[0].index];
-          Time t_root = last_time[triggered[0].index];
-
-          localize_root_dense(
-            triggered[0].index,
-            x_root, t_root, t_eval,
-            triggered[0].last_val, triggered[0].curr_val,
-            root_tol);
-
-          State x_before = x_root;
-          obs(x_root, t_root);
-
-          if (apply_root_events(x_root, x_before, t_root, triggered, fired)) {
-            x = x_root;
-            return steps;
-          }
-
-          obs(x_root, t_root + Time(1e-15));
-          x = x_root;
-          reinit_after_event(x, t_root, dt, t_start, t_end, x_at_start,
-                             last_val, last_state, last_time, steps, checker);
-          continue;
-        }
-
+        // Update root tracking
         for (size_t i = 0; i < m_root.size(); ++i) {
           last_val[i] = curr_val[i];
           last_state[i] = x;
           last_time[i] = t_eval;
         }
-
-        obs(x, t_eval);
-        ++it;
       }
     }
 
