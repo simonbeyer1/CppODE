@@ -1427,6 +1427,7 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
   safeParse <- function(s) {
     if (is.null(s) || s == "0") return(expression(0))
     s <- gsub("Heaviside\\(([^)]+)\\)", "ifelse(\\1 >= 0, 1, 0)", s)
+    s <- gsub("exp10\\(([^)]+)\\)", "exp((\\1) * log(10))", s)
     tryCatch(parse(text = s), error = function(e) { fallback_ok <<- FALSE; NULL })
   }
   parsed_exprs <- lapply(eqns, safeParse)

@@ -83,8 +83,8 @@ def _get_safe_parse_dict_cached():
         
         # Exponential and logarithmic functions
         'exp': sp.exp,
-        'exp10': lambda x: sp.Pow(10, x),
-        'exp2': lambda x: sp.Pow(2, x),
+        'exp10': lambda x: sp.exp(x * sp.log(10)),
+        'exp2': lambda x: sp.exp(x * sp.log(2)),
         'log': sp.log,
         'ln': sp.log,
         'log10': lambda x: sp.log(x, 10),
