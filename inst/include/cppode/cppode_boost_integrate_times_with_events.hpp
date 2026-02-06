@@ -265,6 +265,7 @@ inline void apply_saltation_correction_core(
     state_type& x,
     const state_type& x_before,
     const time_type& dt_star,
+    const time_type& t_eval,
     System& sys)
 {
   if (x.empty()) return;
@@ -277,10 +278,12 @@ inline void apply_saltation_correction_core(
 
   const size_t n = x.size();
 
-  // Compute f(x_before, t) and f(x_after, t)
+  // Compute f(x_before, t) and f(x_after, t) at the actual event time t_eval.
+  // For root events, dt_star = -g/g_dot has scalar value ~0 (since g=0
+  // at the root) but carries the AD sensitivities dt*/dp.
   state_type f_before(n), f_after(n);
-  sys.first(x_before, f_before, dt_star);
-  sys.first(x, f_after, dt_star);
+  sys.first(x_before, f_before, t_eval);
+  sys.first(x, f_after, t_eval);
 
   // Deltaf values (constant across all AD levels)
   std::vector<double> delta_f_val(n);
@@ -300,7 +303,7 @@ inline void apply_saltation_correction_core(
 
   // Higher levels: corrections using derivative differences
   for (unsigned level = 1; level < ad_depth; ++level) {
-    sys.first(x, f_after, dt_star);
+    sys.first(x, f_after, t_eval);
 
     for (unsigned j = 0; j < n_sens; ++j) {
       const double dt_dpj = get_deriv(dt_star, j);
@@ -398,8 +401,8 @@ inline void apply_saltation_correction_root(
   value_type g = g_func(x_before, t);
   value_type dt_star = -g / g_dot;
 
-  // Apply core saltation correction
-  detail::apply_saltation_correction_core(x, x_before, dt_star, sys);
+  // Apply core saltation correction with actual event time t
+  detail::apply_saltation_correction_core(x, x_before, dt_star, t, sys);
 }
 
 // ============================================================================
@@ -418,7 +421,7 @@ inline void apply_saltation_correction_fixed(
     const time_type& t_event,
     System& sys)
 {
-  detail::apply_saltation_correction_core(x, x_before, t_event, sys);
+  detail::apply_saltation_correction_core(x, x_before, t_event, t_event, sys);
 }
 
 // ============================================================================
@@ -875,7 +878,6 @@ public:
         Time t_eval = *it;
 
         // Skip times that are before our current interval start
-        // BUT still output them using the current state (they were requested!)
         if (scalar_value(t_eval) < scalar_value(t_start)) {
           // Output at t_start since we can't go back
           m_st.calc_state(t_start, x);

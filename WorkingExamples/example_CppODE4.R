@@ -11,8 +11,8 @@ library(dplyr)
 library(tidyr)
 library(data.table)
 
-source("/home/simon/Documents/Projects/CppODE/WorkingExamples/AnalyticSolver.R")
-events <- data.frame(var = "x", time = NA, value = "v", root = "xc-x", method = "add", stringsAsFactors = FALSE)
+source("../AnalyticSolver.R")
+events <- data.frame(var = "x", time = "te", value = "v", root = NA, method = "add", stringsAsFactors = FALSE)
 
 # Define ODE system
 eqns <- c(x = "-k*x^2 * time")
@@ -21,8 +21,8 @@ eqns <- c(x = "-k*x^2 * time")
 model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
                 modelname = "model_FTEvent2", compile = T, useDenseOutput = T, verbose = T)
 
-pars <- c(x=1, k=1, v = 1, xc = 0.25)
-times  <- seq(0, 10, length.out = 300)
+pars <- c(x=1, k=1, v = 2, te = 2)
+times  <- seq(0, 10, length.out = 5000)
 out.analytical <- solveOdeAnalytic(c(x = "-k*x^2*t"),times,pars, events = events) %>%
   melt(id.vars = 1L) %>%
   mutate(method = "analytical")

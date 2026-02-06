@@ -2,6 +2,8 @@
 library(reticulate)
 library(data.table)
 solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
+  library(reticulate)
+  library(data.table)
   sympy <- import("sympy")
   builtins <- import_builtins()
 
@@ -10,7 +12,7 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
 
   # Symbole
   t <- sympy$symbols("t", real = TRUE)
-  x0 <- sympy$symbols("x0", real = TRUE)  # intern immer x0
+  x0 <- sympy$symbols("x0", real = TRUE)
 
   # Parameter-Symbole (ohne die Variable selbst)
   par_names <- setdiff(names(pars), var_name)
@@ -59,8 +61,8 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
     sol_rhs$subs(tau, t - t_start_sym)
   }
 
-  # Root finden
-  find_root_time <- function(sol_expr, root_str, t_start_sym, local_dict, par_vals) {
+  # Zero crossing finden: Löse root_expr = 0 für t
+  find_zero_crossing <- function(sol_expr, root_str, t_start_sym, local_dict, par_vals) {
     root_dict <- local_dict
     root_dict[[var_name]] <- sol_expr
 
@@ -68,44 +70,44 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
     root_expr <- sympy$parse_expr(root_str_py, local_dict = root_dict)
     root_expr <- sympy$simplify(root_expr)
 
-    cat(sprintf("  Suche Wurzel von: %s = 0\n", as.character(root_expr)))
+    cat(sprintf("  Suche Nulldurchgang: %s = 0\n", as.character(root_expr)))
 
-    t_roots <- tryCatch({
+    t_zeros <- tryCatch({
       sympy$solve(root_expr, t)
     }, error = function(e) {
       cat(sprintf("  WARNUNG: sympy$solve fehlgeschlagen: %s\n", e$message))
       list()
     })
 
-    if (inherits(t_roots, "python.builtin.list")) {
-      t_roots <- py_to_r(t_roots)
+    if (inherits(t_zeros, "python.builtin.list")) {
+      t_zeros <- py_to_r(t_zeros)
     }
-    if (!is.list(t_roots)) {
-      t_roots <- as.list(t_roots)
+    if (!is.list(t_zeros)) {
+      t_zeros <- as.list(t_zeros)
     }
 
-    cat(sprintf("  Gefundene Wurzeln: %d\n", length(t_roots)))
+    cat(sprintf("  Gefundene Nullstellen: %d\n", length(t_zeros)))
 
-    if (length(t_roots) == 0) {
+    if (length(t_zeros) == 0) {
       return(NULL)
     }
 
-    for (i in seq_along(t_roots)) {
-      cat(sprintf("    t[%d] = %s\n", i, as.character(t_roots[[i]])))
+    for (i in seq_along(t_zeros)) {
+      cat(sprintf("    t[%d] = %s\n", i, as.character(t_zeros[[i]])))
     }
 
-    valid_roots <- list()
-    for (root in t_roots) {
-      root_num <- root
+    valid_zeros <- list()
+    for (zero in t_zeros) {
+      zero_num <- zero
       for (p in names(par_vals)) {
         if (p %in% names(all_par_syms)) {
-          root_num <- root_num$subs(all_par_syms[[p]], par_vals[[p]])
+          zero_num <- zero_num$subs(all_par_syms[[p]], par_vals[[p]])
         }
       }
 
       tryCatch({
-        root_eval <- root_num$evalf()
-        root_val <- as.numeric(builtins$float(root_eval))
+        zero_eval <- zero_num$evalf()
+        zero_val <- as.numeric(builtins$float(zero_eval))
 
         t_start_num <- t_start_sym
         for (p in names(par_vals)) {
@@ -118,26 +120,26 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
           error = function(e) 0
         )
 
-        cat(sprintf("    Numerisch: t = %f (t_start = %f)\n", root_val, t_start_val))
+        cat(sprintf("    Numerisch: t = %f (t_start = %f)\n", zero_val, t_start_val))
 
-        if (is.finite(root_val) && root_val > t_start_val + 1e-10) {
-          valid_roots[[length(valid_roots) + 1]] <- list(sym = root, val = root_val)
+        if (is.finite(zero_val) && zero_val > t_start_val + 1e-10) {
+          valid_zeros[[length(valid_zeros) + 1]] <- list(sym = zero, val = zero_val)
         }
       }, error = function(e) {
         cat(sprintf("    Konnte nicht evaluieren: %s\n", e$message))
       })
     }
 
-    if (length(valid_roots) == 0) {
+    if (length(valid_zeros) == 0) {
       return(NULL)
     }
 
-    vals <- sapply(valid_roots, function(r) r$val)
+    vals <- sapply(valid_zeros, function(z) z$val)
     best_idx <- which.min(vals)
-    cat(sprintf("  Gewählte Wurzel: t* = %s (numerisch: %f)\n",
-                as.character(valid_roots[[best_idx]]$sym), valid_roots[[best_idx]]$val))
+    cat(sprintf("  Erster Nulldurchgang: t* = %s (numerisch: %f)\n",
+                as.character(valid_zeros[[best_idx]]$sym), valid_zeros[[best_idx]]$val))
 
-    valid_roots[[best_idx]]$sym
+    valid_zeros[[best_idx]]$sym
   }
 
   cat("=== ODE ===\n")
@@ -205,12 +207,12 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
       cat(sprintf("%s(t) = %s\n", var_name, as.character(sol_seg)))
 
       if (!is.na(ev$root) && nchar(ev$root) > 0) {
-        cat(sprintf("Root-Bedingung: %s = 0\n", ev$root))
-        te_sym <- find_root_time(sol_seg, ev$root, t0_sym,
-                                 c(local_dict, all_par_syms), par_vals)
+        cat(sprintf("Zero-Crossing-Bedingung: %s = 0\n", ev$root))
+        te_sym <- find_zero_crossing(sol_seg, ev$root, t0_sym,
+                                     c(local_dict, all_par_syms), par_vals)
 
         if (is.null(te_sym)) {
-          cat("WARNUNG: Keine gültige Wurzel gefunden, beende Event-Verarbeitung\n\n")
+          cat("WARNUNG: Kein Nulldurchgang gefunden, beende Event-Verarbeitung\n\n")
           solutions[[length(solutions) + 1]] <- list(
             expr = sol_seg, t_start = t0_sym, t_end = sympy$oo, t_end_is_inf = TRUE
           )
