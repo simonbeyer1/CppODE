@@ -22,7 +22,7 @@ model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
                 modelname = "model_FTEvent2", compile = T, useDenseOutput = T, verbose = T)
 
 pars <- c(x=1, k=1, v = 2, te = 2)
-times  <- seq(0, 10, length.out = 5000)
+times  <- seq(0, 10, length.out = 1000)
 out.analytical <- solveOdeAnalytic(c(x = "-k*x^2*t"),times,pars, events = events) %>%
   melt(id.vars = 1L) %>%
   mutate(method = "analytical")
@@ -30,12 +30,13 @@ out.analytical <- solveOdeAnalytic(c(x = "-k*x^2*t"),times,pars, events = events
 
 # Example run
 res <- solveODE(model, times, pars, abstol = 1e-10, reltol = 1e-10, roottol = 1e-10)
-vars <- res$variable
+vars <- res$variable %>%
 sens <- res$sens1
-out.boost <- matrix(aperm(sens, c(1,2,3)), nrow = dim(sens)[1],
+out.boost <- matrix(aperm(sens, c(3, 1, 2)), nrow = dim(sens)[3],
                     dimnames = list(NULL,
-                                    paste0("∂", rep(dimnames(sens)[[2]], each = dim(sens)[3]),
-                                           "/∂", dimnames(sens)[[3]]))) %>% cbind(time = res$time, vars, .) %>%
+                                    paste0("∂", rep(dimnames(sens)[[1]], each = dim(sens)[2]),
+                                           "/∂", dimnames(sens)[[2]]))) %>%
+  cbind(time = res$time, vars, .) %>%
   as.data.table() %>%
   melt(id.vars = 1L) %>%
   mutate(method = "boost")
@@ -54,7 +55,7 @@ ggplot(out, aes(x = time, y = value, color = method, linetype = method)) +
     y = "value"
   )
 
-# res$sens2[, "x", "xc", "xc"]
+res$sens2[, "x", "xc", "xc"]
 
 
 

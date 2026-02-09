@@ -438,8 +438,8 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     """
     Generate Jacobian evaluation function (sparse: only non-zero entries).
     
-    Array layout for R (column-major): jac[n_obs, n_out, n_symbols]
-    Linear index: obs + n_obs * (output + n_out * symbol)
+    Array layout for R (column-major): jac[n_out, n_symbols, n_obs]
+    Linear index: output + n_out * (symbol + n_symbols * obs)
     """
     first_fn = next(iter(jacobian))
     n_symbols = len(jacobian[first_fn])
@@ -457,8 +457,8 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     buf.write("    // Zero-initialize\n")
     buf.write("    std::fill(jac, jac + n_obs * n_out * n_symbols, 0.0);\n\n")
     
-    buf.write("    // Layout: jac[obs, output, symbol] (R column-major)\n")
-    buf.write("    // Linear index: obs + n_obs * (output + n_out * symbol)\n")
+    buf.write("    // Layout: jac[output, symbol, obs] (R column-major)\n")
+    buf.write("    // Linear index: output + n_out * (symbol + n_symbols * obs)\n")
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
@@ -476,8 +476,8 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
             if cpp_code == "0.0" or cpp_code == "0":
                 continue
             has_nonzero = True
-            # R column-major: obs + n_obs * (output + n_out * symbol)
-            buf.write(f"        jac[obs + n_obs * ({i} + n_out * {j})] = {cpp_code};")
+            # R column-major: output + n_out * (symbol + n_symbols * obs)
+            buf.write(f"        jac[{i} + n_out * ({j} + n_symbols * obs)] = {cpp_code};")
         
         if has_nonzero:
             buf.write("\n")
@@ -489,8 +489,8 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     """
     Generate Hessian evaluation function (sparse: only non-zero entries).
     
-    Array layout for R (column-major): hess[n_obs, n_out, n_symbols, n_symbols]
-    Linear index: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
+    Array layout for R (column-major): hess[n_out, n_symbols, n_symbols, n_obs]
+    Linear index: output + n_out * (sym1 + n_symbols * (sym2 + n_symbols * obs))
     """
     first_fn = next(iter(hessian))
     n_symbols = len(hessian[first_fn])
@@ -507,8 +507,8 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     buf.write("    // Zero-initialize\n")
     buf.write("    std::fill(hess, hess + n_obs * n_out * n_symbols * n_symbols, 0.0);\n\n")
     
-    buf.write("    // Layout: hess[obs, output, sym1, sym2] (R column-major)\n")
-    buf.write("    // Linear index: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))\n")
+    buf.write("    // Layout: hess[output, sym1, sym2, obs] (R column-major)\n")
+    buf.write("    // Linear index: output + n_out * (sym1 + n_symbols * (sym2 + n_symbols * obs))\n")
     buf.write("    for (int obs = 0; obs < n_obs; obs++) {\n")
     
     if n_vars > 0:
@@ -527,9 +527,9 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
                 if cpp_code == "0.0" or cpp_code == "0":
                     continue
                 has_nonzero = True
-                # R column-major: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
+                # R column-major: output + n_out * (sym1 + n_symbols * (sym2 + n_symbols * obs))
                 buf.write(
-                    f"        hess[obs + n_obs * ({i} + n_out * ({j} + n_symbols * {k}))] = {cpp_code};"
+                    f"        hess[{i} + n_out * ({j} + n_symbols * ({k} + n_symbols * obs))] = {cpp_code};"
                 )
         
         if has_nonzero:

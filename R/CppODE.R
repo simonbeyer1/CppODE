@@ -71,16 +71,16 @@
 #' - `deriv = FALSE`, `deriv2 = FALSE`
 #'   Returns `list(time, variable)`
 #'   - `time`: numeric vector of length \eqn{n_t}
-#'   - `variable`: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_t,n_x)}, containing \eqn{x_j(t_i)}
+#'   - `variable`: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_x,n_t)}, containing \eqn{x_i(t_j)}
 #'
 #' - `deriv = TRUE`, `deriv2 = FALSE`
 #'   Returns `list(time, variable, sens1)`
-#'   - `sens1`: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_t,n_x,n_s)}, containing
+#'   - `sens1`: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_x,n_s,n_t)}, containing
 #'     \eqn{\partial x_j(t_i)/\partial p_k}
 #'
 #' - `deriv = TRUE`, `deriv2 = TRUE`
 #'   Returns `list(time, variable, sens1, sens2)`
-#'   - `sens2`: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_t,n_x,n_s,n_s)},
+#'   - `sens2`: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_x,n_s,n_s,n_t)},
 #'     containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
 #'
 #' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
@@ -703,15 +703,14 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, %d, n_out));", n_variables),
                  "  double* time_out = REAL(time_vec);",
                  "  double* variable_out = REAL(variable_mat);",
-                 "  auto IDX = [n_out](int r, int c){ return r + c * n_out; };",
                  "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i];",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                 sprintf("      variable_out[IDX(i, s)] = y[i * %d + s];", n_variables),
+                 sprintf("      variable_out[s + %d * i] = y[i * %d + s];", n_variables, n_variables),
                  "    }",
                  "  }",
                  "",
@@ -757,29 +756,26 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, %d, n_out));", n_variables),
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
-                 "  INTEGER(sens1_dim)[0] = n_out;",
-                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
-                 "  INTEGER(sens1_dim)[2] = n_sens_out;",
+                 sprintf("  INTEGER(sens1_dim)[0] = %d;", n_variables),
+                 "  INTEGER(sens1_dim)[1] = n_sens_out;",
+                 "  INTEGER(sens1_dim)[2] = n_out;",
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
                  "  double* variable_out = REAL(variable_mat);",
                  "  double* sens1_out = REAL(sens1_arr);",
                  "",
-                 "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
-                 sprintf("  auto IDX_sens1 = [n_out, n_sens_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
-                 "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i].x();",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                  sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                 "      variable_out[IDX_variable(i, s)] = xi.x();",
+                 sprintf("      variable_out[s + %d * i] = xi.x();", n_variables),
                  "      int v_out = 0;",
                  sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params),
                  "        if (!is_any_fixed(v)) {",
-                 "          sens1_out[IDX_sens1(i, s, v_out)] = xi.d(v);",
+                 sprintf("          sens1_out[s + %d * (v_out + n_sens_out * i)] = xi.d(v);", n_variables),
                  "          v_out++;",
                  "        }",
                  "      }",
@@ -830,17 +826,17 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, %d, n_out));", n_variables),
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
-                 "  INTEGER(sens1_dim)[0] = n_out;",
-                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
-                 "  INTEGER(sens1_dim)[2] = n_sens_out;",
+                 sprintf("  INTEGER(sens1_dim)[0] = %d;", n_variables),
+                 "  INTEGER(sens1_dim)[1] = n_sens_out;",
+                 "  INTEGER(sens1_dim)[2] = n_out;",
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "  SEXP sens2_dim = PROTECT(Rf_allocVector(INTSXP, 4));",
-                 "  INTEGER(sens2_dim)[0] = n_out;",
-                 sprintf("  INTEGER(sens2_dim)[1] = %d;", n_variables),
+                 sprintf("  INTEGER(sens2_dim)[0] = %d;", n_variables),
+                 "  INTEGER(sens2_dim)[1] = n_sens_out;",
                  "  INTEGER(sens2_dim)[2] = n_sens_out;",
-                 "  INTEGER(sens2_dim)[3] = n_sens_out;",
+                 "  INTEGER(sens2_dim)[3] = n_out;",
                  "  SEXP sens2_arr = PROTECT(Rf_allocArray(REALSXP, sens2_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
@@ -848,23 +844,19 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  double* sens1_out = REAL(sens1_arr);",
                  "  double* sens2_out = REAL(sens2_arr);",
                  "",
-                 "  auto IDX_variable = [n_out](int r, int c){ return r + c * n_out; };",
-                 sprintf("  auto IDX_sens1 = [n_out, n_sens_out](int t, int s, int v){ return t + n_out * (s + %d * v); };", n_variables),
-                 sprintf("  auto IDX_sens2 = [n_out, n_sens_out](int t, int s, int v1, int v2){ return t + n_out * (s + %d * (v1 + n_sens_out * v2)); };", n_variables),
-                 "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i].x().x();",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                  sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                 "      variable_out[IDX_variable(i, s)] = xi.x().x();",
+                 sprintf("      variable_out[s + %d * i] = xi.x().x();", n_variables),
                  "      int v1_out = 0;",
                  sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params),
                  "        if (!is_any_fixed(v1)) {",
-                 "          sens1_out[IDX_sens1(i, s, v1_out)] = xi.d(v1).x();",
+                 sprintf("          sens1_out[s + %d * (v1_out + n_sens_out * i)] = xi.d(v1).x();", n_variables),
                  "          int v2_out = 0;",
                  sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params),
                  "            if (!is_any_fixed(v2)) {",
-                 "              sens2_out[IDX_sens2(i, s, v1_out, v2_out)] = xi.d(v1).d(v2);",
+                 sprintf("              sens2_out[s + %d * (v1_out + n_sens_out * (v2_out + n_sens_out * i))] = xi.d(v1).d(v2);", n_variables),
                  "              v2_out++;",
                  "            }",
                  "          }",
@@ -907,21 +899,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   cpp_text <- c(
     paste0("/** Code auto-generated by CppODE ", as.character(utils::packageVersion("CppODE")), " **/"),
-    "",
-    includings,
-    "",
-    usings,
-    "",
-    "namespace {",
-    ode_code,
-    "",
-    jac_code,
-    "",
-    observer_code,
-    "",
-    "}",
-    "",
-    externC
+    "", includings, "", usings, "", "namespace {", ode_code, "", jac_code, "", observer_code,
+    "", "}", "", externC
   )
 
   writeLines(cpp_text, filename, useBytes = TRUE)
@@ -1029,8 +1008,7 @@ solveODE <- function(model, times, parms,
 
   if (length(missing_attrs)) {
     stop("'model' is missing required attributes: ",
-         paste(missing_attrs, collapse = ", "),
-         ". Was it created by CppODE()?")
+         paste(missing_attrs, collapse = ", "))
   }
 
   variables     <- attr(model, "variables")
@@ -1244,40 +1222,15 @@ solveODE <- function(model, times, parms,
 
   result <- tryCatch({
     SYM <- getNativeSymbolInfo(solver_name)
-    .Call(
-      SYM,
-      times,
-      parms_ordered,
-      sens1ini,
-      sens2ini,
-      fixed_indices,
-      as.double(abstol),
-      as.double(reltol),
-      maxprogress,
-      maxsteps,
-      as.double(hini),
-      as.double(roottol),
-      maxroot,
-      forcing_times_list,
-      forcing_values_list
-    )
-  }, error = function(e) {
-    msg <- e$message
-    if (grepl("not available|not found|symbol", msg, ignore.case = TRUE)) {
-      stop("Compiled solver '", solver_name, "' not found.\n",
-           "Possible causes:\n",
-           "  - Model was created with compile = FALSE\n",
-           "  - Shared library was not loaded (try: dyn.load(...))\n",
-           "  - R session was restarted after compilation",
-           call. = FALSE)
-    }
-    # Re-throw other errors with context
-    stop("Error in ODE solver: ", msg, call. = FALSE)
-  })
+    .Call(SYM, times, parms_ordered, sens1ini, sens2ini, fixed_indices,
+      as.double(abstol), as.double(reltol), maxprogress, maxsteps,
+      as.double(hini), as.double(roottol), maxroot,
+      forcing_times_list, forcing_values_list)
+  }, error = function(e) stop("Error in ODE solver: ", e$message, call. = FALSE))
 
   ## --- Output decoration ---
   if (!is.null(result$variable)) {
-    colnames(result$variable) <- variables
+    rownames(result$variable) <- variables
   }
 
   # Compute effective sens names (excluding runtime fixed)
@@ -1294,20 +1247,12 @@ solveODE <- function(model, times, parms,
   }
 
   if (!is.null(result$sens1)) {
-    dimnames(result$sens1) <- list(
-      time = NULL,
-      variable = variables,
-      sens = sens_names_out
-    )
+    dimnames(result$sens1) <- list(variable = variables, sens = sens_names_out, time = NULL)
   }
 
   if (!is.null(result$sens2)) {
-    dimnames(result$sens2) <- list(
-      time = NULL,
-      variable = variables,
-      sens1 = sens_names_out,
-      sens2 = sens_names_out
-    )
+    dimnames(result$sens2) <- list(variable = variables, sens1 = sens_names_out,
+      sens2 = sens_names_out, time = NULL)
   }
 
   result
@@ -1446,22 +1391,22 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
                            modelname = modelname, outdir = normalizePath(outdir, "/", FALSE), version = as.character(utils::packageVersion("CppODE")))
 
   # --- Attach helpers ---
-  abind3 <- function(a, b) { d <- dim(a); db <- dim(b); r <- array(0, c(d[1], d[2]+db[2], d[3]), list(NULL, c(dimnames(a)[[2]], dimnames(b)[[2]]), dimnames(a)[[3]])); r[,1:d[2],] <- a; r[,d[2]+1:db[2],] <- b; r }
-  abind4 <- function(a, b) { d <- dim(a); db <- dim(b); r <- array(0, c(d[1], d[2]+db[2], d[3], d[4]), list(NULL, c(dimnames(a)[[2]], dimnames(b)[[2]]), dimnames(a)[[3]], dimnames(a)[[4]])); r[,1:d[2],,] <- a; r[,d[2]+1:db[2],,] <- b; r }
+  abind3 <- function(a, b) { d <- dim(a); db <- dim(b); r <- array(0, c(d[1]+db[1], d[2], d[3]), list(c(dimnames(a)[[1]], dimnames(b)[[1]]), dimnames(a)[[2]], dimnames(a)[[3]])); r[1:d[1],,] <- a; r[d[1]+1:db[1],,] <- b; r }
+  abind4 <- function(a, b) { d <- dim(a); db <- dim(b); r <- array(0, c(d[1]+db[1], d[2], d[3], d[4]), list(c(dimnames(a)[[1]], dimnames(b)[[1]]), dimnames(a)[[2]], dimnames(a)[[3]], dimnames(a)[[4]])); r[1:d[1],,,] <- a; r[d[1]+1:db[1],,,] <- b; r }
 
   attachExtras <- function(res, n_obs, ev, ep, type) {
     if (is.null(ev) && is.null(ep)) return(res)
     if (type == "fun") {
-      if (!is.null(ev)) res <- cbind(res, ev)
-      if (!is.null(ep)) res <- cbind(res, matrix(ep, n_obs, length(ep), TRUE, list(NULL, names(ep))))
+      if (!is.null(ev)) res <- rbind(res, t(ev))
+      if (!is.null(ep)) res <- rbind(res, matrix(rep(ep, each = n_obs), length(ep), n_obs, dimnames = list(names(ep), NULL)))
     } else if (type == "jac") {
-      cs <- dimnames(res)[[3]]; ncs <- length(cs)
-      if (!is.null(ev)) res <- abind3(res, array(0, c(n_obs, ncol(ev), ncs), list(NULL, colnames(ev), cs)))
-      if (!is.null(ep)) { np <- length(ep); pn <- names(ep); d <- dim(res); new <- array(0, c(d[1], d[2]+np, d[3]+np), list(NULL, c(dimnames(res)[[2]], pn), c(dimnames(res)[[3]], pn))); new[,1:d[2],1:d[3]] <- res; for (k in seq_len(np)) new[,d[2]+k,d[3]+k] <- 1; res <- new }
+      cs <- dimnames(res)[[2]]; ncs <- length(cs)
+      if (!is.null(ev)) res <- abind3(res, array(0, c(ncol(ev), ncs, n_obs), list(colnames(ev), cs, NULL)))
+      if (!is.null(ep)) { np <- length(ep); pn <- names(ep); d <- dim(res); new <- array(0, c(d[1]+np, d[2]+np, d[3]), list(c(dimnames(res)[[1]], pn), c(dimnames(res)[[2]], pn), NULL)); new[1:d[1],1:d[2],] <- res; for (k in seq_len(np)) new[d[1]+k,d[2]+k,] <- 1; res <- new }
     } else {
-      cs <- dimnames(res)[[3]]; ncs <- length(cs)
-      if (!is.null(ev)) res <- abind4(res, array(0, c(n_obs, ncol(ev), ncs, ncs), list(NULL, colnames(ev), cs, cs)))
-      if (!is.null(ep)) { np <- length(ep); pn <- names(ep); d <- dim(res); new <- array(0, c(d[1], d[2]+np, d[3]+np, d[4]+np), list(NULL, c(dimnames(res)[[2]], pn), c(dimnames(res)[[3]], pn), c(dimnames(res)[[4]], pn))); new[,1:d[2],1:d[3],1:d[4]] <- res; res <- new }
+      cs <- dimnames(res)[[2]]; ncs <- length(cs)
+      if (!is.null(ev)) res <- abind4(res, array(0, c(ncol(ev), ncs, ncs, n_obs), list(colnames(ev), cs, cs, NULL)))
+      if (!is.null(ep)) { np <- length(ep); pn <- names(ep); d <- dim(res); new <- array(0, c(d[1]+np, d[2]+np, d[3]+np, d[4]), list(c(dimnames(res)[[1]], pn), c(dimnames(res)[[2]], pn), c(dimnames(res)[[3]], pn), NULL)); new[1:d[1],1:d[2],1:d[3],] <- res; res <- new }
     }
     res
   }
@@ -1472,10 +1417,10 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
     funsym <- paste0(modelname, "_eval")
     if (is.loaded(funsym)) {
       out <- .C(funsym, x = as.double(M), y = double(length(outnames) * n_obs), p = as.double(p), n = as.integer(n_obs), k = as.integer(length(innames)), l = as.integer(length(outnames)))
-      res <- matrix(out$y, n_obs, length(outnames), TRUE, list(NULL, outnames))
+      res <- matrix(out$y, length(outnames), n_obs, dimnames = list(outnames, NULL))
     } else {
-      res <- matrix(NA_real_, n_obs, length(outnames), dimnames = list(NULL, outnames))
-      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); res[i,] <- vapply(parsed_exprs, function(e) eval(e, env), numeric(1)) }
+      res <- matrix(NA_real_, length(outnames), n_obs, dimnames = list(outnames, NULL))
+      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); res[,i] <- vapply(parsed_exprs, function(e) eval(e, env), numeric(1)) }
     }
     attachExtras(res, n_obs, chk$extra_vars, chk$extra_params, "fun")
   }
@@ -1486,12 +1431,12 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
     funsym <- paste0(modelname, "_jacobian"); n_out <- length(outnames); n_sym <- length(diff_syms)
     if (is.loaded(funsym)) {
       out <- .C(funsym, x = as.double(M), jac = double(n_obs * n_out * n_sym), p = as.double(p), n = as.integer(n_obs), k = as.integer(length(innames)), l = as.integer(n_out))
-      arr <- array(out$jac, c(n_obs, n_out, n_sym), list(NULL, outnames, diff_syms))
+      arr <- array(out$jac, c(n_out, n_sym, n_obs), list(outnames, diff_syms, NULL))
     } else {
-      arr <- array(0, c(n_obs, n_out, n_sym), list(NULL, outnames, diff_syms))
-      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); for (o in seq_len(n_out)) for (s in seq_len(n_sym)) if (!(diff_syms[s] %in% fixed_rt)) { e <- parsed_jac[[outnames[o], diff_syms[s]]]; if (!is.null(e)) arr[i,o,s] <- eval(e, env) } }
+      arr <- array(0, c(n_out, n_sym, n_obs), list(outnames, diff_syms, NULL))
+      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); for (o in seq_len(n_out)) for (s in seq_len(n_sym)) if (!(diff_syms[s] %in% fixed_rt)) { e <- parsed_jac[[outnames[o], diff_syms[s]]]; if (!is.null(e)) arr[o,s,i] <- eval(e, env) } }
     }
-    attachExtras(arr[,,dsyms,drop=FALSE], n_obs, chk$extra_vars, chk$extra_params, "jac")
+    attachExtras(arr[,dsyms,,drop=FALSE], n_obs, chk$extra_vars, chk$extra_params, "jac")
   }
 
   hess_impl <- if (deriv2 && !is.null(sym_hess)) function(vars, params = numeric(0), attach.input = FALSE, fixed = NULL) {
@@ -1500,12 +1445,12 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
     funsym <- paste0(modelname, "_hessian"); n_out <- length(outnames); n_sym <- length(diff_syms)
     if (is.loaded(funsym)) {
       out <- .C(funsym, x = as.double(M), hess = double(n_obs * n_out * n_sym^2), p = as.double(p), n = as.integer(n_obs), k = as.integer(length(innames)), l = as.integer(n_out))
-      arr <- array(out$hess, c(n_obs, n_out, n_sym, n_sym), list(NULL, outnames, diff_syms, diff_syms))
+      arr <- array(out$hess, c(n_out, n_sym, n_sym, n_obs), list(outnames, diff_syms, diff_syms, NULL))
     } else {
-      arr <- array(0, c(n_obs, n_out, n_sym, n_sym), list(NULL, outnames, diff_syms, diff_syms))
-      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); for (o in seq_len(n_out)) { Hmat <- parsed_hess[[outnames[o]]]; for (s1 in seq_len(n_sym)) for (s2 in seq_len(n_sym)) if (!(diff_syms[s1] %in% fixed_rt) && !(diff_syms[s2] %in% fixed_rt)) { e <- Hmat[[diff_syms[s1], diff_syms[s2]]]; if (!is.null(e)) arr[i,o,s1,s2] <- eval(e, env) } } }
+      arr <- array(0, c(n_out, n_sym, n_sym, n_obs), list(outnames, diff_syms, diff_syms, NULL))
+      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); for (o in seq_len(n_out)) { Hmat <- parsed_hess[[outnames[o]]]; for (s1 in seq_len(n_sym)) for (s2 in seq_len(n_sym)) if (!(diff_syms[s1] %in% fixed_rt) && !(diff_syms[s2] %in% fixed_rt)) { e <- Hmat[[diff_syms[s1], diff_syms[s2]]]; if (!is.null(e)) arr[o,s1,s2,i] <- eval(e, env) } } }
     }
-    attachExtras(arr[,,dsyms,dsyms,drop=FALSE], n_obs, chk$extra_vars, chk$extra_params, "hess")
+    attachExtras(arr[,dsyms,dsyms,,drop=FALSE], n_obs, chk$extra_vars, chk$extra_params, "hess")
   }
 
   # --- Convenient wrapper ---

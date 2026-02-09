@@ -147,18 +147,18 @@ The generated solver function (accessible via \code{.Call}) returns a named list
 Returns \code{list(time, variable)}
 \itemize{
 \item \code{time}: numeric vector of length \eqn{n_t}
-\item \code{variable}: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_t,n_x)}, containing \eqn{x_j(t_i)}
+\item \code{variable}: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_x,n_t)}, containing \eqn{x_i(t_j)}
 }
 \item \code{deriv = TRUE}, \code{deriv2 = FALSE}
 Returns \code{list(time, variable, sens1)}
 \itemize{
-\item \code{sens1}: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_t,n_x,n_s)}, containing
+\item \code{sens1}: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_x,n_s,n_t)}, containing
 \eqn{\partial x_j(t_i)/\partial p_k}
 }
 \item \code{deriv = TRUE}, \code{deriv2 = TRUE}
 Returns \code{list(time, variable, sens1, sens2)}
 \itemize{
-\item \code{sens2}: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_t,n_x,n_s,n_s)},
+\item \code{sens2}: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_x,n_s,n_s,n_t)},
 containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
 }
 }

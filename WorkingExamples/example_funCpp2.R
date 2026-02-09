@@ -9,14 +9,7 @@ library(dMod)
 library(dplyr)
 
 
-trafo <- c(TCA_buffer = "0",
-           TCA_cell = "10^TCA_CELL",
-           TCA_cana = "10^TCA_CANA",
-           k_import = "10^K_IMPORT",
-           k_export_sinus = "10^K_EXPORT_SINUS",
-           k_export_cana = "10^K_EXPORT_CANA",
-           k_reflux = "10^K_REFLUX",
-           s = "10^S")
+trafo <- c(TCA_cell = "10^TCA_CELL")
 
 f <- funCpp(trafo,
             variables  = NULL,
@@ -25,22 +18,21 @@ f <- funCpp(trafo,
             deriv = TRUE,
             deriv2 = TRUE,
             compile = TRUE,
-            modelname = "parfn",
+            modelname = "parfn2",
             outdir = getwd(),
             convenient = FALSE,
             verbose = FALSE)
 
 pars <- structure(rep(-1, length(getSymbols(trafo))), names = getSymbols(trafo))
-pars["attach"] <- 1
 jac.symb <- attr(f, "jacobian.symb")
 
 fun <- f$fun
 jac <- f$jac
 
 pars
-out <- fun(vars = NULL, params = pars, attach.input = T)
+out <- fun(vars = NULL, params = pars, attach.input = T)[,]
 out
-out.jac <- jac(NULL, pars)[,,,drop=F]
+out.jac <- jac(NULL, pars)[,,]
 out.jac
 
 out.hess <- f$hess(NULL, pars)
