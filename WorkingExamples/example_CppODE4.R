@@ -19,7 +19,7 @@ eqns <- c(x = "-k*x^2 * time")
 
 # # Generate and compile solver
 model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
-                modelname = "model_FTEvent2", compile = T, useDenseOutput = T, verbose = T)
+                modelname = "model_FTEvent2", compile = T, useDenseOutput = T)
 
 pars <- c(x=1, k=1, v = 2, te = 2)
 times  <- seq(0, 10, length.out = 1000)
@@ -29,8 +29,8 @@ out.analytical <- solveOdeAnalytic(c(x = "-k*x^2*t"),times,pars, events = events
 
 
 # Example run
-res <- solveODE(model, times, pars, abstol = 1e-10, reltol = 1e-10, roottol = 1e-10)
-vars <- res$variable %>%
+res <- solveODE(model, times, pars)
+vars <- res$variable %>% t()
 sens <- res$sens1
 out.boost <- matrix(aperm(sens, c(3, 1, 2)), nrow = dim(sens)[3],
                     dimnames = list(NULL,

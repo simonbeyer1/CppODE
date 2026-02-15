@@ -6,15 +6,10 @@
 #' \command{R CMD SHLIB}. Source files are located via the \code{"srcfile"}
 #' attribute attached to the supplied objects.
 #'
-#' Compilation is performed in the directory of each source file and does
-#' not write to the user's home directory or working directory unless
-#' explicitly requested by the user via the \code{outdir} argument when
-#' generating the model code.
-#'
 #' The function automatically applies platform-appropriate compiler flags
-#' (e.g. C++20 standard, optimization, position-independent code where
-#' required) and includes headers shipped with the package itself as well as
-#' Boost headers provided by the \pkg{BH} package.
+#' (C++17 standard, optimization, position-independent code where required)
+#' and includes headers shipped with the package itself as well as Boost
+#' headers provided by the \pkg{BH} package.
 #'
 #' On Windows, compilation is always performed sequentially since
 #' fork-based parallelism is unavailable.
@@ -37,163 +32,85 @@
 #' @keywords internal
 #' @import BH
 compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE) {
+
+  ## save & restore env
+  old <- Sys.getenv(c("PKG_CFLAGS", "PKG_CXXFLAGS", "PKG_CPPFLAGS"), unset = NA)
+  on.exit({
+    for (n in names(old))
+      if (is.na(old[n])) Sys.unsetenv(n) else Sys.setenv(structure(old[n], names = n))
+  }, add = TRUE)
+
   objects <- list(...)
+  Rbin <- shQuote(file.path(R.home("bin"), "R"))
+  so   <- .Platform$dynlib.ext
 
-  # --- collect all source files via srcfile attribute ---
-  files <- character()
-  for (obj in objects) {
+  # --- collect source files via srcfile attribute ---
+  files <- unique(unlist(lapply(objects, function(obj) {
     src <- attr(obj, "srcfile")
-    if (!is.null(src) && file.exists(src)) {
-      files <- union(files, normalizePath(src, winslash = "/", mustWork = FALSE))
-    } else if (verbose) {
-      message("No valid srcfile attribute found.")
-    }
-  }
+    if (!is.null(src) && file.exists(src))
+      normalizePath(src, winslash = "/", mustWork = FALSE)
+  })))
 
-  if (length(files) == 0)
+  if (!length(files))
     stop("No valid C/C++ source files found for compilation.")
 
-  # Roots and directories
   roots <- sub("\\.[^.]+$", "", basename(files))
-  dirs  <- dirname(files)
-  .so   <- .Platform$dynlib.ext
 
-  # --- Clean up old compiled files (same directories as sources) ---
-  for (i in seq_along(files)) {
-    so_file <- file.path(dirs[i], paste0(roots[i], .so))
-    o_file  <- file.path(dirs[i], paste0(roots[i], ".o"))
+  # --- compiler flags ---
+  if (.Platform$OS.type == "windows") cores <- 1
 
-    # ALWAYS try to unload first (before checking file existence)
-    tryCatch(
-      dyn.unload(so_file),
-      error = function(e) {
-        if (verbose) message("Note: Could not unload ", so_file, ": ", e$message)
-      }
+  pic  <- if (.Platform$OS.type == "windows") "" else "-fPIC"
+  base <- paste("-O2 -DNDEBUG -w", pic)
+  if (!is.null(args) && nzchar(args)) base <- paste(base, args)
+
+  Sys.setenv(
+    PKG_CXXFLAGS = base,
+    PKG_CPPFLAGS = paste(
+      paste0("-I", system.file("include", package = "CppODE")),
+      paste0("-I", system.file("include", package = "BH"))
     )
-
-    # Then delete old files
-    if (file.exists(o_file)) {
-      unlink(o_file, force = TRUE)
-    }
-    if (file.exists(so_file)) {
-      unlink(so_file, force = TRUE)
-      if (file.exists(so_file))
-        stop("Could not delete old shared library: ", so_file)
-    }
-  }
-
-  # --- Compiler flags ---
-  if (Sys.info()[["sysname"]] == "Windows") cores <- 1
-
-  include_flags <- paste(
-    paste0("-I", system.file("include", package = "CppODE")),
-    paste0("-I", system.file("include", package = "BH"))
   )
 
-  sys <- Sys.info()[["sysname"]]
-  cxxflags <- if (sys == "Windows") {
-    "-std=c++20 -O3 -DNDEBUG -w"
-  } else if (sys == "Linux") {
-    "-std=c++20 -O3 -DNDEBUG -fPIC -fno-var-tracking-assignments -w"
-  } else if (sys == "Darwin") {
-    "-std=c++20 -O3 -DNDEBUG -fPIC -w"
+  # --- toolchain report ---
+  cfg   <- function(x) system(paste(Rbin, "CMD config", x), intern = TRUE)
+  strip <- function(x) trimws(gsub("(^| )-std=[^ ]+", "", x))
+
+  if (any(grepl("\\.cpp$", files)))
+    cat(sprintf("using C++ compiler: %s [%s]\n",
+                strip(cfg("CXX")), trimws(Sys.getenv("PKG_CXXFLAGS"))))
+
+  # --- unload old libraries ---
+  invisible(lapply(c(roots, output), function(x) {
+    if (!is.null(x)) try(dyn.unload(paste0(x, so)), silent = TRUE)
+  }))
+
+  # --- helper: run R CMD SHLIB ---
+  run <- function(cmd) {
+    if (verbose) cat(cmd, "\n")
+    if (system(cmd, ignore.stdout = !verbose, ignore.stderr = !verbose) != 0)
+      stop("Compilation failed")
   }
 
-  # --- compile one file ---
-  compile_one <- function(src, root, dir) {
-    old_cppflags <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
-    old_cxxflags <- Sys.getenv("PKG_CXXFLAGS", unset = NA)
-
-    Sys.setenv(
-      PKG_CPPFLAGS = include_flags,
-      PKG_CXXFLAGS = cxxflags
-    )
-
-    on.exit({
-      if (is.na(old_cppflags)) Sys.unsetenv("PKG_CPPFLAGS")
-      else Sys.setenv(PKG_CPPFLAGS = old_cppflags)
-      if (is.na(old_cxxflags)) Sys.unsetenv("PKG_CXXFLAGS")
-      else Sys.setenv(PKG_CXXFLAGS = old_cxxflags)
-    })
-
-    oldwd <- getwd()
-    on.exit(setwd(oldwd), add = TRUE)
-    setwd(dir)
-
-    cmd <- paste0(
-      shQuote(file.path(R.home("bin"), "R")),
-      " CMD SHLIB ",
-      shQuote(basename(src)),
-      if (!is.null(args)) paste(" ", args) else ""
-    )
-
-    if (verbose) message(cmd)
-    system(cmd, intern = !verbose)
-
-    so_file <- file.path(dir, paste0(root, .so))
-    if (!file.exists(so_file))
-      stop("Compilation failed for ", src)
-
-    dyn.load(so_file)
-    if (verbose) message("\u2713 Loaded ", so_file)
-    invisible(root)
-  }
-
-  # --- Compilation ---
+  # --- compile ---
   if (is.null(output)) {
-    if (verbose) message("Compiling ", length(files), " model(s)...")
-    parallel::mclapply(
-      seq_along(files),
-      function(i) compile_one(files[i], roots[i], dirs[i]),
-      mc.cores = cores,
-      mc.silent = !verbose
-    )
+    if (.Platform$OS.type == "unix" && cores > 1)
+      parallel::mclapply(files, function(f) run(paste(Rbin, "CMD SHLIB", shQuote(f))), mc.cores = cores)
+    else
+      for (f in files) run(paste(Rbin, "CMD SHLIB", shQuote(f)))
+    for (r in roots) dyn.load(paste0(r, so))
   } else {
-    # --- Combine all into one shared library ---
-    output <- sub("\\.so$", "", output)
+    output <- sub(paste0("\\", so, "$"), "", output)
     outdir <- dirname(files[1])
-    output_so <- file.path(outdir, paste0(output, .so))
+    out_so <- file.path(outdir, paste0(output, so))
 
-    try(dyn.unload(output_so), silent = TRUE)
-    if (file.exists(output_so)) unlink(output_so)
+    try(dyn.unload(out_so), silent = TRUE)
+    if (file.exists(out_so)) unlink(out_so)
 
-    old_cppflags <- Sys.getenv("PKG_CPPFLAGS", unset = NA)
-    old_cxxflags <- Sys.getenv("PKG_CXXFLAGS", unset = NA)
+    run(paste(Rbin, "CMD SHLIB",
+              paste(shQuote(files), collapse = " "),
+              "-o", shQuote(out_so)))
 
-    Sys.setenv(
-      PKG_CPPFLAGS = include_flags,
-      PKG_CXXFLAGS = cxxflags
-    )
-
-    on.exit({
-      if (is.na(old_cppflags)) Sys.unsetenv("PKG_CPPFLAGS")
-      else Sys.setenv(PKG_CPPFLAGS = old_cppflags)
-      if (is.na(old_cxxflags)) Sys.unsetenv("PKG_CXXFLAGS")
-      else Sys.setenv(PKG_CXXFLAGS = old_cxxflags)
-    })
-
-    oldwd <- getwd()
-    on.exit(setwd(oldwd), add = TRUE)
-    setwd(outdir)
-
-    cmd <- paste0(
-      shQuote(file.path(R.home("bin"), "R")),
-      " CMD SHLIB ",
-      paste(shQuote(basename(files)), collapse = " "),
-      " -o ",
-      shQuote(basename(output_so)),
-      if (!is.null(args)) paste(" ", args) else ""
-    )
-
-    if (verbose) message(cmd)
-    system(cmd, intern = !verbose)
-
-    if (!file.exists(output_so))
-      stop("Compilation failed for combined output")
-
-    dyn.unload(output_so)
-    dyn.load(output_so)
-    if (verbose) message("\u2713 Loaded ", output_so)
+    dyn.load(out_so)
   }
 
   invisible(TRUE)

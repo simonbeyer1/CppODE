@@ -392,7 +392,7 @@ inline void apply_saltation_correction_root(
   if (n_sens == 0) return;
 
   // Compute g_dot analytically
-  value_type g_dot = detail::compute_g_dot_analytical(x_before, t, sys, dg_dx_func, dg_dt_func);
+  value_type g_dot = compute_g_dot_analytical(x_before, t, sys, dg_dx_func, dg_dt_func);
 
   const double g_dot_val = scalar_value(g_dot);
   if (std::abs(g_dot_val) < 1e-15) return;  // Degenerate case
@@ -402,7 +402,7 @@ inline void apply_saltation_correction_root(
   value_type dt_star = -g / g_dot;
 
   // Apply core saltation correction with actual event time t
-  detail::apply_saltation_correction_core(x, x_before, dt_star, t, sys);
+  apply_saltation_correction_core(x, x_before, dt_star, t, sys);
 }
 
 // ============================================================================
@@ -421,7 +421,7 @@ inline void apply_saltation_correction_fixed(
     const time_type& t_event,
     System& sys)
 {
-  detail::apply_saltation_correction_core(x, x_before, t_event, t_event, sys);
+  apply_saltation_correction_core(x, x_before, t_event, t_event, sys);
 }
 
 // ============================================================================
@@ -441,8 +441,8 @@ bool apply_fixed_events_at_time_with_saltation(
   for (const auto& e : evs) {
     if (std::abs(scalar_value(e.time) - tt) < 1e-14) {
       state_type x_before = x;
-      detail::apply_event(x, e.state_index, e.value_func(x, e.time), e.method);
-      detail::apply_saltation_correction_fixed(x, x_before, e.time, sys);
+      apply_event(x, e.state_index, e.value_func(x, e.time), e.method);
+      apply_saltation_correction_fixed(x, x_before, e.time, sys);
       fired = true;
     }
   }
@@ -479,15 +479,28 @@ std::vector<Time> merge_user_and_event_times(
 }
 
 // ============================================================================
-// Unified stepper reset
+// Unified stepper reset (C++17 SFINAE)
 // ============================================================================
+
+// Note: has_reset_after_event is already defined in
+// cppode_boost_rosenbrock4_dense_output_pi.hpp (included earlier).
+// Only has_reinitialize_at_event needs to be defined here.
+
+template<class S, class State, class Time, class = void>
+struct has_reinitialize_at_event : std::false_type {};
+
+template<class S, class State, class Time>
+struct has_reinitialize_at_event<S, State, Time,
+    std::void_t<decltype(std::declval<S&>().reinitialize_at_event(
+        std::declval<State&>(), std::declval<Time>(), std::declval<Time&>()))>
+> : std::true_type {};
 
 template<class S, class State, class Time>
 inline void reset_stepper_unified(S& st, State& x, Time t, Time& dt) {
-  if constexpr (requires { st.reset_after_event(dt); }) {
+  if constexpr (has_reset_after_event<S, Time>::value) {
     st.reset_after_event(dt);
   }
-  else if constexpr (requires { st.reinitialize_at_event(x, t, dt); }) {
+  else if constexpr (has_reinitialize_at_event<S, State, Time>::value) {
     st.reinitialize_at_event(x, t, dt);
   }
   else {
@@ -533,7 +546,7 @@ private:
       if (fired[i] < max_trigger &&
           !std::isnan(last_val[i]) &&
           last_val[i] * curr_val[i] < 0.0 &&
-          detail::direction_matches(last_val[i], curr_val[i], m_root[i].direction))
+          direction_matches(last_val[i], curr_val[i], m_root[i].direction))
       {
         triggered.push_back({i, last_val[i], curr_val[i]});
       }
@@ -561,7 +574,7 @@ private:
     for (const auto& te : triggered) {
       size_t i = te.index;
       if (!m_root[i].terminal) {
-        detail::apply_event(x_root,
+        apply_event(x_root,
                             m_root[i].state_index,
                             m_root[i].value_func(x_before, t_root),
                             m_root[i].method);
@@ -573,7 +586,7 @@ private:
     for (const auto& te : triggered) {
       size_t i = te.index;
       if (!m_root[i].terminal && m_root[i].dg_dx_func) {
-        detail::apply_saltation_correction_root(
+        apply_saltation_correction_root(
           x_root, x_before, t_root, m_sys,
           m_root[i].func,
           m_root[i].dg_dx_func,
@@ -650,8 +663,8 @@ public:
     const auto end = times.end();
     Time t = *it;
 
-    if (detail::apply_fixed_events_at_time_with_saltation(x, t, m_fixed, m_sys)) {
-      detail::reset_stepper_unified(m_st, x, t, dt);
+    if (apply_fixed_events_at_time_with_saltation(x, t, m_fixed, m_sys)) {
+      reset_stepper_unified(m_st, x, t, dt);
     }
 
     obs(x, t);
@@ -712,7 +725,7 @@ public:
             obs(x_after, t_root);
             x = x_after;
 
-            detail::reset_stepper_unified(m_st, x, t, dt);
+            reset_stepper_unified(m_st, x, t, dt);
 
             for (size_t j = 0; j < m_root.size(); ++j) {
               last_val[j] = std::numeric_limits<double>::quiet_NaN();
@@ -736,9 +749,9 @@ public:
 
       t = t_target;
 
-      if (detail::apply_fixed_events_at_time_with_saltation(x, t, m_fixed, m_sys)) {
+      if (apply_fixed_events_at_time_with_saltation(x, t, m_fixed, m_sys)) {
         obs(x, t);
-        detail::reset_stepper_unified(m_st, x, t, dt);
+        reset_stepper_unified(m_st, x, t, dt);
         for (size_t j = 0; j < m_root.size(); ++j) {
           last_val[j] = std::numeric_limits<double>::quiet_NaN();
           last_state[j] = x;
@@ -776,7 +789,7 @@ public:
     auto it = times.begin();
     auto end = times.end();
 
-    if (detail::apply_fixed_events_at_time_with_saltation(x, *it, m_fixed, m_sys)) {
+    if (apply_fixed_events_at_time_with_saltation(x, *it, m_fixed, m_sys)) {
       m_st.initialize(x, *it, dt);
     }
 
@@ -936,7 +949,7 @@ public:
         }
 
         // Check for fixed events at this time
-        bool fixed_event_fired = detail::apply_fixed_events_at_time_with_saltation(x, t_eval, m_fixed, m_sys);
+        bool fixed_event_fired = apply_fixed_events_at_time_with_saltation(x, t_eval, m_fixed, m_sys);
 
         // Output the requested time point (with state after any fixed event)
         obs(x, t_eval);
