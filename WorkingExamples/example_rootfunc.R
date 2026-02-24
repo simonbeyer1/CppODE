@@ -9,36 +9,42 @@ library(ggplot2)
 library(dplyr)
 library(tidyr)
 
+rhs <- c(
+  R = "k_act_R_bas-k_deact_R*R",
+  A = "-k1*A*R+1*k2*pA",
+  pA = "k1*A*R-k2*pA"
+)
+
 # Equilibrate - stoppt wenn alle Ableitungen (inkl. Sensitivitäten) < roottol
 model <- CppODE(
-  rhs = c(x = "-k * x + d * y", y = "k * x - d * y"),
+  rhs = rhs,
   rootfunc = "equilibrate",
   deriv = TRUE,
-  deriv2 = TRUE,
+  deriv2 = FALSE,
   outdir = getwd(),
   modelname = "rootfunc_example"
 )
 
-pars <- c(x = 1, y = 0, k = 0.1, d = 0.05)
+pars <- c(R = 1, A = 1, pA = 1, k_act_R_bas = 0.1, k_deact_R = 0.7, k1 = 0.1, k2 = 0.05)
 
 # Integration - stoppt automatisch bei Steady-State oder Nulldurchgang
 res <- solveODE(model, times = seq(0, 1e3, len = 1e3L), parms = pars,
-                roottol = 1e-05)
+                roottol = 1e-06)
 
 
 # Access sensitivities res1 + res2 (independent only)
 if (!is.null(res$sens1)) {
 
   n_out    <- length(res$time)
-  n_states <- ncol(res$variable)
-  n_sens   <- dim(res$sens1)[3]
+  n_states <- nrow(res$variable)
+  n_sens   <- dim(res$sens1)[2]
 
   dims <- attr(model, "dim_names")
 
   ## ---------- sens1 ----------
-  sens1_matrix <- matrix(res$sens1,
-                         nrow = n_out,
-                         ncol = n_states * n_sens)
+  sens1_matrix <- t(matrix(res$sens1,
+                         ncol = n_out,
+                         nrow = n_states * n_sens))
 
   sens1_colnames <-
     as.vector(outer(paste0("∂", dims$variable),
@@ -90,7 +96,7 @@ if (!is.null(res$sens1)) {
   ## ---------- combine everything ----------
   out_full <- cbind(
     time = res$time,
-    res$variable,
+    t(res$variable),
     sens1_matrix,
     sens2_matrix
   )
@@ -100,13 +106,16 @@ if (!is.null(res$sens1)) {
 
 
 lastidx <- length(res$time)
-yini <- res$variable[lastidx,]
-sensini <- res$sens1[lastidx,,]
+yini <- res$variable[,ncol(res$variable)]
+sensini <- res$sens1[,,length(res$time)]
 
 pars[names(yini)] <- yini
 
 pars
 sensini
+
+# pars["k1"] = 0.09
+# pars["k2"] = 0.06
 
 res2 <- solveODE(model, times = seq(0, 1e3, len = 1e3L), parms = pars,
                  sens1ini = sensini, roottol = 1e-05)
@@ -116,15 +125,15 @@ res2 <- solveODE(model, times = seq(0, 1e3, len = 1e3L), parms = pars,
 if (!is.null(res2$sens1)) {
 
   n_out    <- length(res2$time)
-  n_states <- ncol(res2$variable)
-  n_sens   <- dim(res2$sens1)[3]
+  n_states <- nrow(res2$variable)
+  n_sens   <- dim(res2$sens1)[2]
 
   dims <- attr(model, "dim_names")
 
   ## ---------- sens1 ----------
-  sens1_matrix <- matrix(res2$sens1,
-                         nrow = n_out,
-                         ncol = n_states * n_sens)
+  sens1_matrix <- t(matrix(res2$sens1,
+                           ncol = n_out,
+                           nrow = n_states * n_sens))
 
   sens1_colnames <-
     as.vector(outer(paste0("∂", dims$variable),
@@ -176,7 +185,7 @@ if (!is.null(res2$sens1)) {
   ## ---------- combine everything ----------
   out_full2 <- cbind(
     time = res2$time,
-    res2$variable,
+    t(res2$variable),
     sens1_matrix,
     sens2_matrix
   )

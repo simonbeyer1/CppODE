@@ -14,8 +14,7 @@ f <- c(TCA_buffer = "-k_import * TCA_buffer + k_export_sinus * TCA_cell + k_refl
        TCA_cell = "k_import * TCA_buffer - k_export_sinus * TCA_cell - k_export_cana * TCA_cell")
 
 
-# Equilibrate - stoppt wenn alle Ableitungen (inkl. Sensitivitäten) < roottol
-model <- CppODE(f, outdir = getwd(), modelname = "bamodel_s", compile = T)
+model <- CppODE(f, outdir = getwd(), modelname = "bamodel", compile = T, fixed = c("TCA_buffer"), deriv2 = T)
 
 times <- seq(0,45, len = 300)
 params <- c(TCA_buffer = 0, TCA_cell = 0.1, TCA_cana = 0.1, k_import = 0.1, k_export_sinus = 0.1, k_reflux = 0.1, k_export_cana = 0.1)
@@ -23,4 +22,6 @@ params <- c(TCA_buffer = 0, TCA_cell = 0.1, TCA_cana = 0.1, k_import = 0.1, k_ex
 
 res <- solveODE(model, times, params)
 
-M <- matrix(res$sens1, nrow = 300*3, ncol = 7)
+is.null(res$sens2)
+#
+# M <- matrix(res$sens1, nrow = 300*3, ncol = 7)

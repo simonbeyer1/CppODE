@@ -18,18 +18,18 @@ events <- data.frame(var = "x", time = "te", value = "v", root = NA, method = "a
 eqns <- c(x = "-k*x^2 * time")
 
 # # Generate and compile solver
-model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
+model <- CppODE(eqns, events = events, deriv = T, deriv2 = T, outdir = getwd(),
                 modelname = "model_FTEvent2", compile = T, useDenseOutput = T)
 
 pars <- c(x=1, k=1, v = 2, te = 2)
-times  <- seq(0, 10, length.out = 1000)
+times  <- c(2, seq(0, 10, length.out = 300)) %>% sort()
 out.analytical <- solveOdeAnalytic(c(x = "-k*x^2*t"),times,pars, events = events) %>%
   melt(id.vars = 1L) %>%
   mutate(method = "analytical")
 
 
 # Example run
-res <- solveODE(model, times, pars)
+res <- solveODE(model, times, pars, fixed = c("te", "x"))
 vars <- res$variable %>% t()
 sens <- res$sens1
 out.boost <- matrix(aperm(sens, c(3, 1, 2)), nrow = dim(sens)[3],
@@ -55,8 +55,8 @@ ggplot(out, aes(x = time, y = value, color = method, linetype = method)) +
     y = "value"
   )
 
-res$sens2[, "x", "xc", "xc"]
-
+res$sens2["x","te","te", ]
+res$sens1["x","te", ]
 
 
 # solveA <- function(times, pars) {

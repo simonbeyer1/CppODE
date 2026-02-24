@@ -54,7 +54,8 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   if (!length(files))
     stop("No valid C/C++ source files found for compilation.")
 
-  roots <- sub("\\.[^.]+$", "", basename(files))
+  roots      <- sub("\\.[^.]+$", "", basename(files))
+  roots_full <- sub("\\.[^.]+$", "", files)  # absolute paths without extension
 
   # --- compiler flags ---
   if (.Platform$OS.type == "windows") cores <- 1
@@ -79,10 +80,26 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
     cat(sprintf("using C++ compiler: %s [%s]\n",
                 strip(cfg("CXX")), trimws(Sys.getenv("PKG_CXXFLAGS"))))
 
-  # --- unload old libraries ---
-  invisible(lapply(c(roots, output), function(x) {
-    if (!is.null(x)) try(dyn.unload(paste0(x, so)), silent = TRUE)
-  }))
+  # --- unload by DLL name lookup (most robust approach) ---
+  # getLoadedDLLs() returns a list keyed by DLL basename. We unload by name
+  # (not path) to avoid path-mismatch failures, then delete the stale .so so
+  # R CMD SHLIB produces a fresh inode and dyn.load cannot reuse a cached image.
+  unload_and_delete <- function(basename_no_ext, so_path) {
+    loaded <- getLoadedDLLs()
+    if (basename_no_ext %in% names(loaded)) {
+      try(dyn.unload(loaded[[basename_no_ext]][["path"]]), silent = TRUE)
+    }
+    if (file.exists(so_path)) try(unlink(so_path), silent = TRUE)
+  }
+
+  if (is.null(output)) {
+    invisible(mapply(unload_and_delete,
+                     roots,
+                     paste0(roots_full, so),
+                     SIMPLIFY = FALSE))
+  } else {
+    try(dyn.unload(paste0(output, so)), silent = TRUE)
+  }
 
   # --- helper: run R CMD SHLIB ---
   run <- function(cmd) {
@@ -97,7 +114,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
       parallel::mclapply(files, function(f) run(paste(Rbin, "CMD SHLIB", shQuote(f))), mc.cores = cores)
     else
       for (f in files) run(paste(Rbin, "CMD SHLIB", shQuote(f)))
-    for (r in roots) dyn.load(paste0(r, so))
+    for (r in roots_full) dyn.load(paste0(r, so))
   } else {
     output <- sub(paste0("\\", so, "$"), "", output)
     outdir <- dirname(files[1])

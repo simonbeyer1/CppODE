@@ -218,6 +218,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     modelname <- paste(c("x", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
   }
 
+  # --- Internal C++ symbol name: unique per deriv/deriv2 configuration ---
+  # Using a suffix prevents R from caching a stale native symbol pointer
+  # when the same modelname is recompiled with different deriv settings.
+  symbol_suffix <- if (deriv2) "_d2" else if (deriv) "_d1" else "_d0"
+  symbol_name   <- paste0(modelname, symbol_suffix)
+
   # Lazy import
   codegen <- get_codegenCppODE_py()
 
@@ -340,7 +346,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   externC <- c(
     sprintf(
       'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP fixedSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
-      modelname
+      symbol_name
     ),
     "try {",
     "",
@@ -355,20 +361,9 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   if (deriv) {
     externC <- c(
       externC,
-      "  // Custom sensitivity initial values",
+      "  // Custom sensitivity initial values (length validated after n_sens is computed)",
       "  bool has_sens1ini = !Rf_isNull(sens1iniSEXP);",
       "  double* sens1ini = has_sens1ini ? REAL(sens1iniSEXP) : nullptr;"
-    )
-
-    externC <- c(
-      externC,
-      "  if (has_sens1ini) {",
-      sprintf(
-        "    if (Rf_length(sens1iniSEXP) != %d * %d)",
-        n_variables, n_total_sens
-      ),
-      "      Rf_error(\"sens1ini has wrong length\");",
-      "  }"
     )
 
     if (deriv2) {
@@ -376,17 +371,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
         externC,
         "  bool has_sens2ini = !Rf_isNull(sens2iniSEXP);",
         "  double* sens2ini = has_sens2ini ? REAL(sens2iniSEXP) : nullptr;"
-      )
-
-      externC <- c(
-        externC,
-        "  if (has_sens2ini) {",
-        sprintf(
-          "    if (Rf_length(sens2iniSEXP) != %d * %d * %d)",
-          n_variables, n_total_sens, n_total_sens
-        ),
-        "      Rf_error(\"sens2ini has wrong length\");",
-        "  }"
       )
     } else {
       externC <- c(
@@ -399,12 +383,44 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(externC, "")
   }
 
-  # --- Sensitivity dimensions and index helpers ---
+  # --- Runtime fixed parameters (must be defined before n_sens and active_idx) ---
   if (deriv) {
     externC <- c(
       externC,
-      sprintf("  const int n_states = %d;", n_variables),
-      sprintf("  const int n_sens   = %d;", n_total_sens),
+      "  // Runtime fixed parameters - O(1) lookup via boolean vector",
+      sprintf("  std::vector<bool> is_runtime_fixed(%d, false);  // size = n_sens_total (compile-time)", n_total_sens),
+      "  if (!Rf_isNull(fixedSEXP)) {",
+      "    int* fixed_ptr = INTEGER(fixedSEXP);",
+      "    int n_fixed = Rf_length(fixedSEXP);",
+      "    for (int i = 0; i < n_fixed; ++i) {",
+      sprintf("      if (fixed_ptr[i] >= 0 && fixed_ptr[i] < %d) {", n_total_sens),
+      "        is_runtime_fixed[fixed_ptr[i]] = true;",
+      "      }",
+      "    }",
+      "  }",
+      "  int n_runtime_fixed = std::count(is_runtime_fixed.begin(), is_runtime_fixed.end(), true);",
+      ""
+    )
+  }
+
+  # --- Sensitivity dimensions and index helpers (depends on is_runtime_fixed) ---
+  if (deriv) {
+    externC <- c(
+      externC,
+      sprintf("  const int n_states     = %d;", n_variables),
+      sprintf("  const int n_sens_total = %d;  // compile-time total (excl. compile-time fixed)", n_total_sens),
+      "  // n_sens: active sens dimension after removing runtime-fixed parameters",
+      "  const int n_sens = n_sens_total - n_runtime_fixed;",
+      "",
+      "  // active_idx[i]: compile-time sens index i -> active index in [0, n_sens), or -1 if runtime-fixed",
+      "  std::vector<int> active_idx(n_sens_total, -1);",
+      "  {",
+      "    int k = 0;",
+      "    for (int i = 0; i < n_sens_total; ++i) {",
+      "      if (!is_runtime_fixed[i]) active_idx[i] = k++;",
+      "    }",
+      "  }",
+      "",
       "  auto IDX1 = [n_states](int s, int v) {",
       "    return s + n_states * v;",
       "  };"
@@ -419,27 +435,45 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       )
     }
 
-    externC <- c(externC, "")
-  }
+    # Build global_to_sens compile-time literal:
+    # global index v -> sens index in [0, n_sens_total), or -1 if compile-time-fixed
+    n_global <- n_variables + n_params
+    fixed_global_idx <- c(fixed_initial_idx, n_variables + fixed_param_idx)
+    sens_counter <- 0L
+    global_to_sens_vals <- integer(n_global)
+    for (v in seq_len(n_global) - 1L) {
+      if (v %in% fixed_global_idx) {
+        global_to_sens_vals[v + 1L] <- -1L
+      } else {
+        global_to_sens_vals[v + 1L] <- sens_counter
+        sens_counter <- sens_counter + 1L
+      }
+    }
+    global_to_sens_literal <- paste(global_to_sens_vals, collapse = ", ")
 
-  # --- Runtime fixed parameters ---
-  if (deriv) {
     externC <- c(
       externC,
-      "  // Runtime fixed parameters - O(1) lookup via boolean vector",
-      "  std::vector<bool> is_runtime_fixed(n_sens, false);",
-      "  if (!Rf_isNull(fixedSEXP)) {",
-      "    int* fixed_ptr = INTEGER(fixedSEXP);",
-      "    int n_fixed = Rf_length(fixedSEXP);",
-      "    for (int i = 0; i < n_fixed; ++i) {",
-      "      if (fixed_ptr[i] >= 0 && fixed_ptr[i] < n_sens) {",
-      "        is_runtime_fixed[fixed_ptr[i]] = true;",
-      "      }",
-      "    }",
-      "  }",
-      "  int n_runtime_fixed = std::count(is_runtime_fixed.begin(), is_runtime_fixed.end(), true);",
-      ""
+      "",
+      "  // global_to_sens[v]: global index v -> compile-time sens index, or -1 if compile-time-fixed",
+      sprintf("  static const int global_to_sens_arr[%d] = {%s};", n_global, global_to_sens_literal),
+      sprintf("  auto global_to_sens = [](int v) -> int { return global_to_sens_arr[v]; };"),
+      "",
+      "  // Validate sens1ini / sens2ini length against active dimension n_sens",
+      sprintf("  if (has_sens1ini && Rf_length(sens1iniSEXP) != %d * n_sens)", n_variables),
+      "    Rf_error(\"sens1ini has wrong length: expected n_states * n_active_sens = %d * %d = %d\",",
+      sprintf("             %d, n_sens, %d * n_sens);", n_variables, n_variables)
     )
+
+    if (deriv2) {
+      externC <- c(
+        externC,
+        sprintf("  if (has_sens2ini && Rf_length(sens2iniSEXP) != %d * n_sens * n_sens)", n_variables),
+        "    Rf_error(\"sens2ini has wrong length: expected n_states * n_active_sens^2 = %d * %d^2\",",
+        sprintf("             %d, n_sens);", n_variables)
+      )
+    }
+
+    externC <- c(externC, "")
   }
 
   # --- initialize states ---
@@ -465,30 +499,36 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(
       externC,
       "    x[i].x().x() = REAL(paramsSEXP)[i];",
-      "    if (!is_fixed && !is_runtime_fixed[i]) {",
-      "      // First-order sensitivities (inner layer)",
-      "      if (has_sens1ini) {",
-      "        x[i].x().diff(0, n_sens);  // Allocate first-order array",
-      "        for (int v1 = 0; v1 < n_sens; ++v1) {",
-      "          x[i].x().d(v1) = sens1ini[IDX1(i, v1)];",
-      "        }",
-      "      } else {",
-      "        x[i].x().diff(i, n_sens);  // Identity: d(i) = 1",
-      "      }",
-      "      // Second-order sensitivities (outer layer)",
-      "      if (has_sens2ini) {",
-      "        // Custom second-order initialization",
-      "        for (int v1 = 0; v1 < n_sens; ++v1) {",
-      "          x[i].diff(v1, n_sens).diff(0, n_sens);  // Allocate second-order array",
-      "          for (int v2 = 0; v2 < n_sens; ++v2) {",
-      "            x[i].diff(v1, n_sens).d(v2) = sens2ini[IDX2(i, v1, v2)];",
+      "    if (!is_fixed) {",
+      "      int si = global_to_sens(i);  // compile-time sens index (-1 if compile-time-fixed)",
+      "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index (-1 if any-fixed)",
+      "      if (ai >= 0) {",
+      "        // First-order sensitivities (inner layer)",
+      "        if (has_sens1ini) {",
+      "          x[i].x().diff(0, n_sens);  // Allocate n_sens (active) first-order components",
+      "          for (int v1 = 0; v1 < n_sens_total; ++v1) {",
+      "            int av1 = active_idx[v1];",
+      "            if (av1 >= 0) x[i].x().d(av1) = sens1ini[IDX1(i, av1)];",
       "          }",
+      "        } else {",
+      "          x[i].x().diff(ai, n_sens);  // Identity: d(ai) = 1",
       "        }",
-      "      } else {",
-      "        // Default: allocate outer layer with zeros",
-      "        // This seeds x[i].d(v1) = 0 for all v1, which is required for",
-      "        // proper second-order AD propagation",
-      "        x[i].diff(i, n_sens);  // Allocate outer layer (inner derivative of outer = 0 by default)",
+      "        // Second-order sensitivities (outer layer)",
+      "        if (has_sens2ini) {",
+      "          // Custom second-order initialization",
+      "          for (int v1 = 0; v1 < n_sens_total; ++v1) {",
+      "            int av1 = active_idx[v1];",
+      "            if (av1 < 0) continue;",
+      "            x[i].diff(av1, n_sens).diff(0, n_sens);  // Allocate",
+      "            for (int v2 = 0; v2 < n_sens_total; ++v2) {",
+      "              int av2 = active_idx[v2];",
+      "              if (av2 >= 0) x[i].diff(av1, n_sens).d(av2) = sens2ini[IDX2(i, av1, av2)];",
+      "            }",
+      "          }",
+      "        } else {",
+      "          // Default: allocate outer layer with zeros",
+      "          x[i].diff(ai, n_sens);  // Allocate n_sens outer components (inner defaults to 0)",
+      "        }",
       "      }",
       "    }"
     )
@@ -496,14 +536,19 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(
       externC,
       "    x[i] = REAL(paramsSEXP)[i];",
-      "    if (!is_fixed && !is_runtime_fixed[i]) {",
-      "      if (has_sens1ini) {",
-      "        x[i].diff(0, n_sens);  // Allocate",
-      "        for (int v = 0; v < n_sens; ++v) {",
-      "          x[i].d(v) = sens1ini[IDX1(i, v)];",
+      "    if (!is_fixed) {",
+      "      int si = global_to_sens(i);  // compile-time sens index (-1 if compile-time-fixed)",
+      "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index (-1 if any-fixed)",
+      "      if (ai >= 0) {",
+      "        if (has_sens1ini) {",
+      "          x[i].diff(0, n_sens);  // Allocate n_sens (= n_active) dual components",
+      "          for (int v = 0; v < n_sens_total; ++v) {",
+      "            int av = active_idx[v];",
+      "            if (av >= 0) x[i].d(av) = sens1ini[IDX1(i, av)];",
+      "          }",
+      "        } else {",
+      "          x[i].diff(ai, n_sens);  // Identity: d(ai) = 1, only n_sens components",
       "        }",
-      "      } else {",
-      "        x[i].diff(i, n_sens);  // Identity: d(i) = 1",
       "      }",
       "    }"
     )
@@ -536,30 +581,30 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   if (deriv2) {
     externC <- c(
       externC,
-      "    int sens_idx = n_states + i;",
+      "    int global_idx = n_states + i;",
       "    full_params[param_index].x().x() = REAL(paramsSEXP)[param_index];",
-      "    if (!is_fixed && !is_runtime_fixed[sens_idx]) {",
-      "      // First-order (inner layer): Parameters use identity matrix dp_i/dp_j = delta_{ij}",
-      "      full_params[param_index].x().diff(sens_idx, n_sens);  // Sets d(sens_idx) = 1",
-      "      // Second-order (outer layer): d^2 p_i/dp_j dp_k = 0 (parameters are constant)",
-      "      // But we still need to allocate the outer layer for AD propagation",
-      "      full_params[param_index].diff(sens_idx, n_sens);  // Allocate outer layer (inner values default to 0)",
+      "    if (!is_fixed) {",
+      "      int si = global_to_sens(global_idx);  // compile-time sens index",
+      "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
+      "      if (ai >= 0) {",
+      "        // First-order (inner layer): identity seeding with active index",
+      "        full_params[param_index].x().diff(ai, n_sens);",
+      "        // Second-order (outer layer): allocate n_sens components (inner defaults to 0)",
+      "        full_params[param_index].diff(ai, n_sens);",
+      "      }",
       "    }"
     )
   } else if (deriv) {
     externC <- c(
       externC,
-      "    int sens_idx = n_states + i;",
+      "    int global_idx = n_states + i;",
       "    full_params[param_index] = REAL(paramsSEXP)[param_index];",
-      "    if (!is_fixed && !is_runtime_fixed[sens_idx]) {",
-      "      for (int v = 0; v < n_sens; ++v) {",
-      "        // Parameters use identity matrix: dp_i/dp_j = delta_{ij}",
-      "        // (sens1ini only provides state sensitivities, not parameter sensitivities)",
-      "        double seed = (v == sens_idx ? 1.0 : 0.0);",
-      "        if (seed != 0.0) {",
-      "          full_params[param_index].diff(v, n_sens);",
-      "          full_params[param_index].d(v) *= seed;",
-      "        }",
+      "    if (!is_fixed) {",
+      "      int si = global_to_sens(global_idx);  // compile-time sens index",
+      "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
+      "      if (ai >= 0) {",
+      "        // Parameters use identity seeding: dp_i/dp_j = delta_{ij}",
+      "        full_params[param_index].diff(ai, n_sens);",
       "      }",
       "    }"
     )
@@ -725,27 +770,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1) ---",
                  "  // Effective sens dimension excludes both compile-time and runtime fixed",
-                 "  int n_sens_out = n_sens - n_runtime_fixed;",
+                 "  int n_sens_out = n_sens;",
                  "",
-                 "  // Helper to check if index v is fixed (compile-time or runtime)",
-                 "  auto is_any_fixed = [&is_runtime_fixed](int v) {",
-                 sprintf("    // Compile-time fixed checks"),
-                 if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
-                   c(
-                     if (length(fixed_initial_idx) > 0) {
-                       sprintf("    if (%s) return true;",
-                               paste(sprintf("v == %d", fixed_initial_idx), collapse = " || "))
-                     },
-                     if (length(fixed_param_idx) > 0) {
-                       sprintf("    if (%s) return true;",
-                               paste(sprintf("v == %d", n_variables + fixed_param_idx), collapse = " || "))
-                     }
-                   )
-                 } else {
-                   "    // No compile-time fixed parameters"
-                 },
-                 "    // Runtime fixed check",
-                 "    return is_runtime_fixed[v];",
+                 "  // Helper: is global index v fixed (compile-time OR runtime)?",
+                 "  auto is_any_fixed = [&active_idx, &global_to_sens](int v) -> bool {",
+                 "    int si = global_to_sens(v);",
+                 "    if (si < 0) return true;   // compile-time fixed",
+                 "    return active_idx[si] < 0;  // runtime fixed",
                  "  };",
                  "",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 3));",
@@ -775,7 +806,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "      int v_out = 0;",
                  sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params),
                  "        if (!is_any_fixed(v)) {",
-                 sprintf("          sens1_out[s + %d * (v_out + n_sens_out * i)] = xi.d(v);", n_variables),
+                 "          int av = active_idx[global_to_sens(v)];",
+                 sprintf("          sens1_out[s + %d * (v_out + n_sens_out * i)] = xi.d(av);", n_variables),
                  "          v_out++;",
                  "        }",
                  "      }",
@@ -794,27 +826,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1, sens2) ---",
                  "  // Effective sens dimension excludes both compile-time and runtime fixed",
-                 "  int n_sens_out = n_sens - n_runtime_fixed;",
+                 "  int n_sens_out = n_sens;",
                  "",
-                 "  // Helper to check if index v is fixed (compile-time or runtime)",
-                 "  auto is_any_fixed = [&is_runtime_fixed](int v) {",
-                 sprintf("    // Compile-time fixed checks"),
-                 if (length(fixed_initial_idx) > 0 || length(fixed_param_idx) > 0) {
-                   c(
-                     if (length(fixed_initial_idx) > 0) {
-                       sprintf("    if (%s) return true;",
-                               paste(sprintf("v == %d", fixed_initial_idx), collapse = " || "))
-                     },
-                     if (length(fixed_param_idx) > 0) {
-                       sprintf("    if (%s) return true;",
-                               paste(sprintf("v == %d", n_variables + fixed_param_idx), collapse = " || "))
-                     }
-                   )
-                 } else {
-                   "    // No compile-time fixed parameters"
-                 },
-                 "    // Runtime fixed check",
-                 "    return is_runtime_fixed[v];",
+                 "  // Helper: is global index v fixed (compile-time OR runtime)?",
+                 "  auto is_any_fixed = [&active_idx, &global_to_sens](int v) -> bool {",
+                 "    int si = global_to_sens(v);",
+                 "    if (si < 0) return true;   // compile-time fixed",
+                 "    return active_idx[si] < 0;  // runtime fixed",
                  "  };",
                  "",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
@@ -852,11 +870,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "      int v1_out = 0;",
                  sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params),
                  "        if (!is_any_fixed(v1)) {",
-                 sprintf("          sens1_out[s + %d * (v1_out + n_sens_out * i)] = xi.d(v1).x();", n_variables),
+                 "          int av1 = active_idx[global_to_sens(v1)];",
+                 sprintf("          sens1_out[s + %d * (v1_out + n_sens_out * i)] = xi.d(av1).x();", n_variables),
                  "          int v2_out = 0;",
                  sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params),
                  "            if (!is_any_fixed(v2)) {",
-                 sprintf("              sens2_out[s + %d * (v1_out + n_sens_out * (v2_out + n_sens_out * i))] = xi.d(v1).d(v2);", n_variables),
+                 "              int av2 = active_idx[global_to_sens(v2)];",
+                 sprintf("              sens2_out[s + %d * (v1_out + n_sens_out * (v2_out + n_sens_out * i))] = xi.d(av1).d(av2);", n_variables),
                  "              v2_out++;",
                  "            }",
                  "          }",
@@ -922,6 +942,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
+  attr(modelname, "symbol_name")    <- symbol_name
 
   # Dimension names
   if (deriv) {
@@ -948,42 +969,62 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' Numerically integrates a compiled ODE model created by [CppODE()] over a
 #' specified time span.
 #'
+#' ## Sensitivity initial values and `fixed`
+#'
+#' `sens1ini` and `sens2ini` always refer to the **active** sensitivity
+#' parameters — i.e., `attr(model, "dim_names")$sens` minus whatever is listed
+#' in `fixed`. This means:
+#'
+#' - If `fixed = NULL` (default), the active set equals all compile-time
+#'   sensitivity names and `sens1ini` must have dimensions
+#'   `[n_states, n_active]`.
+#' - If `fixed` names some parameters, the active set shrinks accordingly and
+#'   `sens1ini`/`sens2ini` need only cover the remaining columns.
+#' - Columns in `sens1ini` are matched by name when column names are present,
+#'   or by position otherwise (position follows the order of active sens names).
+#'
+#' This design is intentional: you should not have to supply initial values for
+#' parameters whose sensitivities you do not compute.
+#'
 #' @param model A compiled ODE model object returned by [CppODE()].
 #' @param times Numeric vector of time points at which to return the solution.
-#'   Must be non-empty and contain finite values.
-#' @param parms Named numeric vector containing initial conditions and parameters.
-#'   The order must match `c(attr(model, "variables"), attr(model, "parameters"))`.
-#'   Names are checked against the model specification.
-#' @param sens1ini Optional named numeric vector of initial values for first-order
-#'   sensitivities. Names must match `attr(model, "dim_names")$sens`.
-#'   If `NULL`, default identity seeding is used.
-#' @param sens2ini Optional numeric vector of initial values for second-order
-#'   sensitivities. Only allowed if `attr(model, "deriv2") == TRUE`.
-#'   If `NULL`, zero seeding is used.
-#' @param fixed Optional character vector of sensitivity parameter names to treat as
-#'   fixed at runtime. These parameters will not have their sensitivities computed,
-#'   resulting in faster integration. Names must be a subset of
-#'   `attr(model, "dim_names")$sens`. Unlike compile-time `fixed` in [CppODE()],
-#'   runtime fixed parameters can be changed between calls without recompilation.
-#'   The output arrays will have reduced dimensions, excluding the fixed parameters.
-#'   Default: `NULL` (all parameters variable).
+#'   Must be non-empty and contain only finite values.
+#' @param parms Named numeric vector of initial conditions and parameters.
+#'   Names must include all of `c(attr(model, "variables"), attr(model, "parameters"))`.
+#' @param sens1ini Optional numeric matrix `[n_states, n_active]` (or equivalent
+#'   flat vector) of first-order sensitivity initial values, where `n_active` is
+#'   the number of non-fixed sensitivity parameters. Row names must match model
+#'   variables; column names, if present, must match the active sensitivity names
+#'   (i.e., `setdiff(attr(model, "dim_names")$sens, fixed)`).
+#'   Default `NULL` uses identity seeding (each state is seeded with respect to
+#'   its own initial condition, each parameter with a unit seed).
+#' @param sens2ini Optional numeric array `[n_states, n_active, n_active]` (or
+#'   flat vector) of second-order sensitivity initial values. Only allowed when
+#'   `attr(model, "deriv2") == TRUE`. Default `NULL` uses zero seeding.
+#' @param fixed Optional character vector of sensitivity parameter names to treat
+#'   as fixed at runtime. These parameters will not have their dual-number
+#'   components allocated, so the integrator runs with a strictly smaller AD
+#'   state — providing a genuine speed-up proportional to how many parameters are
+#'   fixed. Names must be a subset of `attr(model, "dim_names")$sens`. Unlike
+#'   compile-time `fixed` in [CppODE()], runtime fixed parameters can be changed
+#'   between calls without recompilation. Default `NULL` (all parameters active).
 #' @param forcings Optional named list of forcing function data. Each element
-#'   should be a `data.frame` (or coercible object) with columns `time` and `value`,
+#'   must be a `data.frame` (or coercible object) with columns `time` and `value`,
 #'   or a two-column matrix. Names must match `attr(model, "forcings")`.
-#'   Default: `NULL`.
-#' @param abstol Absolute error tolerance for the integrator. Default: `1e-6`.
-#' @param reltol Relative error tolerance for the integrator. Default: `1e-6`.
+#'   Default `NULL`.
+#' @param abstol Absolute error tolerance for the integrator. Default `1e-6`.
+#' @param reltol Relative error tolerance for the integrator. Default `1e-6`.
 #' @param maxprogress Maximum number of integration steps without progress
-#'   before an error is raised. Default: `100`.
-#' @param maxsteps Maximum total number of integration steps. Default: `1e6`.
-#' @param hini Initial step size. If `0` (default), an appropriate step size
-#'   is estimated automatically.
-#' @param roottol Tolerance for root-finding in root-triggered events.
-#'   Default: `1e-6`.
-#' @param maxroot Maximum triggers per root event. Default: `1`.
+#'   before an error is raised. Default `100`.
+#' @param maxsteps Maximum total number of integration steps. Default `1e6`.
+#' @param hini Initial step size; `0` (default) triggers automatic estimation.
+#' @param roottol Tolerance for root-finding in root-triggered events. Default `1e-6`.
+#' @param maxroot Maximum triggers per root event. Default `1`.
 #'
-#' @return A named list with components `time`, `variable`, and optionally
-#'   `sens1` and `sens2` depending on model configuration.
+#' @return A named list with components `time`, `variable`, and — when
+#'   `attr(model, "deriv") == TRUE` — `sens1`, and additionally `sens2` when
+#'   `attr(model, "deriv2") == TRUE`. Dimension names of `sens1`/`sens2` reflect
+#'   only the active (non-fixed) sensitivity parameters.
 #'
 #' @seealso [CppODE()] for model specification and compilation.
 #'
@@ -996,267 +1037,171 @@ solveODE <- function(model, times, parms,
                      maxprogress = 100L, maxsteps = 1e6L,
                      hini = 0, roottol = 1e-6, maxroot = 1L) {
 
-  ## --- Model validation ---
-  if (!is.character(model) || length(model) != 1L) {
-    stop("'model' must be a character string (modelname from CppODE() output)")
-  }
-
-  model_attr_names <- names(attributes(model))
-  required_attrs <- c("variables", "parameters", "forcings",
-                      "deriv", "deriv2", "dim_names")
-  missing_attrs <- required_attrs[!required_attrs %in% model_attr_names]
-
-  if (length(missing_attrs)) {
-    stop("'model' is missing required attributes: ",
-         paste(missing_attrs, collapse = ", "))
-  }
+  ## --- Unpack model attributes ---
+  stopifnot(is.character(model), length(model) == 1L)
+  required_attrs <- c("variables", "parameters", "forcings", "deriv", "deriv2", "dim_names")
+  missing_attrs <- setdiff(required_attrs, names(attributes(model)))
+  if (length(missing_attrs))
+    stop("'model' is missing attributes: ", paste(missing_attrs, collapse = ", "))
 
   variables     <- attr(model, "variables")
   parameters    <- attr(model, "parameters")
   forcing_names <- attr(model, "forcings")
   deriv         <- attr(model, "deriv")
   deriv2        <- attr(model, "deriv2")
-  dim_names     <- attr(model, "dim_names")
+  all_sens      <- if (deriv) attr(model, "dim_names")$sens else character(0)
 
-  ## --- Sensitivity initial values ---
-  if (!deriv) {
-    if (!is.null(sens1ini) || !is.null(sens2ini)) {
-      stop("sens1ini/sens2ini supplied but model has deriv = FALSE")
-    }
-    sens1ini <- NULL
-    sens2ini <- NULL
-  } else {
-    sens_names <- dim_names$sens
-    if (is.null(sens_names))
-      stop("Model has deriv = TRUE but no sensitivity dim_names$sens")
-    if (!is.null(sens1ini)) {
-      if (!is.numeric(sens1ini))
-        stop("'sens1ini' must be numeric")
-      n_states <- length(variables)
-      n_sens   <- length(sens_names)
-      expected_len <- n_states * n_sens
-      # Accept matrix [n_states, n_sens] or vector of length n_states * n_sens
-      if (is.matrix(sens1ini)) {
-        # Validate matrix dimensions
-        if (nrow(sens1ini) != n_states || ncol(sens1ini) != n_sens)
-          stop(sprintf("'sens1ini' matrix must have dimensions [%d, %d] (states x sens)",
-                       n_states, n_sens))
-        # Check dimnames if present
-        if (!is.null(rownames(sens1ini)) && !setequal(rownames(sens1ini), variables))
-          stop("'sens1ini' row names must match model variables")
-        if (!is.null(colnames(sens1ini)) && !setequal(colnames(sens1ini), sens_names))
-          stop("'sens1ini' column names must match model sensitivity names")
-        # Reorder if named
-        if (!is.null(rownames(sens1ini)) && !is.null(colnames(sens1ini)))
-          sens1ini <- sens1ini[variables, sens_names, drop = FALSE]
-        # Flatten column-major (R default) to match C++ IDX1(state, sens) = state + n_states * sens
-        sens1ini <- as.double(sens1ini)
-      } else if (is.array(sens1ini) && length(dim(sens1ini)) == 2) {
-        # Same as matrix case
-        if (dim(sens1ini)[1] != n_states || dim(sens1ini)[2] != n_sens)
-          stop(sprintf("'sens1ini' array must have dimensions [%d, %d]", n_states, n_sens))
-        sens1ini <- as.double(sens1ini)
-      } else {
-        # Vector case
-        if (length(sens1ini) != expected_len)
-          stop(sprintf("'sens1ini' vector must have length %d (n_states * n_sens)", expected_len))
-        sens1ini <- as.double(sens1ini)
-      }
-    }
-    if (!deriv2 && !is.null(sens2ini)) {
-      stop("'sens2ini' supplied but model has deriv2 = FALSE")
-    }
-    if (deriv2 && !is.null(sens2ini)) {
-      if (!is.numeric(sens2ini))
-        stop("'sens2ini' must be numeric")
-      n_states <- length(variables)
-      n_sens   <- length(sens_names)
-      expected_len <- n_states * n_sens * n_sens
-      # Accept array [n_states, n_sens, n_sens] or vector
-      if (is.array(sens2ini) && length(dim(sens2ini)) == 3) {
-        # Validate array dimensions
-        if (dim(sens2ini)[1] != n_states || dim(sens2ini)[2] != n_sens || dim(sens2ini)[3] != n_sens)
-          stop(sprintf("'sens2ini' array must have dimensions [%d, %d, %d] (states x sens x sens)",
-                       n_states, n_sens, n_sens))
-        # Check dimnames if present
-        dn <- dimnames(sens2ini)
-        if (!is.null(dn[[1]]) && !setequal(dn[[1]], variables))
-          stop("'sens2ini' first dimension names must match model variables")
-        if (!is.null(dn[[2]]) && !setequal(dn[[2]], sens_names))
-          stop("'sens2ini' second dimension names must match model sensitivity names")
-        if (!is.null(dn[[3]]) && !setequal(dn[[3]], sens_names))
-          stop("'sens2ini' third dimension names must match model sensitivity names")
-        # Reorder if named
-        if (!is.null(dn[[1]]) && !is.null(dn[[2]]) && !is.null(dn[[3]]))
-          sens2ini <- sens2ini[variables, sens_names, sens_names, drop = FALSE]
-        # Flatten to match C++ IDX2(state, v1, v2) = state + n_states * (v1 + n_sens * v2)
-        sens2ini <- as.double(sens2ini)
-      } else {
-        # Vector case
-        if (length(sens2ini) != expected_len)
-          stop(sprintf("'sens2ini' vector must have length %d (n_states * n_sens * n_sens)", expected_len))
-        sens2ini <- as.double(sens2ini)
-      }
-    }
-  }
-
-  ## --- Runtime fixed parameters ---
-  # Convert fixed names to 0-based indices into the sensitivity dimension
-  # sens_names contains both state initials and parameters (in that order)
-
+  ## --- Runtime fixed: resolve early so sens1ini/sens2ini see the active set ---
+  fixed_indices <- integer(0)
   if (!is.null(fixed)) {
-    if (!deriv) {
-      warning("'fixed' argument ignored when model has deriv = FALSE")
-      fixed_indices <- integer(0)
-    } else {
-      if (!is.character(fixed))
-        stop("'fixed' must be a character vector of sensitivity names")
-      sens_names <- dim_names$sens
-      unknown <- setdiff(fixed, sens_names)
-      if (length(unknown))
-        stop("Unknown names in 'fixed': ", paste(unknown, collapse = ", "),
-             "\nValid names: ", paste(sens_names, collapse = ", "))
-      # Convert to 0-based indices
-      fixed_indices <- match(fixed, sens_names) - 1L
+    if (!deriv) { warning("'fixed' ignored when deriv = FALSE") }
+    else {
+      if (!is.character(fixed)) stop("'fixed' must be a character vector")
+      bad <- setdiff(fixed, all_sens)
+      if (length(bad)) stop("Unknown 'fixed' names: ", paste(bad, collapse = ", "),
+                            "\nValid: ", paste(all_sens, collapse = ", "))
+      fixed_indices <- match(fixed, all_sens) - 1L  # 0-based for C++
     }
-  } else {
-    fixed_indices <- integer(0)
+  }
+  active_sens <- if (deriv && length(fixed_indices))
+    all_sens[-( fixed_indices + 1L)] else all_sens
+
+  ## --- Validate and coerce sens1ini (w.r.t. active sens) ---
+  if (!is.null(sens1ini) && !deriv)
+    stop("'sens1ini' supplied but model has deriv = FALSE")
+  if (!is.null(sens2ini) && !deriv2)
+    stop("'sens2ini' supplied but model has deriv2 = FALSE")
+
+  coerce_sens_matrix <- function(x, n_s, n_a, active_nms, arg) {
+    if (!is.numeric(x)) stop("'", arg, "' must be numeric")
+    if (is.matrix(x) || (is.array(x) && length(dim(x)) == 2)) {
+      if (nrow(x) != n_s || ncol(x) != n_a)
+        stop(sprintf("'%s' must be [%d, %d] (states x active_sens)", arg, n_s, n_a))
+      if (!is.null(rownames(x)) && !setequal(rownames(x), variables))
+        stop("'", arg, "' row names must match variables")
+      if (!is.null(colnames(x))) {
+        if (!setequal(colnames(x), active_nms))
+          stop("'", arg, "' column names must match active sens: ", paste(active_nms, collapse = ", "))
+        x <- x[variables, active_nms, drop = FALSE]
+      }
+      as.double(x)
+    } else {
+      if (length(x) != n_s * n_a)
+        stop(sprintf("'%s' must have length %d (n_states * n_active_sens)", arg, n_s * n_a))
+      as.double(x)
+    }
   }
 
-  ## --- Times ---
-  if (!is.numeric(times) || !length(times))
-    stop("'times' must be a non-empty numeric vector")
-  if (anyNA(times) || any(!is.finite(times)))
-    stop("'times' must contain only finite values")
+  n_states <- length(variables)
+  n_active <- length(active_sens)
+
+  sens1ini <- if (!is.null(sens1ini))
+    coerce_sens_matrix(sens1ini, n_states, n_active, active_sens, "sens1ini")
+
+  if (!is.null(sens2ini)) {
+    if (!is.numeric(sens2ini)) stop("'sens2ini' must be numeric")
+    if (is.array(sens2ini) && length(dim(sens2ini)) == 3) {
+      if (any(dim(sens2ini) != c(n_states, n_active, n_active)))
+        stop(sprintf("'sens2ini' must be [%d, %d, %d]", n_states, n_active, n_active))
+      dn <- dimnames(sens2ini)
+      if (!is.null(dn[[1]]) && !setequal(dn[[1]], variables))
+        stop("'sens2ini' dim 1 must match variables")
+      if (!is.null(dn[[2]]) && !setequal(dn[[2]], active_sens))
+        stop("'sens2ini' dim 2 must match active sens")
+      if (!is.null(dn[[3]]) && !setequal(dn[[3]], active_sens))
+        stop("'sens2ini' dim 3 must match active sens")
+      if (!is.null(dn[[1]]) && !is.null(dn[[2]]) && !is.null(dn[[3]]))
+        sens2ini <- sens2ini[variables, active_sens, active_sens, drop = FALSE]
+      sens2ini <- as.double(sens2ini)
+    } else {
+      if (length(sens2ini) != n_states * n_active^2)
+        stop(sprintf("'sens2ini' must have length %d", n_states * n_active^2))
+      sens2ini <- as.double(sens2ini)
+    }
+  }
+
+  ## --- times ---
+  if (!is.numeric(times) || !length(times) || anyNA(times) || any(!is.finite(times)))
+    stop("'times' must be a non-empty finite numeric vector")
   times <- as.double(times)
 
-  ## --- Parameters ---
+  ## --- parms ---
   if (!is.numeric(parms) || is.null(names(parms)))
     stop("'parms' must be a named numeric vector")
-
-  required_names <- c(variables, parameters)
-  missing_names <- required_names[!required_names %in% names(parms)]
-  if (length(missing_names))
-    stop("'parms' is missing required values: ",
-         paste(missing_names, collapse = ", "))
-
-  parms_ordered <- as.double(parms[required_names])
+  required_nms <- c(variables, parameters)
+  miss <- setdiff(required_nms, names(parms))
+  if (length(miss)) stop("'parms' missing: ", paste(miss, collapse = ", "))
+  parms_ordered <- as.double(parms[required_nms])
   if (anyNA(parms_ordered) || any(!is.finite(parms_ordered)))
-    stop("'parms' must contain only finite values")
+    stop("'parms' must be finite")
 
-  ## --- Forcings ---
+  ## --- forcings ---
   n_forcings <- length(forcing_names)
+  if (n_forcings && is.null(forcings))
+    stop("Model requires forcings: ", paste(forcing_names, collapse = ", "))
 
-  if (n_forcings && is.null(forcings)) {
-    stop("Model requires forcings: ",
-         paste(forcing_names, collapse = ", "),
-         "\nProvide via 'forcings' argument.")
+  parse_forcing <- function(nm) {
+    f <- forcings[[nm]]
+    if (is.matrix(f)) f <- data.frame(time = f[,1L], value = f[,2L])
+    else if (!is.data.frame(f)) f <- as.data.frame(f)
+    if (!all(c("time","value") %in% names(f)))
+      stop("Forcing '", nm, "' needs columns 'time' and 'value'")
+    ft <- as.double(f$time); fv <- as.double(f$value)
+    if (length(ft) < 2L) stop("Forcing '", nm, "' needs >= 2 time points")
+    if (length(ft) != length(fv)) stop("Forcing '", nm, "': length mismatch")
+    if (anyNA(ft) || any(!is.finite(ft))) stop("Forcing '", nm, "': non-finite time")
+    if (anyNA(fv) || any(!is.finite(fv))) stop("Forcing '", nm, "': non-finite value")
+    if (anyDuplicated(ft)) stop("Forcing '", nm, "': duplicate times")
+    list(times = ft, values = fv)
   }
 
   if (!n_forcings) {
-    forcing_times_list  <- list()
-    forcing_values_list <- list()
+    forcing_times_list <- forcing_values_list <- list()
   } else {
-
     if (!is.list(forcings) || is.null(names(forcings)))
       stop("'forcings' must be a named list")
-
-    missing_forcings <- forcing_names[!forcing_names %in% names(forcings)]
-    if (length(missing_forcings))
-      stop("Missing forcing data for: ",
-           paste(missing_forcings, collapse = ", "))
-
-    forcing_times_list  <- vector("list", n_forcings)
-    forcing_values_list <- vector("list", n_forcings)
-
-    for (i in seq_len(n_forcings)) {
-      nm <- forcing_names[i]
-      f  <- forcings[[nm]]
-
-      if (is.matrix(f)) {
-        if (ncol(f) != 2L)
-          stop("Forcing '", nm, "' must have 2 columns (time, value)")
-        f <- data.frame(time = f[, 1L], value = f[, 2L])
-      } else if (!is.data.frame(f)) {
-        f <- as.data.frame(f)
-      }
-
-      if (!all(c("time", "value") %in% names(f)))
-        stop("Forcing '", nm, "' must have columns 'time' and 'value'")
-
-      ft <- as.double(f$time)
-      fv <- as.double(f$value)
-
-      if (length(ft) < 2L)
-        stop("Forcing '", nm, "' needs at least 2 time points")
-      if (length(ft) != length(fv))
-        stop("Forcing '", nm, "': 'time' and 'value' length mismatch")
-      if (anyNA(ft) || any(!is.finite(ft)))
-        stop("Forcing '", nm, "': non-finite 'time'")
-      if (anyNA(fv) || any(!is.finite(fv)))
-        stop("Forcing '", nm, "': non-finite 'value'")
-      if (anyDuplicated(ft))
-        stop("Forcing '", nm, "': duplicate time values")
-
-      forcing_times_list[[i]]  <- ft
-      forcing_values_list[[i]] <- fv
-    }
+    miss_f <- setdiff(forcing_names, names(forcings))
+    if (length(miss_f)) stop("Missing forcings: ", paste(miss_f, collapse = ", "))
+    parsed <- lapply(forcing_names, parse_forcing)
+    forcing_times_list  <- lapply(parsed, `[[`, "times")
+    forcing_values_list <- lapply(parsed, `[[`, "values")
   }
 
-  ## --- Solver options ---
-  if (!is.numeric(abstol) || abstol <= 0) stop("'abstol' must be positive")
-  if (!is.numeric(reltol) || reltol <= 0) stop("'reltol' must be positive")
-  if (!is.numeric(hini)   || hini   <  0) stop("'hini' must be non-negative")
-  if (!is.numeric(roottol)|| roottol<=  0) stop("'roottol' must be positive")
-
-  maxprogress <- as.integer(maxprogress)
-  maxsteps    <- as.integer(maxsteps)
-  maxroot     <- as.integer(maxroot)
-
+  ## --- solver options ---
+  if (!is.numeric(abstol)  || abstol  <= 0) stop("'abstol' must be positive")
+  if (!is.numeric(reltol)  || reltol  <= 0) stop("'reltol' must be positive")
+  if (!is.numeric(hini)    || hini    <  0) stop("'hini' must be non-negative")
+  if (!is.numeric(roottol) || roottol <= 0) stop("'roottol' must be positive")
+  maxprogress <- as.integer(maxprogress); maxsteps <- as.integer(maxsteps); maxroot <- as.integer(maxroot)
   if (maxprogress <= 0L) stop("'maxprogress' must be positive")
   if (maxsteps    <= 0L) stop("'maxsteps' must be positive")
   if (maxroot     <= 0L) stop("'maxroot' must be positive")
 
   ## --- Call C++ solver ---
-  solver_name <- paste0("solve_", model)
-
-  result <- tryCatch({
-    SYM <- getNativeSymbolInfo(solver_name)
+  # Use the stored symbol_name (includes _d0/_d1/_d2 suffix) to avoid R's
+  # native symbol pointer cache returning a stale function when the same
+  # modelname is recompiled with different deriv/deriv2 settings.
+  sym_name <- paste0("solve_", attr(model, "symbol_name") %||% as.character(model))
+  SYM <- tryCatch(getNativeSymbolInfo(sym_name, PACKAGE = as.character(model)),
+                  error = function(e) stop("Model not loaded. Run compile() first.", call. = FALSE))
+  result <- tryCatch(
     .Call(SYM, times, parms_ordered, sens1ini, sens2ini, fixed_indices,
-      as.double(abstol), as.double(reltol), maxprogress, maxsteps,
-      as.double(hini), as.double(roottol), maxroot,
-      forcing_times_list, forcing_values_list)
-  }, error = function(e) stop("Error in ODE solver: ", e$message, call. = FALSE))
+          as.double(abstol), as.double(reltol), maxprogress, maxsteps,
+          as.double(hini), as.double(roottol), maxroot,
+          forcing_times_list, forcing_values_list),
+    error = function(e) stop("ODE solver error: ", e$message, call. = FALSE))
 
-  ## --- Output decoration ---
-  if (!is.null(result$variable)) {
+  ## --- Attach dimension names ---
+  if (!is.null(result$variable))
     rownames(result$variable) <- variables
-  }
-
-  # Compute effective sens names (excluding runtime fixed)
-  sens_names_out <- if (deriv) {
-    all_sens <- dim_names$sens
-    if (length(fixed_indices) > 0) {
-      # fixed_indices are 0-based, convert to 1-based for R
-      all_sens[-(fixed_indices + 1L)]
-    } else {
-      all_sens
-    }
-  } else {
-    NULL
-  }
-
-  if (!is.null(result$sens1)) {
-    dimnames(result$sens1) <- list(variable = variables, sens = sens_names_out, time = NULL)
-  }
-
-  if (!is.null(result$sens2)) {
-    dimnames(result$sens2) <- list(variable = variables, sens1 = sens_names_out,
-      sens2 = sens_names_out, time = NULL)
-  }
-
+  if (!is.null(result$sens1))
+    dimnames(result$sens1) <- list(variable = variables, sens = active_sens, time = NULL)
+  if (!is.null(result$sens2))
+    dimnames(result$sens2) <- list(variable = variables, sens1 = active_sens,
+                                   sens2 = active_sens, time = NULL)
   result
 }
+
 
 
 #' Generate Algebraic Model Functions with Optional C++ Backend and Derivatives

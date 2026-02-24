@@ -25,57 +25,78 @@ solveODE(
 \item{model}{A compiled ODE model object returned by \code{\link[=CppODE]{CppODE()}}.}
 
 \item{times}{Numeric vector of time points at which to return the solution.
-Must be non-empty and contain finite values.}
+Must be non-empty and contain only finite values.}
 
-\item{parms}{Named numeric vector containing initial conditions and parameters.
-The order must match \code{c(attr(model, "variables"), attr(model, "parameters"))}.
-Names are checked against the model specification.}
+\item{parms}{Named numeric vector of initial conditions and parameters.
+Names must include all of \code{c(attr(model, "variables"), attr(model, "parameters"))}.}
 
-\item{sens1ini}{Optional named numeric vector of initial values for first-order
-sensitivities. Names must match \code{attr(model, "dim_names")$sens}.
-If \code{NULL}, default identity seeding is used.}
+\item{sens1ini}{Optional numeric matrix \verb{[n_states, n_active]} (or equivalent
+flat vector) of first-order sensitivity initial values, where \code{n_active} is
+the number of non-fixed sensitivity parameters. Row names must match model
+variables; column names, if present, must match the active sensitivity names
+(i.e., \code{setdiff(attr(model, "dim_names")$sens, fixed)}).
+Default \code{NULL} uses identity seeding (each state is seeded with respect to
+its own initial condition, each parameter with a unit seed).}
 
-\item{sens2ini}{Optional numeric vector of initial values for second-order
-sensitivities. Only allowed if \code{attr(model, "deriv2") == TRUE}.
-If \code{NULL}, zero seeding is used.}
+\item{sens2ini}{Optional numeric array \verb{[n_states, n_active, n_active]} (or
+flat vector) of second-order sensitivity initial values. Only allowed when
+\code{attr(model, "deriv2") == TRUE}. Default \code{NULL} uses zero seeding.}
 
-\item{fixed}{Optional character vector of sensitivity parameter names to treat as
-fixed at runtime. These parameters will not have their sensitivities computed,
-resulting in faster integration. Names must be a subset of
-\code{attr(model, "dim_names")$sens}. Unlike compile-time \code{fixed} in \code{\link[=CppODE]{CppODE()}},
-runtime fixed parameters can be changed between calls without recompilation.
-The output arrays will have reduced dimensions, excluding the fixed parameters.
-Default: \code{NULL} (all parameters variable).}
+\item{fixed}{Optional character vector of sensitivity parameter names to treat
+as fixed at runtime. These parameters will not have their dual-number
+components allocated, so the integrator runs with a strictly smaller AD
+state — providing a genuine speed-up proportional to how many parameters are
+fixed. Names must be a subset of \code{attr(model, "dim_names")$sens}. Unlike
+compile-time \code{fixed} in \code{\link[=CppODE]{CppODE()}}, runtime fixed parameters can be changed
+between calls without recompilation. Default \code{NULL} (all parameters active).}
 
 \item{forcings}{Optional named list of forcing function data. Each element
-should be a \code{data.frame} (or coercible object) with columns \code{time} and \code{value},
+must be a \code{data.frame} (or coercible object) with columns \code{time} and \code{value},
 or a two-column matrix. Names must match \code{attr(model, "forcings")}.
-Default: \code{NULL}.}
+Default \code{NULL}.}
 
-\item{abstol}{Absolute error tolerance for the integrator. Default: \code{1e-6}.}
+\item{abstol}{Absolute error tolerance for the integrator. Default \code{1e-6}.}
 
-\item{reltol}{Relative error tolerance for the integrator. Default: \code{1e-6}.}
+\item{reltol}{Relative error tolerance for the integrator. Default \code{1e-6}.}
 
 \item{maxprogress}{Maximum number of integration steps without progress
-before an error is raised. Default: \code{100}.}
+before an error is raised. Default \code{100}.}
 
-\item{maxsteps}{Maximum total number of integration steps. Default: \code{1e6}.}
+\item{maxsteps}{Maximum total number of integration steps. Default \code{1e6}.}
 
-\item{hini}{Initial step size. If \code{0} (default), an appropriate step size
-is estimated automatically.}
+\item{hini}{Initial step size; \code{0} (default) triggers automatic estimation.}
 
-\item{roottol}{Tolerance for root-finding in root-triggered events.
-Default: \code{1e-6}.}
+\item{roottol}{Tolerance for root-finding in root-triggered events. Default \code{1e-6}.}
 
-\item{maxroot}{Maximum triggers per root event. Default: \code{1}.}
+\item{maxroot}{Maximum triggers per root event. Default \code{1}.}
 }
 \value{
-A named list with components \code{time}, \code{variable}, and optionally
-\code{sens1} and \code{sens2} depending on model configuration.
+A named list with components \code{time}, \code{variable}, and — when
+\code{attr(model, "deriv") == TRUE} — \code{sens1}, and additionally \code{sens2} when
+\code{attr(model, "deriv2") == TRUE}. Dimension names of \code{sens1}/\code{sens2} reflect
+only the active (non-fixed) sensitivity parameters.
 }
 \description{
 Numerically integrates a compiled ODE model created by \code{\link[=CppODE]{CppODE()}} over a
 specified time span.
+\subsection{Sensitivity initial values and \code{fixed}}{
+
+\code{sens1ini} and \code{sens2ini} always refer to the \strong{active} sensitivity
+parameters — i.e., \code{attr(model, "dim_names")$sens} minus whatever is listed
+in \code{fixed}. This means:
+\itemize{
+\item If \code{fixed = NULL} (default), the active set equals all compile-time
+sensitivity names and \code{sens1ini} must have dimensions
+\verb{[n_states, n_active]}.
+\item If \code{fixed} names some parameters, the active set shrinks accordingly and
+\code{sens1ini}/\code{sens2ini} need only cover the remaining columns.
+\item Columns in \code{sens1ini} are matched by name when column names are present,
+or by position otherwise (position follows the order of active sens names).
+}
+
+This design is intentional: you should not have to supply initial values for
+parameters whose sensitivities you do not compute.
+}
 }
 \seealso{
 \code{\link[=CppODE]{CppODE()}} for model specification and compilation.

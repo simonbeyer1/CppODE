@@ -234,7 +234,12 @@ inline bool direction_matches(double last_val, double curr_val, int direction) {
 
 template<class System, class State, class Time>
 auto make_steady_state_root_func(System& sys, double tol) {
-  return [&sys, tol](const State& x, const Time& t) -> typename State::value_type {
+  auto first = std::make_shared<bool>(true);
+  return [&sys, tol, first](const State& x, const Time& t) -> typename State::value_type {
+    if (*first) {
+      *first = false;
+      return typename State::value_type(1.0);
+    }
     State dxdt(x.size());
     sys(x, dxdt, t);
     double max_rate = cppode::max_abs_all_levels_vec(dxdt);
