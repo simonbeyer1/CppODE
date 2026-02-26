@@ -218,11 +218,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     modelname <- paste(c("x", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
   }
 
-  # --- Internal C++ symbol name: unique per deriv/deriv2 configuration ---
-  # Using a suffix prevents R from caching a stale native symbol pointer
-  # when the same modelname is recompiled with different deriv settings.
-  symbol_suffix <- if (deriv2) "_d2" else if (deriv) "_d1" else "_d0"
-  symbol_name   <- paste0(modelname, symbol_suffix)
+  # --- Internal C++ symbol name
+  symbol_name   <- modelname
 
   # Lazy import
   codegen <- get_codegenCppODE_py()
@@ -1182,7 +1179,7 @@ solveODE <- function(model, times, parms,
   # native symbol pointer cache returning a stale function when the same
   # modelname is recompiled with different deriv/deriv2 settings.
   sym_name <- paste0("solve_", attr(model, "symbol_name") %||% as.character(model))
-  SYM <- tryCatch(getNativeSymbolInfo(sym_name, PACKAGE = as.character(model)),
+  SYM <- tryCatch(getNativeSymbolInfo(sym_name),
                   error = function(e) stop("Model not loaded. Run compile() first.", call. = FALSE))
   result <- tryCatch(
     .Call(SYM, times, parms_ordered, sens1ini, sens2ini, fixed_indices,
