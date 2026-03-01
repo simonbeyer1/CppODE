@@ -32,8 +32,9 @@ jac <- f$jac
 pars
 out <- fun(vars = NULL, params = pars, attach.input = T)[,]
 out
-out.jac <- jac(NULL, pars)[,,]
+out.jac <- jac(NULL, pars)
 out.jac
 
 out.hess <- f$hess(NULL, pars)
-out.hess["s",,,]
+out.hess
+

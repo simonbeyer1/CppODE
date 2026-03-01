@@ -425,7 +425,7 @@ def _write_eval_function(buf, exprs, out_names, ctx, modelname):
     
     if n_vars > 0:
         buf.write("        const double* x_obs = x + obs * n_vars;\n")
-        buf.write("        (void)x_obs;  // suppress unused warning\n\n")
+        buf.write("        (void)x_obs;  // suppress unused warning\n")
 
     for i, out_name in enumerate(out_names):
         cpp_code = ctx.to_cpp(exprs[out_name])
@@ -477,9 +477,10 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
                 continue
             has_nonzero = True
             # R column-major: output + n_out * (symbol + n_symbols * obs)
-            buf.write(f"        jac[{i} + n_out * ({j} + n_symbols * obs)] = {cpp_code};")
+            buf.write(f"        jac[{i} + n_out * ({j} + n_symbols * obs)] = {cpp_code};\n")
         
-        if has_nonzero:
+        # Blank line between output blocks (not after the last one)
+        if has_nonzero and i < len(out_names) - 1:
             buf.write("\n")
 
     buf.write("    }\n}\n\n")
@@ -513,7 +514,7 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     
     if n_vars > 0:
         buf.write("        const double* x_obs = x + obs * n_vars;\n")
-        buf.write("        (void)x_obs;  // suppress unused warning\n\n")
+        buf.write("        (void)x_obs;  // suppress unused warning\n")
 
     for i, out_name in enumerate(out_names):
         if out_name not in hessian:
@@ -529,10 +530,11 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
                 has_nonzero = True
                 # R column-major: output + n_out * (sym1 + n_symbols * (sym2 + n_symbols * obs))
                 buf.write(
-                    f"        hess[{i} + n_out * ({j} + n_symbols * ({k} + n_symbols * obs))] = {cpp_code};"
+                    f"        hess[{i} + n_out * ({j} + n_symbols * ({k} + n_symbols * obs))] = {cpp_code};\n"
                 )
         
-        if has_nonzero:
+        # Blank line between output blocks (not after the last one)
+        if has_nonzero and i < len(out_names) - 1:
             buf.write("\n")
 
     buf.write("    }\n}\n\n")
