@@ -819,7 +819,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # --- Initial step size estimation ---
   if (use_sparse) {
     estimate_dt_block <- c(
-      "  // --- Determine dt (sparse J·dxdt, O(nnz)) ---",
+      "  // --- Determine dt (sparse J x dxdt, O(nnz)) ---",
       sprintf("  %s dt;", numType),
       "  if (hini == 0.0) {",
       "    dt = odeint_utils::estimate_initial_dt_local_sparse(sys, jac, x, times.front(), abstol, reltol);",
@@ -1097,7 +1097,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' ## Sensitivity initial values and `fixed`
 #'
 #' `sens1ini` and `sens2ini` always refer to the **active** sensitivity
-#' parameters — i.e., `attr(model, "dim_names")$sens` minus whatever is listed
+#' parameters, i.e., `attr(model, "dim_names")$sens` minus whatever is listed
 #' in `fixed`. This means:
 #'
 #' - If `fixed = NULL` (default), the active set equals all compile-time
@@ -1129,8 +1129,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @param fixed Optional character vector of sensitivity parameter names to treat
 #'   as fixed at runtime. These parameters will not have their dual-number
 #'   components allocated, so the integrator runs with a strictly smaller AD
-#'   state — providing a genuine speed-up proportional to how many parameters are
-#'   fixed. Names must be a subset of `attr(model, "dim_names")$sens`. Unlike
+#'   state. Names must be a subset of `attr(model, "dim_names")$sens`. Unlike
 #'   compile-time `fixed` in [CppODE()], runtime fixed parameters can be changed
 #'   between calls without recompilation. Default `NULL` (all parameters active).
 #' @param forcings Optional named list of forcing function data. Each element
@@ -1146,8 +1145,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @param roottol Tolerance for root-finding in root-triggered events. Default `1e-6`.
 #' @param maxroot Maximum triggers per root event. Default `1`.
 #'
-#' @return A named list with components `time`, `variable`, and — when
-#'   `attr(model, "deriv") == TRUE` — `sens1`, and additionally `sens2` when
+#' @return A named list with components `time`, `variable`, and, when
+#'   `attr(model, "deriv") == TRUE`), `sens1`, and additionally `sens2` when
 #'   `attr(model, "deriv2") == TRUE`. Dimension names of `sens1`/`sens2` reflect
 #'   only the active (non-fixed) sensitivity parameters.
 #'
