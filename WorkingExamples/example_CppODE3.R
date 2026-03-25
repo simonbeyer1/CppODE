@@ -11,52 +11,63 @@ library(dplyr)
 library(tidyr)
 library(data.table)
 
+source("../AnalyticSolver.R")
+
 # Define ODE system
 eqns <- c(x = "-k*x")
+events <- data.frame(var = "x", time = "te", value = "v", root = NA, method = "replace", stringsAsFactors = FALSE)
 
-# Define an event
-events <- data.frame(var = "x", time = "te", value = "v", root = NA, method = "add", stringsAsFactors = FALSE)
 
 # # Generate and compile solver
-model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
-                modelname = "model_FTEvent", compile = T, useDenseOutput = T, verbose = T)
+model <- CppODE(eqns, events = events, deriv = T, deriv2 = T, outdir = getwd(),
+                modelname = "model_FTEvent3", compile = T, useDenseOutput = T, verbose = T)
 
-
-# Example run
-pars <- c(x=1, k=1, v=2,te = 2)
-times  <- seq(0, 10, length.out = 300)
-res <- solveODE(model, times, pars, abstol = 1e-10, reltol = 1e-10, roottol = 1e-10)
-vars <- res$variable
-sens <- res$sens1
-out.boost <- matrix(aperm(sens, c(1,2,3)), nrow = dim(sens)[1],
-            dimnames = list(NULL,
-                            paste0("∂", rep(dimnames(sens)[[2]], each = dim(sens)[3]),
-                                   "/∂", dimnames(sens)[[3]]))) %>% cbind(time = res$time, vars, .) %>%
-  as.data.table() %>%
+pars <- c(x=1, k=1, v = 0.75, te = 3)
+times  <- c(2, seq(0, 10, length.out = 1000)) %>% sort()
+out.analytical <- solveOdeAnalytic(c(x = "-k*x"), times, pars, events = events) %>%
   melt(id.vars = 1L) %>%
-  mutate(method = "boost")
-
-out.analytical <- data.table(
-  time = times,
-  x = pars[1]*exp(-pars[2]*times) + pars[3]*exp(-pars[2]*(times-pars[4]))*(times>=pars[4]),
-  "∂x/∂x"  = exp(-pars[2]*times),
-  "∂x/∂k"  = -times*pars[1]*exp(-pars[2]*times) -
-    (times-pars[4])*pars[3]*exp(-pars[2]*(times-pars[4]))*(times>=pars[4]),
-  "∂x/∂v"  = exp(-pars[2]*(times-pars[4]))*(times>=pars[4]),
-  "∂x/∂te" = pars[2]*pars[3]*exp(-pars[2]*(times-pars[4]))*(times>=pars[4])
-) %>% melt(id.vars = 1L) %>%
   mutate(method = "analytical")
 
 
+# Example run
+res <- solveODE(model, times, pars)
+vars <- res$variable %>% t()
+sens <- res$sens1
+sens2 <- res$sens2
+out.boost <- matrix(aperm(sens, c(3, 1, 2)), nrow = dim(sens)[3],
+                    dimnames = list(NULL,
+                                    paste0("∂", rep(dimnames(sens)[[1]], each = dim(sens)[2]),
+                                           "/∂", dimnames(sens)[[2]]))) %>%
+  cbind(time = res$time, vars, .) %>%
+  as.data.table() %>%
+  melt(id.vars = 1L) %>%
+  (\(dt) rbindlist(list(
+    dt,
+    {
+      p <- dimnames(sens2)[[2]]
+      idx <- which(lower.tri(matrix(1, length(p), length(p)), TRUE), arr.ind = TRUE)
+      rbindlist(lapply(seq_along(res$time), \(i)
+                       data.table(time = res$time[i],
+                                  variable = paste0("∂²x/∂", p[idx[,1]], "∂", p[idx[,2]]),
+                                  value = sens2[1,, ,i][idx]))
+      )
+    }
+  )))() %>%
+  mutate(method = "boost")
 
-ggplot(rbind(out.boost, out.analytical), aes(x = time, y = value, color = method, linetype = method)) +
+
+fwrite(out.boost, "boost2.csv")
+fwrite(out.analytical, "analytical2.csv")
+
+out <- rbind(out.boost, out.analytical)
+out$variable <- factor(out$variable, levels = unique(as.character(out$variable)))
+
+ggplot(out, aes(x = time, y = value, color = method, linetype = method)) +
   geom_line() +
-  facet_wrap(~ variable, scales = "free_y") +
+  facet_wrap(~variable, scales = "free_y") +
   dMod::theme_dMod() +
+  dMod::scale_color_dMod() +
   labs(
     x = "Time",
-    y = "Value"
+    y = "value"
   )
-
-# res$sens2[, "x", "xc", "xc"]
-#

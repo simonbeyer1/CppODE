@@ -466,7 +466,6 @@ private:
   }
 
 
-private:
   controlled_stepper_type m_stepper;  ///< Wrapped controlled stepper
   resizer_type            m_resizer;  ///< Buffer resizer
 

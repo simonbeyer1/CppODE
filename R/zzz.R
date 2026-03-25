@@ -12,9 +12,6 @@
 #' @keywords internal
 #' @noRd
 .cppode_py_cache <- new.env(parent = emptyenv())
-.codegenCppODE_py <- NULL
-.codegenfunCpp_py <- NULL
-.derivSymb_py <- NULL
 
 #' @keywords internal
 #' @importFrom reticulate import_from_path

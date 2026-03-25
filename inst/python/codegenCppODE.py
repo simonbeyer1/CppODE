@@ -9,11 +9,28 @@ This module provides entry points for generating C++ code:
     using SymPy for parsing and symbolic differentiation.
 
 - generate_event_code(...)
-    Generates C++ code for fixed-time and root-triggered events,
-    including analytical gradients for saltation matrix corrections.
+    Generates C++ code for fixed-time and root-triggered events.
+    For root events, analytical partial derivatives dg/dx and dg/dt
+    of the root function g(x, t) are derived symbolically via SymPy
+    and emitted as C++ lambdas.  These are used at runtime for the
+    IFT-based saltation correction (see cppode_boost_integrate_times_with_events.hpp):
+
+      g_dot = sum_i(dg/dx_i * f_i) + dg/dt      (total time derivative of g)
+      dt*   = -g / g_dot                          (event timing residual, AD quotient rule)
+      x_star  = x + f * dt*                       (shift to event surface)
+      x_after = event_map(x_star)                 (apply event action)
+      x_final = x_after - f_after * dt*           (shift back to grid time)
+
+    SFINAE dispatch at compile time:
+      - double:  plain event action, no saltation needed
+      - F<double> (AD):  analytical saltation, correct first-order sensitivities
+      - F<F<double>> (AD2): analytical saltation, correct second-order via
+        FADBAD's quotient rule on dt* = -g / g_dot
 
 - generate_rootfunc_code(...)
     Generates C++ code for root function based termination.
+    Terminal root events do not require saltation gradients (no state
+    modification), so dg_dx / dg_dt are set to nullptr.
 
 Author: Simon Beyer
 """
@@ -26,17 +43,38 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
     convert_xor,
 )
+from sympy.printing.cxx import CXX17CodePrinter
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
+import os
 
 # =====================================================================
 # Safe parsing configuration
 # =====================================================================
 
+@lru_cache(maxsize=1)
 def _get_safe_parse_dict():
-    """Construct a local dictionary for SymPy parsing."""
+    """
+    Construct a local dictionary for SymPy parsing.
+    Cached to avoid repeated dict creation.
+
+    Explicitly overrides SymPy singletons (S, I, N, O, Q, C) that would
+    otherwise shadow user symbols with the same name.
+    exp10/exp2 are mapped to exp(x*log(10/2)) so that AD codegen
+    never emits pow(10, x), which can be problematic with FADBAD++ types.
+    """
     return {
+        # Override problematic SymPy singletons
+        'S': sp.Symbol('S'),
+        'I': sp.Symbol('I'),
+        'N': sp.Symbol('N'),
+        'O': sp.Symbol('O'),
+        'Q': sp.Symbol('Q'),
+        'C': sp.Symbol('C'),
+
         "exp": sp.exp,
-        "exp10": lambda x: sp.Pow(10, x),
-        "exp2": lambda x: sp.Pow(2, x),
+        "exp10": lambda x: sp.exp(x * sp.log(10)),
+        "exp2": lambda x: sp.exp(x * sp.log(2)),
         "log": sp.log,
         "ln": sp.log,
         "log10": lambda x: sp.log(x, 10),
@@ -71,9 +109,9 @@ def _safe_sympify(expr_str, local_symbols=None):
     if expr_str == "0":
         return sp.Integer(0)
 
-    safe_local = _get_safe_parse_dict()
+    safe_local = dict(_get_safe_parse_dict())
     if local_symbols:
-        safe_local = {**safe_local, **local_symbols}
+        safe_local.update(local_symbols)
 
     transformations = standard_transformations + (convert_xor,)
     return parse_expr(
@@ -82,12 +120,6 @@ def _safe_sympify(expr_str, local_symbols=None):
         transformations=transformations,
         evaluate=True,
     )
-
-
-def _safe_replace(text, symbol, replacement):
-    """Replace symbol in text avoiding already-indexed variables."""
-    pattern = r"(?<![a-zA-Z0-9_])" + re.escape(symbol) + r"(?![a-zA-Z0-9_\[])"
-    return re.sub(pattern, replacement, str(text))
 
 
 def _ensure_double_literals(cpp_code):
@@ -110,6 +142,59 @@ def _ensure_double_literals(cpp_code):
 
 
 # =====================================================================
+# Cached single-pass symbol replacer for _to_cpp
+# =====================================================================
+
+class _SymbolReplacer:
+    """
+    Build a single compiled regex that replaces all state/param/forcing/time
+    symbols in one pass instead of O(n_states + n_params) separate re.sub calls.
+    """
+    __slots__ = ('_pattern', '_map')
+
+    def __init__(self, states, params, n_states, forcings, use_initial_states):
+        mapping = {}
+        # forcings first (they may shadow param/state names)
+        for i, f in enumerate(forcings):
+            mapping[f] = f"(*F[{i}])(t)"
+        # params
+        for j, p in enumerate(params):
+            mapping[p] = f"params[{n_states + j}]"
+        # states
+        if use_initial_states:
+            for i, s in enumerate(states):
+                mapping[s] = f"params[{i}]"
+        else:
+            for i, s in enumerate(states):
+                mapping[s] = f"x[{i}]"
+        # initial-value notation  state_0 -> params[i]
+        for i, s in enumerate(states):
+            mapping[f"{s}_0"] = f"params[{i}]"
+        # time
+        mapping["time"] = "t"
+
+        self._map = mapping
+        # Sort by length descending so longer names match first (e.g. x10 before x1)
+        names_sorted = sorted(mapping.keys(), key=len, reverse=True)
+        alt = "|".join(re.escape(n) for n in names_sorted)
+        self._pattern = re.compile(
+            r"(?<![a-zA-Z0-9_])(?:" + alt + r")(?![a-zA-Z0-9_\[])"
+        )
+
+    def __call__(self, cpp_code):
+        return self._pattern.sub(lambda m: self._map[m.group(0)], cpp_code)
+
+
+@lru_cache(maxsize=8)
+def _get_replacer(states_tuple, params_tuple, n_states, forcings_tuple, use_initial_states):
+    """Cached factory – the replacer is rebuilt only when the signature changes."""
+    return _SymbolReplacer(
+        list(states_tuple), list(params_tuple), n_states,
+        list(forcings_tuple), use_initial_states,
+    )
+
+
+# =====================================================================
 # Math macro replacement map
 # =====================================================================
 
@@ -129,123 +214,89 @@ _MATH_MACRO_MAP = {
     "M_SQRT1_2": "std::sqrt(0.5)",
 }
 
+# Precompiled regex for math macro replacement (single-pass)
+_MATH_MACRO_PATTERN = re.compile(
+    "|".join(re.escape(k) for k in sorted(_MATH_MACRO_MAP.keys(), key=len, reverse=True))
+)
+
+# Precompiled regex for std:: -> fadbad:: replacement (single-pass)
+_FADBAD_FN_PATTERN = re.compile(
+    r'\bstd::(sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|'
+    r'asinh|acosh|atanh|exp|log|sqrt|pow|abs|min|max)\b'
+)
+
+# Precompiled whitespace collapse pattern
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+# Cached CXX17CodePrinter instance — avoids repeated printer construction
+@lru_cache(maxsize=1)
+def _get_cxx_printer():
+    """Return a reusable CXX17CodePrinter instance."""
+    return CXX17CodePrinter()
+
 
 # =====================================================================
 # _to_cpp - Convert SymPy expression to C++ code
 # =====================================================================
 
 def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial_states=False):
-    """Convert a SymPy expression to C++ code."""
+    """Convert a SymPy expression to C++ code.
+    
+    Optimizations over the naive approach:
+    - Reusable CXX17CodePrinter instance (avoids per-call printer setup)
+    - Precompiled single-pass regex for std:: -> fadbad:: replacement
+    - Precompiled single-pass regex for math macro replacement
+    - Precompiled whitespace collapse pattern
+    """
     if forcings is None:
         forcings = []
+
+    # Fast path: trivial expressions (skip expensive printer + regex chain)
+    if expr is sp.S.Zero or expr == 0:
+        return "0.0"
+    if isinstance(expr, sp.Integer):
+        return str(int(expr)) + ".0"
+    if isinstance(expr, sp.Float):
+        return repr(float(expr))
+    if isinstance(expr, sp.Symbol):
+        # Single symbol — only needs variable/param replacement
+        replacer = _get_replacer(
+            tuple(states), tuple(params), n_states,
+            tuple(forcings), use_initial_states,
+        )
+        return replacer(str(expr))
+    # Negative symbol: -x  (sp.Mul(-1, x))
+    if (isinstance(expr, sp.Mul) and len(expr.args) == 2
+            and expr.args[0] is sp.S.NegativeOne
+            and isinstance(expr.args[1], sp.Symbol)):
+        replacer = _get_replacer(
+            tuple(states), tuple(params), n_states,
+            tuple(forcings), use_initial_states,
+        )
+        return "-" + replacer(str(expr.args[1]))
+
+    # Full path: complex expressions via reusable printer
+    printer = _get_cxx_printer()
+    cpp_code = printer.doprint(expr).replace("\n", " ")
     
-    cpp_code = str(sp.cxxcode(expr, standard="c++17", strict=False)).replace("\n", " ")
+    # Single-pass math macro replacement (precompiled regex)
+    cpp_code = _MATH_MACRO_PATTERN.sub(lambda m: _MATH_MACRO_MAP[m.group(0)], cpp_code)
     
-    # Replace non-standard math macros
-    for macro, repl in _MATH_MACRO_MAP.items():
-        cpp_code = cpp_code.replace(macro, repl)
-    
-    # Use FADBAD++ math functions for AD types
+    # Single-pass std:: -> fadbad:: replacement for AD types (precompiled regex)
     if num_type in ("AD", "AD2"):
-        for fn in [
-            "sin", "cos", "tan", "asin", "acos", "atan",
-            "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
-            "exp", "log", "sqrt", "pow", "abs", "min", "max"
-        ]:
-            cpp_code = cpp_code.replace(f"std::{fn}", f"fadbad::{fn}")
+        cpp_code = _FADBAD_FN_PATTERN.sub(lambda m: f'fadbad::{m.group(1)}', cpp_code)
     
-    # Replace forcings
-    for i, forcing in enumerate(forcings):
-        cpp_code = _safe_replace(cpp_code, forcing, f"(*F[{i}])(t)")
+    # Single-pass symbol replacement (cached regex)
+    replacer = _get_replacer(
+        tuple(states), tuple(params), n_states,
+        tuple(forcings), use_initial_states,
+    )
+    cpp_code = replacer(cpp_code)
     
-    # Replace params
-    for j, param in enumerate(params):
-        cpp_code = _safe_replace(cpp_code, param, f"params[{n_states + j}]")
-    
-    # Replace states
-    if use_initial_states:
-        for i, state in enumerate(states):
-            cpp_code = _safe_replace(cpp_code, state, f"params[{i}]")
-    else:
-        for i, state in enumerate(states):
-            cpp_code = _safe_replace(cpp_code, state, f"x[{i}]")
-    
-    # Explicit notation for initial values
-    for i, state in enumerate(states):
-        cpp_code = _safe_replace(cpp_code, f"{state}_0", f"params[{i}]")
-    
-    cpp_code = _safe_replace(cpp_code, "time", "t")
-    cpp_code = re.sub(r"\s+", "", cpp_code)
+    cpp_code = _WHITESPACE_PATTERN.sub("", cpp_code)
     cpp_code = _ensure_double_literals(cpp_code)
     
     return cpp_code
-
-
-# =====================================================================
-# Generate gradient code for a scalar expression
-# =====================================================================
-
-def _generate_gradient_cpp(expr, states_list, params_list, n_states, num_type,
-                           forcings_list, local_symbols, states_syms):
-    """
-    Generate C++ code for the gradient ∂expr/∂x of a scalar expression.
-    
-    Returns a list of C++ expressions, one for each state variable.
-    """
-    gradient = []
-    for state_name in states_list:
-        state_sym = states_syms[state_name]
-        deriv = sp.diff(expr, state_sym)
-        deriv_cpp = _to_cpp(deriv, states_list, params_list, n_states,
-                           num_type, forcings_list, use_initial_states=False)
-        deriv_cpp = str(deriv_cpp).replace("params[", "full_params[")
-        gradient.append(deriv_cpp)
-    return gradient
-
-
-def _generate_time_deriv_cpp(expr, t_sym, states_list, params_list, n_states,
-                             num_type, forcings_list):
-    """
-    Generate C++ code for ∂expr/∂t.
-    
-    Returns the C++ expression as a string.
-    """
-    deriv = sp.diff(expr, t_sym)
-    deriv_cpp = _to_cpp(deriv, states_list, params_list, n_states,
-                       num_type, forcings_list, use_initial_states=False)
-    return str(deriv_cpp).replace("params[", "full_params[")
-
-
-def _generate_gradient_lambda(gradient_cpp, n_states, num_type):
-    """
-    Generate a C++ lambda that returns a gradient vector.
-    
-    Parameters:
-    -----------
-    gradient_cpp : list of str
-        C++ expressions for each gradient component
-    n_states : int
-        Number of state variables
-    num_type : str
-        Numeric type (e.g., "AD", "AD2", "double")
-    
-    Returns:
-    --------
-    str : C++ lambda expression
-    """
-    state_type = f"ublas::vector<{num_type}>"
-    
-    # Build the lambda body
-    lines = [f"[full_params, &F](const {state_type}& x, const {num_type}& t) -> {state_type} {{"]
-    lines.append(f"      {state_type} grad({n_states});")
-    
-    for i, grad_expr in enumerate(gradient_cpp):
-        lines.append(f"      grad[{i}] = {grad_expr};")
-    
-    lines.append("      return grad;")
-    lines.append("    }")
-    
-    return "\n".join(lines)
 
 
 # =====================================================================
@@ -259,9 +310,16 @@ def generate_ode_cpp(
     fixed_states=None,
     fixed_params=None,
     forcings_list=None,
+    sparse=None,
 ):
     """
     Generate C++ code for ODE system and Jacobian.
+    
+    Optimizations:
+    - Parallel Jacobian computation via ThreadPoolExecutor
+    - Common Subexpression Elimination (CSE) across RHS + Jacobian + dfdt
+    - Reusable CXX17CodePrinter instance
+    - Single-pass regex replacements
     
     Parameters:
     -----------
@@ -329,21 +387,363 @@ def generate_ode_cpp(
     local_symbols.update(forcing_syms)
     local_symbols["time"] = t
 
-    # Parse RHS expressions
-    exprs = [_safe_sympify(expr, local_symbols) for expr in odes_list]
+    # =====================================================================
+    # FAST PATH: Template-based structural deduplication
+    #
+    # For MOL-discretized PDEs and other systems with structurally repeated
+    # equations (e.g., 1024 identical Brusselator cells), most expressions
+    # share the same algebraic structure — only the variable indices differ.
+    #
+    # Instead of parsing + differentiating all n_states expressions individually,
+    # we:
+    #   1. Fingerprint each RHS string by replacing state names with positional
+    #      placeholders (_s0, _s1, ...) → canonical form
+    #   2. Group expressions with identical canonical form
+    #   3. Parse & differentiate only ONCE per unique template
+    #   4. Expand to all instances via fast string substitution
+    #
+    # This turns O(n_states · bandwidth) sp.diff calls into
+    # O(n_templates · bandwidth) calls, where n_templates ≪ n_states
+    # for MOL systems. E.g., Brusselator 32×32: 2048 states, 2 templates.
+    #
+    # Activated for systems with > 64 states where dedup yields ≥ 4× reduction.
+    # Falls back to the standard path if dedup doesn't help.
+    # =====================================================================
+    dedup_result = None
+    if n_states > 64 and not forcings_list:
+        dedup_result = _try_template_dedup(
+            odes_list, states_list, params_list, n_states, num_type,
+            forcings_list, t
+        )
+
+    if dedup_result is not None:
+        # Template dedup succeeded — use its results
+        ode_cpp_lines = dedup_result["ode_cpp_lines"]
+        jac_cpp_lines = dedup_result["jac_cpp_lines"]
+        jac_matrix = dedup_result["jac_matrix"]
+        time_derivs = dedup_result["time_derivs"]
+    else:
+        # STANDARD PATH: full symbolic parse + differentiate
+        # Parse RHS expressions
+        exprs = [_safe_sympify(expr, local_symbols) for expr in odes_list]
+
+        states_syms_list = [states_syms[s] for s in states_list]
+        states_syms_set = set(states_syms_list)
+
+        # Compute Jacobian matrix — SPARSITY-AWARE + PARALLEL
+        n_workers = min(os.cpu_count() or 4, n_states)
+        use_parallel_jac = n_states > 8 and n_workers > 1
+
+        if use_parallel_jac:
+            jac_matrix = _compute_ode_jacobian_parallel(
+                exprs, states_syms_list, states_syms_set, n_workers
+            )
+        else:
+            jac_matrix = _compute_ode_jacobian_serial(
+                exprs, states_syms_list, states_syms_set
+            )
+
+        # Compute time derivatives
+        time_derivs = [sp.diff(expr, t) for expr in exprs]
+
+        # Build the ODE code with CSE (only for small-medium systems)
+        if n_states <= 200:
+            ode_cpp_lines = _generate_ode_code_with_cse(
+                exprs, states_list, params_list, n_states, num_type, forcings_list
+            )
+            jac_cpp_lines = _generate_jac_code_with_cse(
+                jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
+                states_list, params_list, n_states, num_type
+            )
+        else:
+            # Large system, no dedup match: generate without CSE
+            ode_cpp_lines = _generate_ode_code_plain(
+                exprs, states_list, params_list, n_states, num_type, forcings_list
+            )
+            jac_cpp_lines = _generate_jac_code_plain(
+                jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
+                states_list, params_list, n_states, num_type
+            )
+
+    # Sparsity analysis — decide dense vs sparse
+    if dedup_result is not None:
+        pre_pattern = set(zip(dedup_result["jac_nnz_rows"], dedup_result["jac_nnz_cols"]))
+    else:
+        pre_pattern = _extract_jac_sparsity(jac_matrix, n_states)
+
+    jac_nnz = len(pre_pattern)
+    n2 = n_states * n_states
+    jac_zeros_pct = 100.0 * (1.0 - jac_nnz / n2) if n2 else 0
+    sorted_jpat = sorted(pre_pattern)
+
+    # Determine sparse vs dense:
+    # sparse=True  -> force sparse
+    # sparse=False -> force dense
+    # sparse=None  -> auto-detect
+    if sparse is True:
+        use_sparse = True
+    elif sparse is False:
+        use_sparse = False
+    else:
+        use_sparse = (n_states >= 4) and (jac_zeros_pct > 50.0)
+
+    sparsity_stats = {
+        'n': n_states,
+        'jac_nnz': jac_nnz,
+        'jac_zeros_pct': jac_zeros_pct,
+        'jac_pattern': sorted_jpat,
+    }
+
+    # Sparse Jacobian stringification — triplet format (rows, cols, exprs).
+    _zero = sp.Integer(0)
+    _szero = sp.S.Zero
+    jac_nnz_rows = []
+    jac_nnz_cols = []
+    jac_nnz_exprs = []
 
     states_syms_list = [states_syms[s] for s in states_list]
+    states_syms_set = set(states_syms_list)
 
-    # Compute Jacobian matrix
-    jac_matrix = [
-        [sp.diff(expr, s) for s in states_syms_list]
-        for expr in exprs
-    ]
+    if dedup_result is not None:
+        jac_nnz_rows = dedup_result["jac_nnz_rows"]
+        jac_nnz_cols = dedup_result["jac_nnz_cols"]
+        jac_nnz_exprs = dedup_result["jac_nnz_exprs"]
+    else:
+        for i in range(n_states):
+            free = exprs[i].free_symbols & states_syms_set
+            for j, s in enumerate(states_syms_list):
+                if s in free:
+                    e = jac_matrix[i][j]
+                    if e is not _zero and e is not _szero and e != 0:
+                        jac_nnz_rows.append(i)
+                        jac_nnz_cols.append(j)
+                        jac_nnz_exprs.append(str(e))
 
-    # Compute time derivatives
-    time_derivs = [sp.diff(expr, t) for expr in exprs]
+    # --- Generate the Jacobian functor ---
+    # Sparse path: writes to compressed_matrix<T> via W(i,j) = expr
+    # Dense path:  writes to matrix<T> via J(i,j) = expr (with zero_matrix init)
+    # Only ONE is generated — the one matching use_sparse.
+    if use_sparse:
+        import re
+        jac_re = re.compile(r'^\s*J\((\d+),(\d+)\)\s*=\s*(.+);')
+        num = num_type
 
-    # Generate ODE system code
+        # Count non-zero entries for reserve()
+        jac_nnz_count = len(jac_nnz_rows)
+
+        # Build sparse Jacobian from the dense jac_cpp_lines by replacing
+        # the matrix type and removing zero_matrix init
+        sparse_jac_lines = []
+        sparse_jac_lines.append(f"// Jacobian: writes to compressed_matrix (no dense n×n allocation)")
+        sparse_jac_lines.append(f"struct jacobian {{")
+        sparse_jac_lines.append(f"  ublas::vector<{num}> params;")
+        sparse_jac_lines.append(f"  std::vector<const cppode::PchipForcing<{num}>*> F;")
+        sparse_jac_lines.append(f"")
+        sparse_jac_lines.append(f"  jacobian(const ublas::vector<{num}>& p_,")
+        sparse_jac_lines.append(f"           const std::vector<const cppode::PchipForcing<{num}>*>& F_)")
+        sparse_jac_lines.append(f"    : params(p_), F(F_) {{}}")
+        sparse_jac_lines.append(f"")
+        sparse_jac_lines.append(f"  void operator()(const ublas::vector<{num}>& x,")
+        sparse_jac_lines.append(f"                  ublas::compressed_matrix<{num}>& W,")
+        sparse_jac_lines.append(f"                  const {num}& t,")
+        sparse_jac_lines.append(f"                  ublas::vector<{num}>& dfdt) {{")
+        sparse_jac_lines.append(f"    W.clear();")
+        sparse_jac_lines.append(f"    W.resize({n_states}, {n_states}, false);")
+        sparse_jac_lines.append(f"    W.reserve({jac_nnz_count + n_states});")
+
+        # Extract body from dense Jacobian lines, convert J(i,j) to W(i,j)
+        in_body = False
+        brace_depth = 0
+        for line in jac_cpp_lines:
+            stripped = line.strip()
+            if not in_body:
+                if 'dfdt)' in stripped and '{' in stripped:
+                    in_body = True
+                    brace_depth = 1
+                continue
+            brace_depth += stripped.count('{') - stripped.count('}')
+            if brace_depth <= 0:
+                break
+            # Skip zero_matrix line
+            if 'zero_matrix' in stripped:
+                continue
+            # Convert J(i,j) = expr to W(i,j) = expr
+            m = jac_re.match(line)
+            if m:
+                row_idx, col_idx = m.group(1), m.group(2)
+                expr_str = m.group(3)
+                sparse_jac_lines.append(f"    W({row_idx},{col_idx}) = {expr_str};")
+            else:
+                sparse_jac_lines.append(line)
+
+        sparse_jac_lines.append(f"  }}")
+        sparse_jac_lines.append(f"}};")
+
+        # Replace jac_code with the sparse version
+        jac_code = "\n".join(sparse_jac_lines)
+        jac_cpp_lines = sparse_jac_lines
+    else:
+        jac_code = "\n".join(jac_cpp_lines)
+
+    return {
+        "ode_code": "\n".join(ode_cpp_lines),
+        "jac_code": jac_code,
+        "jac_nnz_rows": jac_nnz_rows,
+        "jac_nnz_cols": jac_nnz_cols,
+        "jac_nnz_exprs": jac_nnz_exprs,
+        "time_derivs": time_derivs if dedup_result is not None else [str(d) if d != 0 else "0" for d in time_derivs],
+        "states": states_list,
+        "params": params_list,
+        "forcings": forcings_list,
+        "use_sparse": use_sparse,
+        "sparsity_stats": sparsity_stats,
+    }
+
+
+# =====================================================================
+# Parallel Jacobian computation for generate_ode_cpp
+# =====================================================================
+
+def _compute_ode_jac_row(expr, states_syms_list, states_syms_set):
+    """Compute one row of the ODE Jacobian (for parallelization).
+    Sparsity-aware: skips sp.diff when the state is absent from the expression."""
+    free = expr.free_symbols & states_syms_set
+    row = []
+    for s in states_syms_list:
+        if s in free:
+            row.append(sp.diff(expr, s))
+        else:
+            row.append(sp.Integer(0))
+    return row
+
+
+def _compute_ode_jacobian_parallel(exprs, states_syms_list, states_syms_set, n_workers):
+    """Compute ODE Jacobian in parallel across rows."""
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = [
+            executor.submit(_compute_ode_jac_row, expr, states_syms_list, states_syms_set)
+            for expr in exprs
+        ]
+        # Preserve row order
+        return [f.result() for f in futures]
+
+
+def _compute_ode_jacobian_serial(exprs, states_syms_list, states_syms_set):
+    """Compute ODE Jacobian serially."""
+    jac_matrix = []
+    for expr in exprs:
+        free = expr.free_symbols & states_syms_set
+        row = []
+        for s in states_syms_list:
+            if s in free:
+                row.append(sp.diff(expr, s))
+            else:
+                row.append(sp.Integer(0))
+        jac_matrix.append(row)
+    return jac_matrix
+
+
+# =====================================================================
+# CSE-based ODE and Jacobian code generation
+# =====================================================================
+
+def _is_nontrivial(expr):
+    """Check if an expression is worth including in CSE."""
+    if expr is sp.S.Zero or expr == 0 or isinstance(expr, (sp.Integer, sp.Float)):
+        return False
+    if isinstance(expr, sp.Symbol):
+        return False
+    # Negative symbol: -x
+    if (isinstance(expr, sp.Mul) and len(expr.args) == 2
+            and expr.args[0] is sp.S.NegativeOne
+            and isinstance(expr.args[1], sp.Symbol)):
+        return False
+    return True
+
+
+def _apply_cse(expr_list):
+    """Apply CSE to a list of expressions, returning (replacements, reduced).
+    
+    Only runs CSE when there are enough non-trivial expressions to benefit.
+    Returns ([], expr_list) if CSE is not worthwhile.
+    """
+    # Count non-trivial expressions
+    n_nontrivial = sum(1 for e in expr_list if _is_nontrivial(e))
+    if n_nontrivial < 3:
+        return [], expr_list
+    
+    try:
+        replacements, reduced = sp.cse(expr_list, optimizations='basic')
+        return replacements, reduced
+    except Exception:
+        # Fallback: no CSE if it fails
+        return [], expr_list
+
+
+def _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list):
+    """Convert CSE temporary variable assignments to C++ code lines."""
+    lines = []
+    if not replacements:
+        return lines
+    
+    for sym, expr in replacements:
+        cpp = _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
+        lines.append(f"    const {num_type} {sym} = {cpp};")
+    return lines
+
+
+def _reduced_expr_to_cpp(expr, cse_syms, states_list, params_list, n_states, num_type, forcings_list):
+    """Convert a CSE-reduced expression to C++ code.
+    
+    CSE temporaries (x0, x1, ...) are already declared as C++ local variables,
+    so they must NOT be replaced by the symbol replacer. We handle this by:
+    1. Substituting CSE syms with unique placeholder strings before _to_cpp
+    2. Restoring them after _to_cpp's symbol replacement pass
+    """
+    if not cse_syms:
+        return _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
+    
+    # Fast path for trivial expressions
+    if expr is sp.S.Zero or expr == 0:
+        return "0.0"
+    if isinstance(expr, sp.Integer):
+        return str(int(expr)) + ".0"
+    if isinstance(expr, sp.Float):
+        return repr(float(expr))
+    
+    # Check if this expression contains any CSE symbols
+    expr_free = expr.free_symbols
+    used_cse = expr_free & cse_syms
+    
+    if not used_cse:
+        # No CSE temporaries — use standard path
+        return _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
+    
+    # Replace CSE symbols with placeholders before printing
+    placeholders = {}
+    subs_map = {}
+    for sym in used_cse:
+        ph = f"__CSE_{sym.name}__"
+        placeholders[ph] = str(sym)
+        subs_map[sym] = sp.Symbol(ph)
+    
+    expr_subst = expr.subs(subs_map)
+    cpp = _to_cpp(expr_subst, states_list, params_list, n_states, num_type, forcings_list)
+    
+    # Restore CSE symbol names
+    for ph, name in placeholders.items():
+        cpp = cpp.replace(ph, name)
+    
+    return cpp
+
+
+def _generate_ode_code_with_cse(exprs, states_list, params_list, n_states, num_type, forcings_list):
+    """Generate ODE system C++ code with Common Subexpression Elimination."""
+    
+    # Apply CSE to RHS expressions
+    replacements, reduced = _apply_cse(exprs)
+    cse_syms = set(sym for sym, _ in replacements)
+    
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
@@ -359,14 +759,54 @@ def generate_ode_cpp(
         f"                  const {num_type}& t) {{",
     ]
 
-    for i, expr in enumerate(exprs):
-        ode_cpp_lines.append(
-            f"    dxdt[{i}] = {_to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)};"
+    # Emit CSE temporaries
+    if replacements:
+        ode_cpp_lines.append("    // Common subexpressions")
+        ode_cpp_lines.extend(
+            _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list)
         )
+        ode_cpp_lines.append("")
+
+    # Emit RHS assignments
+    for i, expr in enumerate(reduced):
+        cpp = _reduced_expr_to_cpp(expr, cse_syms, states_list, params_list, n_states, num_type, forcings_list)
+        ode_cpp_lines.append(f"    dxdt[{i}] = {cpp};")
 
     ode_cpp_lines += ["  }", "};"]
+    return ode_cpp_lines
 
-    # Generate Jacobian code
+
+def _generate_jac_code_with_cse(jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
+                                 states_list, params_list, n_states, num_type):
+    """Generate Jacobian C++ code with Common Subexpression Elimination."""
+    
+    # Collect all non-zero Jacobian entries and dfdt expressions for CSE
+    _zero = sp.Integer(0)
+    _szero = sp.S.Zero
+    
+    # Build list of (index_info, expression) for non-zero Jac entries
+    jac_entries = []
+    jac_indices = []  # (i, j) pairs
+    for i in range(n_states):
+        for j in range(n_states):
+            e = jac_matrix[i][j]
+            if e is not _zero and e is not _szero and e != 0:
+                jac_indices.append((i, j))
+                jac_entries.append(e)
+    
+    # dfdt entries (including forcing chain rule terms handled separately)
+    dfdt_entries = list(time_derivs)
+    
+    # Apply CSE over Jacobian entries + dfdt entries jointly
+    all_exprs = jac_entries + dfdt_entries
+    replacements, reduced = _apply_cse(all_exprs)
+    cse_syms = set(sym for sym, _ in replacements)
+    
+    # Split reduced back into Jac and dfdt parts
+    n_jac = len(jac_entries)
+    reduced_jac = reduced[:n_jac]
+    reduced_dfdt = reduced[n_jac:]
+    
     jac_cpp_lines = [
         "// Jacobian for stiff solver",
         "struct jacobian {",
@@ -383,16 +823,33 @@ def generate_ode_cpp(
         f"                  ublas::vector<{num_type}>& dfdt) {{",
     ]
 
-    # J = df/dx (no forcings in Jacobian)
-    for i in range(n_states):
-        for j in range(n_states):
-            jac_cpp_lines.append(
-                f"    J({i},{j}) = {_to_cpp(jac_matrix[i][j], states_list, params_list, n_states, num_type, forcings=[])};"
-            )
+    # Zero the full matrix once, then set only non-zero entries
+    jac_cpp_lines.append(f"    J = ublas::zero_matrix<{num_type}>({n_states}, {n_states});")
+
+    # Emit CSE temporaries
+    if replacements:
+        jac_cpp_lines.append("    // Common subexpressions")
+        # Jacobian entries don't use forcings (forcings=[] in the original code)
+        # but dfdt entries do. Use forcings_list for the CSE temps since they
+        # may contain forcing references from the dfdt part.
+        jac_cpp_lines.extend(
+            _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list)
+        )
+        jac_cpp_lines.append("")
+
+    # Emit Jacobian assignments
+    for idx, (i, j) in enumerate(jac_indices):
+        cpp = _reduced_expr_to_cpp(
+            reduced_jac[idx], cse_syms, states_list, params_list, n_states, num_type,
+            []  # Jacobian entries don't reference forcings directly
+        )
+        jac_cpp_lines.append(f"    J({i},{j}) = {cpp};")
 
     # dfdt with forcing chain rule
     for i, expr in enumerate(exprs):
-        cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type, forcings_list)
+        cpp_code = _reduced_expr_to_cpp(
+            reduced_dfdt[i], cse_syms, states_list, params_list, n_states, num_type, forcings_list
+        )
 
         forcing_terms = []
         for j, fname in enumerate(forcings_list):
@@ -408,15 +865,318 @@ def generate_ode_cpp(
         jac_cpp_lines.append(f"    dfdt[{i}] = {cpp_code};")
 
     jac_cpp_lines += ["  }", "};"]
+    return jac_cpp_lines
+
+
+# =====================================================================
+# Plain (no-CSE) code generation for large systems
+# =====================================================================
+
+def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type, forcings_list):
+    """Generate ODE system C++ code without CSE (for large systems)."""
+    ode_cpp_lines = [
+        "// ODE system",
+        "struct ode_system {",
+        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
+        "",
+        f"  ode_system(const ublas::vector<{num_type}>& p_,",
+        f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
+        "    : params(p_), F(F_) {}",
+        "",
+        f"  void operator()(const ublas::vector<{num_type}>& x,",
+        f"                  ublas::vector<{num_type}>& dxdt,",
+        f"                  const {num_type}& t) {{",
+    ]
+    for i, expr in enumerate(exprs):
+        cpp = _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
+        ode_cpp_lines.append(f"    dxdt[{i}] = {cpp};")
+    ode_cpp_lines += ["  }", "};"]
+    return ode_cpp_lines
+
+
+def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
+                             states_list, params_list, n_states, num_type):
+    """Generate Jacobian C++ code without CSE (for large systems).
+
+    Always produces DENSE signature (ublas::matrix<T>& J, J(i,j) = ...).
+    The caller in generate_ode_cpp converts to sparse if use_sparse is True.
+    """
+    _zero = sp.Integer(0)
+    _szero = sp.S.Zero
+
+    jac_cpp_lines = [
+        "// Jacobian for stiff solver",
+        "struct jacobian {",
+        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
+        "",
+        f"  jacobian(const ublas::vector<{num_type}>& p_,",
+        f"           const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
+        "    : params(p_), F(F_) {}",
+        "",
+        f"  void operator()(const ublas::vector<{num_type}>& x,",
+        f"                  ublas::matrix<{num_type}>& J,",
+        f"                  const {num_type}& t,",
+        f"                  ublas::vector<{num_type}>& dfdt) {{",
+        f"    J = ublas::zero_matrix<{num_type}>({n_states}, {n_states});",
+    ]
+    # fill entries
+    for i in range(n_states):
+        for j in range(n_states):
+            e = jac_matrix[i][j]
+            if e is not _zero and e is not _szero and e != 0:
+                cpp = _to_cpp(e, states_list, params_list, n_states, num_type, [])
+                jac_cpp_lines.append(f"    J({i},{j}) = {cpp};")
+
+    for i, expr in enumerate(exprs):
+        cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type, forcings_list)
+        forcing_terms = []
+        for j, fname in enumerate(forcings_list):
+            df_dF = sp.diff(expr, forcing_syms[fname])
+            if df_dF != 0:
+                forcing_terms.append(
+                    f"({_to_cpp(df_dF, states_list, params_list, n_states, num_type, forcings_list)})*F[{j}]->derivative(t)"
+                )
+        if forcing_terms:
+            cpp_code = " + ".join([cpp_code] + forcing_terms) if cpp_code != "0" else " + ".join(forcing_terms)
+        jac_cpp_lines.append(f"    dfdt[{i}] = {cpp_code};")
+    jac_cpp_lines += ["  }", "};"]
+    return jac_cpp_lines
+
+
+# =====================================================================
+# Template-based structural deduplication for large MOL systems
+# =====================================================================
+
+# Precompiled regex for generic placeholder substitution
+_GENERIC_PATTERN = re.compile(r'_s(\d+)')
+
+
+def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
+                         forcings_list, t_sym):
+    """
+    Attempt template-based structural deduplication for large ODE systems.
+
+    For Method-of-Lines discretized PDEs and similar systems where many
+    equations share the same algebraic structure (differing only in which
+    state variables appear), this avoids redundant symbolic differentiation.
+
+    Algorithm:
+      1. Fingerprint: replace state names in each RHS string with positional
+         placeholders (_s0, _s1, ...) to get a canonical form.
+      2. Group expressions with identical canonical form.
+      3. If dedup ratio (n_states / n_templates) >= 4, proceed.
+      4. Parse & differentiate only the unique templates.
+      5. Expand to all instances via fast string substitution.
+
+    Returns None if dedup is not worthwhile (< 4× reduction).
+    Otherwise returns a dict with all data needed by generate_ode_cpp.
+    """
+    states_set = set(states_list)
+
+    # --- Step 1: String-based fingerprinting ---
+    # Build regex to match any state name (longest first to avoid partial matches)
+    sorted_names = sorted(states_list, key=len, reverse=True)
+    name_pattern = re.compile(
+        r'\b(' + '|'.join(re.escape(n) for n in sorted_names) + r')\b'
+    )
+
+    from collections import defaultdict
+    groups = defaultdict(list)  # canonical_str -> [(expr_idx, [dep_state_names])]
+
+    for i, expr_str in enumerate(odes_list):
+        seen = {}
+        def _replace_state(m, _seen=seen):
+            sname = m.group(0)
+            if sname in states_set:
+                if sname not in _seen:
+                    _seen[sname] = f'_s{len(_seen)}'
+                return _seen[sname]
+            return sname
+
+        canonical = name_pattern.sub(_replace_state, expr_str)
+        dep_names = sorted(seen.keys(), key=lambda s: seen[s])
+        groups[canonical].append((i, dep_names))
+
+    n_templates = len(groups)
+    dedup_ratio = n_states / max(n_templates, 1)
+
+    if dedup_ratio < 4:
+        return None  # Not enough structural repetition
+
+    # --- Step 2: Parse unique templates with generic symbols ---
+    n_generic = max(len(members[0][1]) for members in groups.values())
+    generic_syms = {f'_s{j}': sp.Symbol(f'_s{j}', real=True) for j in range(n_generic)}
+
+    generic_local = dict(generic_syms)
+    for p in params_list:
+        generic_local[p] = sp.Symbol(p, real=True)
+    generic_local['time'] = t_sym
+
+    template_data = {}  # canonical -> {expr, jac_entries, time_deriv, n_deps}
+    for key, members in groups.items():
+        expr = _safe_sympify(key, generic_local)
+        n_deps = len(members[0][1])
+
+        # Compute Jacobian entries for this template
+        free = expr.free_symbols
+        jac_entries = {}  # dep_position -> (derivative_expr, generic_sym_name)
+        for j in range(n_deps):
+            gs = generic_syms[f'_s{j}']
+            if gs in free:
+                jac_entries[j] = sp.diff(expr, gs)
+
+        # Time derivative
+        time_deriv = sp.diff(expr, t_sym)
+
+        template_data[key] = {
+            'expr': expr,
+            'jac_entries': jac_entries,
+            'time_deriv': time_deriv,
+            'n_deps': n_deps,
+        }
+
+    # --- Step 3: Convert templates to C++ strings ---
+    printer = _get_cxx_printer()
+
+    def _template_to_cpp(sympy_expr):
+        """Convert template expression to intermediate C++ (with _sN placeholders)."""
+        if sympy_expr is sp.S.Zero or sympy_expr == 0:
+            return "0.0"
+        if isinstance(sympy_expr, sp.Integer):
+            return str(int(sympy_expr)) + ".0"
+        cpp = printer.doprint(sympy_expr).replace("\n", " ")
+        cpp = _MATH_MACRO_PATTERN.sub(lambda m: _MATH_MACRO_MAP[m.group(0)], cpp)
+        if num_type in ("AD", "AD2"):
+            cpp = _FADBAD_FN_PATTERN.sub(lambda m: f'fadbad::{m.group(1)}', cpp)
+        return cpp
+
+    template_cpp = {}  # canonical -> {rhs_cpp, jac_cpp: {j: str}, time_deriv_cpp}
+    for key, tdata in template_data.items():
+        rhs_cpp = _template_to_cpp(tdata['expr'])
+        jac_cpp = {j: _template_to_cpp(d) for j, d in tdata['jac_entries'].items()}
+        td_cpp = _template_to_cpp(tdata['time_deriv'])
+        template_cpp[key] = {'rhs': rhs_cpp, 'jac': jac_cpp, 'time_deriv': td_cpp}
+
+    # --- Step 4: Build symbol → C++ replacement map ---
+    name_to_state_idx = {n: i for i, n in enumerate(states_list)}
+
+    sym_to_cpp = {}
+    for i, n in enumerate(states_list):
+        sym_to_cpp[n] = f'x[{i}]'
+    for i, p in enumerate(params_list):
+        sym_to_cpp[p] = f'params[{n_states + i}]'
+    sym_to_cpp['time'] = 't'
+
+    # Single-pass regex for all concrete symbols
+    all_sym_names = sorted(sym_to_cpp.keys(), key=len, reverse=True)
+    sym_pattern = re.compile(
+        r'(?<![a-zA-Z0-9_])(' + '|'.join(re.escape(n) for n in all_sym_names) + r')(?![a-zA-Z0-9_\[])'
+    )
+
+    def _expand_template(template_str, dep_names):
+        """Expand a template C++ string by substituting _sN → concrete symbols → C++."""
+        # Step 1: _sN -> actual state name
+        concrete = _GENERIC_PATTERN.sub(lambda m: dep_names[int(m.group(1))], template_str)
+        # Step 2: all symbols -> C++ (x[i], params[j], t)
+        cpp = sym_pattern.sub(lambda m: sym_to_cpp[m.group(0)], concrete)
+        cpp = _WHITESPACE_PATTERN.sub("", cpp)
+        cpp = _ensure_double_literals(cpp)
+        return cpp
+
+    # --- Step 5: Generate ODE code ---
+    ode_cpp_lines = [
+        "// ODE system",
+        "struct ode_system {",
+        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
+        "",
+        f"  ode_system(const ublas::vector<{num_type}>& p_,",
+        f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
+        "    : params(p_), F(F_) {}",
+        "",
+        f"  void operator()(const ublas::vector<{num_type}>& x,",
+        f"                  ublas::vector<{num_type}>& dxdt,",
+        f"                  const {num_type}& t) {{",
+    ]
+    for key, members in groups.items():
+        rhs_tmpl = template_cpp[key]['rhs']
+        for expr_idx, dep_names in members:
+            cpp = _expand_template(rhs_tmpl, dep_names)
+            ode_cpp_lines.append(f"    dxdt[{expr_idx}] = {cpp};")
+    ode_cpp_lines += ["  }", "};"]
+
+    # --- Step 6: Generate Jacobian code ---
+    jac_cpp_lines = [
+        "// Jacobian for stiff solver",
+        "struct jacobian {",
+        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
+        "",
+        f"  jacobian(const ublas::vector<{num_type}>& p_,",
+        f"           const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
+        "    : params(p_), F(F_) {}",
+        "",
+        f"  void operator()(const ublas::vector<{num_type}>& x,",
+        f"                  ublas::matrix<{num_type}>& J,",
+        f"                  const {num_type}& t,",
+        f"                  ublas::vector<{num_type}>& dfdt) {{",
+    ]
+    jac_cpp_lines.append(f"    J = ublas::zero_matrix<{num_type}>({n_states}, {n_states});")
+
+    jac_nnz_rows = []
+    jac_nnz_cols = []
+    jac_nnz_exprs = []
+
+    # Build symbolic jac_matrix for sparsity pattern code generation
+    # Store symbolic entry for sparsity analysis
+    _zero_sym = sp.Integer(0)
+    jac_matrix = [[_zero_sym] * n_states for _ in range(n_states)]
+
+    for key, members in groups.items():
+        jac_tmpl = template_cpp[key]['jac']
+        jac_sym = template_data[key]['jac_entries']
+        for expr_idx, dep_names in members:
+            for j, jac_str in jac_tmpl.items():
+                actual_state = dep_names[j]
+                col_idx = name_to_state_idx[actual_state]
+                cpp = _expand_template(jac_str, dep_names)
+                jac_cpp_lines.append(f"    J({expr_idx},{col_idx}) = {cpp};")
+
+                jac_nnz_rows.append(expr_idx)
+                jac_nnz_cols.append(col_idx)
+                jac_nnz_exprs.append(str(jac_sym[j]))
+
+                # Store symbolic entry for sparsity analysis
+                jac_matrix[expr_idx][col_idx] = jac_sym[j]
+
+    # dfdt
+    for key, members in groups.items():
+        td_tmpl = template_cpp[key]['time_deriv']
+        for expr_idx, dep_names in members:
+            cpp = _expand_template(td_tmpl, dep_names)
+            jac_cpp_lines.append(f"    dfdt[{expr_idx}] = {cpp};")
+
+    jac_cpp_lines += ["  }", "};"]
+
+    # Time derivatives as strings (for return value)
+    time_derivs = []
+    for key, members in groups.items():
+        td = template_data[key]['time_deriv']
+        for expr_idx, dep_names in members:
+            time_derivs.append((expr_idx, td))
+    time_derivs.sort(key=lambda x: x[0])
+    time_derivs_ordered = [str(td) if td != 0 else "0" for _, td in time_derivs]
 
     return {
-        "ode_code": "\n".join(ode_cpp_lines),
-        "jac_code": "\n".join(jac_cpp_lines),
-        "jac_matrix": [[str(e) for e in row] for row in jac_matrix],
-        "time_derivs": [str(d) for d in time_derivs],
-        "states": states_list,
-        "params": params_list,
-        "forcings": forcings_list,
+        "ode_cpp_lines": ode_cpp_lines,
+        "jac_cpp_lines": jac_cpp_lines,
+        "jac_matrix": jac_matrix,
+        "time_derivs": time_derivs_ordered,
+        "jac_nnz_rows": jac_nnz_rows,
+        "jac_nnz_cols": jac_nnz_cols,
+        "jac_nnz_exprs": jac_nnz_exprs,
     }
 
 
@@ -449,7 +1209,23 @@ def generate_forcing_init_code(n_forcings, num_type="AD"):
 
 
 # =====================================================================
-# Event code generation with analytical gradients
+# Event code generation with analytical saltation gradients
+#
+# For each root event with root function g(x, t), SymPy computes the
+# partial derivatives dg/dx_i and dg/dt at model build time.  These
+# are emitted as C++ lambdas in the RootEvent struct, enabling the
+# runtime to compute the IFT-based saltation correction analytically
+# (no finite differences, no Euler/Heun trajectory shifts).
+#
+# The codegen steps per root event:
+#   1. Parse g(x, t) to SymPy expression
+#   2. sp.diff(g, x_i) for each state  -> dg_dx lambda
+#   3. sp.diff(g, t)                    -> dg_dt lambda
+#   4. Emit both as std::function members of the RootEvent struct
+#
+# For terminal events (no state modification) and steady-state events,
+# dg_dx / dg_dt are set to nullptr — the runtime skips saltation and
+# applies the event action directly.
 # =====================================================================
 
 def _get_list_value(dict_or_df, key, index, n_events):
@@ -513,18 +1289,221 @@ def _parse_value_or_expression(value, local_symbols, states_list, params_list,
         raise ValueError(f"Failed to parse expression '{value_str}': {e}")
 
 
-def generate_event_code(events_df, states_list, params_list, n_states, 
-                        num_type="AD", forcings_list=None):
+def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
+                                     n_states, num_type, forcings_list,
+                                     local_symbols, event_idx,
+                                     rhs_exprs=None):
     """
-    Generate C++ initialization lines for events with analytical gradients.
-    
-    This generates FixedEvent and RootEvent structures including:
-    - dg_dx_func: gradient of root function w.r.t. states
-    - dg_dt_func: time derivative of root function
-    - dh_dx_func: gradient of value function w.r.t. states
-    
-    These analytical derivatives are required for correct saltation
-    matrix corrections when computing sensitivities (deriv=TRUE).
+    Symbolically differentiate root function g(x, t) and emit C++ lambdas
+    for dg/dx (vector), dg/dt (scalar), and G_tt (scalar double).
+
+    G_tt = d(g_dot)/dt is the total second time derivative of g along the
+    ODE trajectory, needed for the second-order IFT correction of dt*.
+    It is computed by substituting dx_i/dt = f_i into the total derivative:
+
+      G_tt = f^T · H_g · f + grad_g^T · (J_f · f + df/dt)
+           + 2·(d²g/dxdt)^T · f + d²g/dt²
+
+    When rhs_exprs is None (ODE RHS not available), G_tt is set to nullptr
+    and the runtime falls back to scalar finite difference.
+
+    Parameters
+    ----------
+    root_expr : sp.Expr
+        The parsed SymPy expression for g(x, t).
+    states_list : list of str
+        State variable names.
+    params_list : list of str
+        Parameter names.
+    n_states : int
+        Number of state variables.
+    num_type : str
+        Numeric type ("AD", "AD2", "double").
+    forcings_list : list of str
+        Forcing function names.
+    local_symbols : dict
+        Symbol table for SymPy parsing.
+    event_idx : int
+        Event index (for comments).
+    rhs_exprs : list of sp.Expr, optional
+        Parsed SymPy expressions for the ODE RHS (f_0, f_1, ...).
+        If provided, G_tt is computed analytically.
+
+    Returns
+    -------
+    dg_dx_lines : list of str
+        C++ lambda lines for dg_dx.
+    dg_dt_lines : list of str
+        C++ lambda lines for dg_dt.
+    g_dot_dot_lines : list of str
+        C++ lambda lines for g_dot_dot (G_tt), or ["    nullptr  // g_dot_dot"].
+    """
+    state_type = f"ublas::vector<{num_type}>"
+    t = local_symbols["time"]
+
+    # --- dg/dx_i for each state ---
+    states_syms = [local_symbols[s] for s in states_list]
+    dg_dx_exprs = []
+    free = root_expr.free_symbols
+    for s_sym in states_syms:
+        if s_sym in free:
+            dg_dx_exprs.append(sp.diff(root_expr, s_sym))
+        else:
+            dg_dx_exprs.append(sp.Integer(0))
+
+    # --- dg/dt ---
+    dg_dt_expr = sp.diff(root_expr, t)
+
+    # Check if any forcing symbols appear in g — if so, we cannot
+    # differentiate through the forcing interpolation symbolically.
+    # In that case the dg/dt from sp.diff is incomplete (misses dF/dt chain rule).
+    # For forcings that appear in g, we add the chain rule term:
+    #   dg/dt_total = dg/dt_explicit + sum_k (dg/dF_k) * dF_k/dt
+    # where dF_k/dt is F[k]->derivative(t) at runtime.
+    forcing_chain_terms = []
+    for k, fname in enumerate(forcings_list):
+        f_sym = local_symbols[fname]
+        if f_sym in free:
+            dg_df = sp.diff(root_expr, f_sym)
+            if dg_df != 0:
+                dg_df_cpp = _to_cpp(dg_df, states_list, params_list, n_states,
+                                    num_type, forcings_list)
+                dg_df_cpp = str(dg_df_cpp).replace("params[", "full_params[")
+                forcing_chain_terms.append(
+                    f"({dg_df_cpp})*(*F[{k}]).derivative(t)"
+                )
+
+    # --- Emit dg_dx lambda ---
+    #
+    # Writes all n_states partial derivatives into the output vector.
+    # Zero entries are written explicitly (required: out may be uninitialized).
+    dg_dx_lines = []
+    dg_dx_lines.append(f"    // dg/dx for root event {event_idx} (analytical, codegen)")
+    dg_dx_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t, {state_type}& out) {{")
+
+    for j, dexpr in enumerate(dg_dx_exprs):
+        cpp = _to_cpp(dexpr, states_list, params_list, n_states,
+                      num_type, forcings_list)
+        cpp = str(cpp).replace("params[", "full_params[")
+        dg_dx_lines.append(f"      out[{j}] = {cpp};")
+
+    dg_dx_lines.append(f"    }},  // dg_dx")
+
+    # --- Emit dg_dt lambda ---
+    dg_dt_lines = []
+    dg_dt_lines.append(f"    // dg/dt for root event {event_idx} (analytical, codegen)")
+    dg_dt_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
+
+    dg_dt_cpp = _to_cpp(dg_dt_expr, states_list, params_list, n_states,
+                        num_type, forcings_list)
+    dg_dt_cpp = str(dg_dt_cpp).replace("params[", "full_params[")
+
+    if forcing_chain_terms:
+        # Combine explicit dg/dt with forcing chain rule terms
+        all_terms = [dg_dt_cpp] + forcing_chain_terms if dg_dt_cpp != "0.0" else forcing_chain_terms
+        dg_dt_lines.append(f"      return {' + '.join(all_terms)};")
+    else:
+        dg_dt_lines.append(f"      return {dg_dt_cpp};")
+
+    dg_dt_lines.append(f"    }},  // dg_dt")
+
+    # --- Compute and emit G_tt = d(g_dot)/dt along trajectory ---
+    #
+    # G_tt is a scalar (double) function. It is the total time derivative
+    # of g_dot = sum(dg/dx_i * f_i) + dg/dt evaluated along the ODE
+    # trajectory (substituting dx_i/dt = f_i).
+    #
+    # We compute this symbolically by defining g_dot as a SymPy expression
+    # in terms of x and t, then taking its total derivative:
+    #   d(g_dot)/dt = sum_j(dg_dot/dx_j * f_j) + dg_dot/dt_explicit
+    g_dot_dot_lines = []
+    if rhs_exprs is not None and not forcings_list:
+        # Build g_dot symbolically: sum(dg/dx_i * f_i) + dg/dt
+        g_dot_sym = dg_dt_expr
+        for i, s_sym in enumerate(states_syms):
+            g_dot_sym += dg_dx_exprs[i] * rhs_exprs[i]
+
+        # Total time derivative of g_dot: sum_j(dg_dot/dx_j * f_j) + dg_dot/dt
+        G_tt_sym = sp.diff(g_dot_sym, t)
+        g_dot_free = g_dot_sym.free_symbols
+        for j, s_sym in enumerate(states_syms):
+            if s_sym in g_dot_free:
+                G_tt_sym += sp.diff(g_dot_sym, s_sym) * rhs_exprs[j]
+
+        G_tt_sym = sp.powsimp(G_tt_sym)
+
+        # Emit as a double-returning lambda.
+        # Since x and full_params are AD types but G_tt only needs scalar values,
+        # we extract scalars into local doubles first, then compute the expression
+        # using pure double arithmetic.
+        g_dot_dot_lines.append(f"    // G_tt = d(g_dot)/dt for root event {event_idx} (analytical, codegen)")
+        g_dot_dot_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> double {{")
+
+        # Emit local double variables for states and params with _s suffix
+        # to avoid shadowing the lambda parameters (x, t, full_params).
+        # Use .val() to extract the scalar value from AD types (const-correct):
+        #   double: direct access (no .val())
+        #   F<double> (AD): .val() returns const double&
+        #   F<F<double>> (AD2): .val().val() returns const double&
+        if num_type == "AD2":
+            xtr = lambda expr: f"({expr}).val().val()"
+        elif num_type == "AD":
+            xtr = lambda expr: f"({expr}).val()"
+        else:
+            xtr = lambda expr: expr
+
+        for j, sname in enumerate(states_list):
+            g_dot_dot_lines.append(f"      double {sname}_s = {xtr(f'x[{j}]')};")
+        for j, pname in enumerate(params_list):
+            g_dot_dot_lines.append(f"      double {pname}_s = {xtr(f'full_params[{n_states + j}]')};")
+
+        # Generate expression using _s suffixed symbol names
+        subs_map = {}
+        for sname in states_list:
+            subs_map[local_symbols[sname]] = sp.Symbol(sname + "_s")
+        for pname in params_list:
+            subs_map[local_symbols[pname]] = sp.Symbol(pname + "_s")
+        G_tt_subst = G_tt_sym.subs(subs_map)
+
+        G_tt_cpp = _get_cxx_printer().doprint(G_tt_subst)
+        # Replace non-standard math macros (single-pass precompiled regex)
+        G_tt_cpp = _MATH_MACRO_PATTERN.sub(lambda m: _MATH_MACRO_MAP[m.group(0)], G_tt_cpp)
+
+        g_dot_dot_lines.append(f"      return {G_tt_cpp};")
+        g_dot_dot_lines.append(f"    }}  // g_dot_dot")
+    else:
+        # Forcings present or RHS not available: fall back to FD at runtime
+        g_dot_dot_lines.append(f"    nullptr  // g_dot_dot (FD fallback)")
+
+    return dg_dx_lines, dg_dt_lines, g_dot_dot_lines
+
+
+def generate_event_code(events_df, states_list, params_list, n_states, 
+                        num_type="AD", forcings_list=None, rhs_dict=None):
+    """
+    Generate C++ initialization lines for fixed-time and root events.
+
+    For each root event with root function g(x, t), this function:
+      1. Parses g to a SymPy expression
+      2. Computes dg/dx_i (i = 0..n_states-1) and dg/dt symbolically
+      3. Emits C++ lambdas for the RootEvent's dg_dx and dg_dt members
+         (used by the analytical IFT-based saltation correction at runtime)
+      4. If rhs_dict is provided, computes G_tt = d(g_dot)/dt analytically
+         for the second-order IFT correction (otherwise FD fallback at runtime)
+
+    Terminal root events get nullptr for dg_dx / dg_dt / g_dot_dot since they
+    don't modify state and don't need saltation correction.
+
+    Fixed-time events don't need dg_dx / dg_dt (the timing residual
+    dt_corr = t_event - scalar(t_event) is known directly from the
+    AD type of t_event).
+
+    Parameters
+    ----------
+    rhs_dict : dict, optional
+        Dictionary mapping state names to RHS expression strings.
+        When provided, enables analytical G_tt computation for the
+        second-order IFT correction.
     """
     if forcings_list is None:
         forcings_list = []
@@ -570,6 +1549,16 @@ def generate_event_code(events_df, states_list, params_list, n_states,
     event_lines = []
     state_type = f"ublas::vector<{num_type}>"
 
+    # Parse ODE RHS expressions for analytical G_tt computation
+    rhs_exprs_parsed = None
+    if rhs_dict is not None:
+        try:
+            rhs_exprs_parsed = [
+                _safe_sympify(str(rhs_dict[s]), local_symbols) for s in states_list
+            ]
+        except Exception:
+            rhs_exprs_parsed = None  # fall back to FD if parsing fails
+
     # Determine number of events
     list_lengths = []
     for v in events_dict.values():
@@ -596,9 +1585,6 @@ def generate_event_code(events_df, states_list, params_list, n_states,
             raise ValueError(f"Event {i}: 'value' is required but is NA/None")
         value_code = str(value_code).replace("params[", "full_params[")
 
-        # Parse value expression for gradient computation
-        value_expr = _safe_sympify(str(value_raw), local_symbols)
-
         method_raw = _get_list_value(events_dict, "method", i, n_events)
         method = str(method_raw).lower() if method_raw is not None else "replace"
         method_map = {
@@ -623,15 +1609,12 @@ def generate_event_code(events_df, states_list, params_list, n_states,
         if time_code is not None:
             # ============================================================
             # Fixed-time event
+            #
+            # No dg_dx / dg_dt needed: the saltation correction for fixed
+            # events uses dt_corr = t_event - scalar(t_event) directly,
+            # which is constructed from the AD type of the event time.
             # ============================================================
             time_code = str(time_code).replace("params[", "full_params[")
-            
-            # Compute value function gradient: ∂h/∂x
-            dh_dx_cpp = _generate_gradient_cpp(
-                value_expr, states_list, params_list, n_states,
-                num_type, forcings_list, local_symbols, states_syms
-            )
-            dh_dx_lambda = _generate_gradient_lambda(dh_dx_cpp, n_states, num_type)
             
             event_lines.append(f"  // Fixed event {i}: {var_name} at t = {time_raw}")
             event_lines.append(f"  fixed_events.emplace_back(FixedEvent<{state_type}, {num_type}>{{")
@@ -640,39 +1623,18 @@ def generate_event_code(events_df, states_list, params_list, n_states,
             event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
             event_lines.append(f"      return {value_code};")
             event_lines.append(f"    }},  // value_func")
-            event_lines.append(f"    {method_code},  // method")
-            event_lines.append(f"    {dh_dx_lambda}  // dh_dx_func")
+            event_lines.append(f"    {method_code}  // method")
             event_lines.append(f"  }});")
             event_lines.append("")
             
         elif root_code is not None:
             # ============================================================
             # Root-finding event
+            #
+            # Parse g(x, t) symbolically to compute dg/dx and dg/dt for
+            # the IFT-based saltation correction at runtime.
             # ============================================================
             root_code = str(root_code).replace("params[", "full_params[")
-            
-            # Parse root expression
-            root_expr = _safe_sympify(str(root_raw), local_symbols)
-            
-            # Compute root function gradient: ∂g/∂x
-            dg_dx_cpp = _generate_gradient_cpp(
-                root_expr, states_list, params_list, n_states,
-                num_type, forcings_list, local_symbols, states_syms
-            )
-            dg_dx_lambda = _generate_gradient_lambda(dg_dx_cpp, n_states, num_type)
-            
-            # Compute root function time derivative: ∂g/∂t
-            dg_dt_cpp = _generate_time_deriv_cpp(
-                root_expr, t, states_list, params_list, n_states,
-                num_type, forcings_list
-            )
-            
-            # Compute value function gradient: ∂h/∂x
-            dh_dx_cpp = _generate_gradient_cpp(
-                value_expr, states_list, params_list, n_states,
-                num_type, forcings_list, local_symbols, states_syms
-            )
-            dh_dx_lambda = _generate_gradient_lambda(dh_dx_cpp, n_states, num_type)
             
             # Get optional parameters
             terminal_raw = _get_list_value(events_dict, "terminal", i, n_events)
@@ -683,7 +1645,15 @@ def generate_event_code(events_df, states_list, params_list, n_states,
                 direction = int(direction_raw) if direction_raw is not None else 0
             except (ValueError, TypeError):
                 direction = 0
-            
+
+            # --- Analytical gradients of g for saltation correction ---
+            #
+            # Non-terminal events modify state and need the full saltation
+            # correction: we compute dg/dx and dg/dt from the SymPy expression
+            # of g.  Terminal events only stop integration and don't modify
+            # state, so they get nullptr (runtime skips saltation).
+            is_terminal = (terminal == "true")
+
             event_lines.append(f"  // Root event {i}: {var_name} when {root_raw} = 0")
             event_lines.append(f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{")
             event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
@@ -696,11 +1666,26 @@ def generate_event_code(events_df, states_list, params_list, n_states,
             event_lines.append(f"    {method_code},  // method")
             event_lines.append(f"    {terminal},     // terminal")
             event_lines.append(f"    {direction},    // direction")
-            event_lines.append(f"    {dg_dx_lambda},  // dg_dx_func")
-            event_lines.append(f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{")
-            event_lines.append(f"      return {num_type}({dg_dt_cpp});")
-            event_lines.append(f"    }},  // dg_dt_func")
-            event_lines.append(f"    {dh_dx_lambda}  // dh_dx_func")
+
+            if is_terminal:
+                # Terminal event: no state modification, no saltation needed
+                event_lines.append(f"    nullptr,       // dg_dx (not needed for terminal)")
+                event_lines.append(f"    nullptr,       // dg_dt (not needed for terminal)")
+                event_lines.append(f"    nullptr        // g_dot_dot (not needed for terminal)")
+            else:
+                # Non-terminal: generate analytical dg/dx, dg/dt, g_dot_dot lambdas
+                root_raw_str = str(root_raw).strip()
+                root_sympy = _safe_sympify(root_raw_str, local_symbols)
+
+                dg_dx_lines, dg_dt_lines, g_dot_dot_lines = _generate_root_gradient_lambdas(
+                    root_sympy, states_list, params_list, n_states,
+                    num_type, forcings_list, local_symbols, i,
+                    rhs_exprs=rhs_exprs_parsed
+                )
+                event_lines.extend(dg_dx_lines)
+                event_lines.extend(dg_dt_lines)
+                event_lines.extend(g_dot_dot_lines)
+
             event_lines.append(f"  }});")
             event_lines.append("")
             
@@ -745,7 +1730,13 @@ def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
 
 
 def _generate_equilibrate_code(num_type):
-    """Generate C++ code for steady-state detection."""
+    """
+    Generate C++ code for steady-state detection (terminal event).
+
+    Steady-state root events are always terminal — they stop integration
+    when max(|dxdt|) drops below a tolerance.  No state modification,
+    hence no saltation correction needed: dg_dx / dg_dt are nullptr.
+    """
     state_type = f"ublas::vector<{num_type}>"
     
     return [
@@ -759,9 +1750,9 @@ def _generate_equilibrate_code(num_type):
         f"    EventMethod::Replace,  // method (ignored for terminal)",
         f"    true,         // terminal = true",
         f"    -1,           // direction = -1",
-        f"    nullptr,      // dg_dx_func (not needed for terminal)",
-        f"    nullptr,      // dg_dt_func (not needed for terminal)",
-        f"    nullptr       // dh_dx_func (not needed for terminal)",
+        f"    nullptr,      // dg_dx (not needed for terminal)",
+        f"    nullptr,      // dg_dt (not needed for terminal)",
+        f"    nullptr       // g_dot_dot (not needed for terminal)",
         f"  }});",
         ""
     ]
@@ -769,7 +1760,13 @@ def _generate_equilibrate_code(num_type):
 
 def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list, 
                                   n_states, num_type, forcings_list):
-    """Generate C++ code for user-defined root expressions (terminal events)."""
+    """
+    Generate C++ code for user-defined root expressions (terminal events).
+
+    Terminal root events stop integration when g(x, t) crosses zero.
+    They don't modify state, so no saltation correction is needed —
+    dg_dx / dg_dt are set to nullptr.
+    """
     states_syms = {name: sp.Symbol(name, real=True) for name in states_list}
     params_syms = {name: sp.Symbol(name, real=True) for name in params_list}
     t = sp.Symbol("time", real=True)
@@ -800,18 +1797,6 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
         except Exception as e:
             raise ValueError(f"Failed to parse rootfunc expression '{expr_str}': {e}")
         
-        # Generate analytical gradients for terminal root functions
-        dg_dx_cpp = _generate_gradient_cpp(
-            expr, states_list, params_list, n_states,
-            num_type, forcings_list, local_symbols, states_syms
-        )
-        dg_dx_lambda = _generate_gradient_lambda(dg_dx_cpp, n_states, num_type)
-        
-        dg_dt_cpp = _generate_time_deriv_cpp(
-            expr, t, states_list, params_list, n_states,
-            num_type, forcings_list
-        )
-        
         lines.extend([
             f"  // rootfunc[{i}]: {expr_str}",
             f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
@@ -823,13 +1808,29 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
             f"    EventMethod::Replace,  // method",
             f"    true,         // terminal = true",
             f"    0,            // direction = 0 (any crossing)",
-            f"    {dg_dx_lambda},  // dg_dx_func",
-            f"    [full_params, &F](const {state_type}& x, const {num_type}& t) -> {num_type} {{",
-            f"      return {num_type}({dg_dt_cpp});",
-            f"    }},  // dg_dt_func",
-            f"    nullptr       // dh_dx_func (not needed for terminal)",
+            f"    nullptr,      // dg_dx (not needed for terminal)",
+            f"    nullptr,      // dg_dt (not needed for terminal)",
+            f"    nullptr       // g_dot_dot (not needed for terminal)",
             f"  }});",
         ])
     
     lines.append("")
     return lines
+
+
+# =====================================================================
+# Sparse LU pattern code generation
+# =====================================================================
+
+def _extract_jac_sparsity(jac_matrix, n):
+    """Extract non-zero positions from a symbolic Jacobian matrix."""
+    pattern = set()
+    _zero = sp.Integer(0)
+    _szero = sp.S.Zero
+    for i in range(n):
+        row = jac_matrix[i]
+        for j in range(n):
+            expr = row[j]
+            if expr is not _zero and expr is not _szero and expr != 0:
+                pattern.add((i, j))
+    return pattern

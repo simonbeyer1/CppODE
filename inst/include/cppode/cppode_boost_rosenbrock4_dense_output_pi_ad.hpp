@@ -28,7 +28,6 @@
 #include <boost/numeric/odeint/util/is_resizeable.hpp>
 #include <boost/numeric/odeint/integrate/max_step_checker.hpp>
 
-#include <boost/numeric/odeint/stepper/rosenbrock4.hpp>
 #include <cppode/cppode_boost_rosenbrock4_controller_pi_ad.hpp>
 
 namespace boost {

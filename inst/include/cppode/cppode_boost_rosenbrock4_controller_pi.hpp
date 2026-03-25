@@ -37,7 +37,7 @@
 #include <boost/numeric/odeint/util/is_resizeable.hpp>
 #include <boost/numeric/odeint/util/detail/less_with_sign.hpp>
 
-#include <boost/numeric/odeint/stepper/rosenbrock4.hpp>
+#include <cppode/cppode_boost_rosenbrock4.hpp>
 
 namespace boost {
 namespace numeric {
@@ -106,6 +106,7 @@ public:
 
   /// Default minimum step decrease factor
   static constexpr value_type default_min_factor = 0.2;
+
 
   /**
    * @brief Construct controller with tolerances
@@ -241,6 +242,34 @@ public:
     m_err_old = 1.0;
     m_dt_old = 1.0;
     m_last_rejected = false;
+    m_stepper.invalidate_lu();
+  }
+
+  /**
+   * @brief Compute the jacobian_hint for the next do_step call
+   *
+   * Rejection-only Jacobian reuse strategy:
+   *   - After a rejected step the state (x, t) hasn't changed, only dt
+   *     was reduced. The Jacobian is therefore still exact — we skip its
+   *     re-evaluation and only re-factorize W with the new dt. This is a
+   *     mathematically risk-free optimisation.
+   *   - In all other situations a fresh Jacobian + LU is computed, because
+   *     Rosenbrock methods require an accurate Jacobian for full order
+   *     (unlike BDF methods whose Newton iteration can tolerate stale J).
+   *
+   * @return jacobian_hint to pass to stepper.do_step()
+   */
+  jacobian_hint compute_hint() const
+  {
+    if (m_first_step || !m_stepper.has_valid_jacobian())
+      return jacobian_hint::recompute_all;
+
+    // After a rejected step: same (x, t), only dt changed.
+    // J is still exact → skip J eval, only re-factorize W = (1/γh)I − J.
+    if (m_last_rejected)
+      return jacobian_hint::reuse_jacobian;
+
+    return jacobian_hint::recompute_all;
   }
 
   /**
@@ -283,18 +312,8 @@ public:
    * @param dt Step size (updated based on error estimate)
    * @return success if step accepted, fail if rejected
    *
-   * @par PI Control Strategy
-   * - **First step or after rejection**: Pure P-control (no history)
-   *   - factor = safety * (1/err)^(1/(order+1))
-   * - **Normal steps**: Full PI control
-   *   - factor = safety * (err_old/err)^beta * (1/err)^alpha
-   * - **After rejection**: Limit growth to prevent oscillations
-   *   - factor <= 1.0
-   *
-   * @par Step Size Limits
-   * - Minimum decrease: factor >= min_factor (default: max 80% reduction)
-   * - Maximum increase: factor <= max_factor (default: max 400% growth)
-   * - Absolute limit: dt <= max_dt (if set)
+   * @par Jacobian Reuse
+   * After rejected steps, the Jacobian is reused (same x,t — risk-free).
    */
   template< class System >
   boost::numeric::odeint::controlled_step_result
@@ -313,7 +332,10 @@ public:
 
     m_xerr_resizer.adjust_size( x , detail::bind( &controller_type::template resize_m_xerr< state_type > , detail::ref( *this ) , detail::_1 ) );
 
-    m_stepper.do_step( sys , x , t , xout , dt , m_xerr.m_v );
+    // Compute hint BEFORE do_step (uses current controller state)
+    jacobian_hint hint = compute_hint();
+
+    m_stepper.do_step( sys , x , t , xout , dt , m_xerr.m_v , hint );
     value_type err = error( xout , x , m_xerr.m_v );
 
     // Prevent division by zero
@@ -514,6 +536,8 @@ public:
     m_min_factor = min_factor;
   }
 
+
+
 protected:
 
   template< class StateIn >
@@ -547,6 +571,8 @@ protected:
   bool m_first_step;                  ///< First step flag
   value_type m_err_old , m_dt_old;    ///< Error and step-size history for PI control
   bool m_last_rejected;               ///< Rejection flag
+
+
 };
 
 } // namespace odeint

@@ -1,4 +1,4 @@
-# Analytic ODE solver + sensitivites
+# Analytic ODE solver + sensitivites (1st and 2nd order)
 library(reticulate)
 library(data.table)
 solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
@@ -285,31 +285,83 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
   cat("=== Vollständige Lösung ===\n")
   cat(sprintf("%s(t) = %s\n\n", var_name, as.character(full_solution)))
 
-  # Sensitivitäten
+  # Sensitivitäten (1. Ordnung)
   sens_par_names <- intersect(all_par_names, c("x0", names(pars)))
 
-  cat("=== Sensitivitäten ===\n")
-  sensitivities <- lapply(sens_par_names, function(p) {
+  # Hilfsfunktion: stückweise Ableitung nach einem Symbol
+  piecewise_diff <- function(solutions, sym) {
     if (length(solutions) == 1) {
-      sympy$diff(solutions[[1]]$expr, all_par_syms[[p]])
+      sympy$diff(solutions[[1]]$expr, sym)
     } else {
       pieces <- lapply(seq_along(solutions), function(i) {
         s <- solutions[[i]]
-        sens_seg <- sympy$diff(s$expr, all_par_syms[[p]])
+        d_seg <- sympy$diff(s$expr, sym)
         if (i == length(solutions)) {
-          list(sens_seg, sympy$true)
+          list(d_seg, sympy$true)
         } else {
-          list(sens_seg, sympy$And(t >= s$t_start, t < s$t_end))
+          list(d_seg, sympy$And(t >= s$t_start, t < s$t_end))
         }
       })
       do.call(sympy$Piecewise, pieces)
     }
+  }
+
+  cat("=== Sensitivitäten (1. Ordnung) ===\n")
+  sensitivities <- lapply(sens_par_names, function(p) {
+    piecewise_diff(solutions, all_par_syms[[p]])
   })
   names(sensitivities) <- sens_par_names
 
   for (p in sens_par_names) {
     p_display <- if (p == "x0") var_name else p
     cat(sprintf("∂%s/∂%s = %s\n", var_name, p_display, as.character(sympy$simplify(sensitivities[[p]]))))
+  }
+  cat("\n")
+
+  # Sensitivitäten (2. Ordnung) — untere Dreiecksmatrix (Schwarz)
+  # Paare (i,j) mit i >= j, d.h. ∂²x/∂p_i∂p_j
+  n_pars <- length(sens_par_names)
+  sens2_pairs <- list()
+  for (i in seq_len(n_pars)) {
+    for (j in seq_len(i)) {
+      sens2_pairs[[length(sens2_pairs) + 1]] <- c(i, j)
+    }
+  }
+
+  cat("=== Sensitivitäten (2. Ordnung, untere Dreiecksmatrix) ===\n")
+  sensitivities2 <- list()
+  for (idx in seq_along(sens2_pairs)) {
+    ij <- sens2_pairs[[idx]]
+    pi_name <- sens_par_names[ij[1]]
+    pj_name <- sens_par_names[ij[2]]
+    pi_sym <- all_par_syms[[pi_name]]
+    pj_sym <- all_par_syms[[pj_name]]
+
+    # ∂²x/∂p_i∂p_j  — erst nach p_j, dann nach p_i (Schwarz: Reihenfolge egal)
+    sens2_expr <- piecewise_diff(solutions, pj_sym)
+    # Zweite Ableitung: diff des Ergebnis nach p_i
+    if (length(solutions) == 1) {
+      sens2_expr <- sympy$diff(sens2_expr, pi_sym)
+    } else {
+      pieces2 <- lapply(seq_along(solutions), function(k) {
+        s <- solutions[[k]]
+        d2_seg <- sympy$diff(sympy$diff(s$expr, pj_sym), pi_sym)
+        if (k == length(solutions)) {
+          list(d2_seg, sympy$true)
+        } else {
+          list(d2_seg, sympy$And(t >= s$t_start, t < s$t_end))
+        }
+      })
+      sens2_expr <- do.call(sympy$Piecewise, pieces2)
+    }
+
+    key <- paste0(pi_name, ".", pj_name)
+    sensitivities2[[key]] <- sens2_expr
+
+    pi_display <- if (pi_name == "x0") var_name else pi_name
+    pj_display <- if (pj_name == "x0") var_name else pj_name
+    cat(sprintf("∂²%s/∂%s∂%s = %s\n", var_name, pi_display, pj_display,
+                as.character(sympy$simplify(sens2_expr))))
   }
   cat("\n")
 
@@ -346,16 +398,30 @@ solveOdeAnalytic <- function(ode, times, pars, events = NULL) {
   f_sol <- sympy_numeric_eval(full_solution)
   result[[var_name]] <- f_sol(times)
 
+  # 1. Ordnung
   for (p in sens_par_names) {
     p_display <- if (p == "x0") var_name else p
-    col_name <- paste0("∂", var_name, "/∂", p_display)
+    col_name <- paste0("\u2202", var_name, "/\u2202", p_display)
     f_sens <- sympy_numeric_eval(sensitivities[[p]])
     result[[col_name]] <- f_sens(times)
+  }
+
+  # 2. Ordnung
+  for (key in names(sensitivities2)) {
+    parts <- strsplit(key, "\\.")[[1]]
+    pi_name <- parts[1]
+    pj_name <- parts[2]
+    pi_display <- if (pi_name == "x0") var_name else pi_name
+    pj_display <- if (pj_name == "x0") var_name else pj_name
+    col_name <- paste0("\u2202\u00B2", var_name, "/\u2202", pi_display, "\u2202", pj_display)
+    f_sens2 <- sympy_numeric_eval(sensitivities2[[key]])
+    result[[col_name]] <- f_sens2(times)
   }
 
   # Attribute
   attr(result, "solution") <- as.character(full_solution)
   attr(result, "sensitivities") <- lapply(sensitivities, as.character)
+  attr(result, "sensitivities2") <- lapply(sensitivities2, as.character)
   attr(result, "parameters") <- sens_par_names
   attr(result, "events") <- events
   attr(result, "segments") <- lapply(solutions, function(s) as.character(s$expr))

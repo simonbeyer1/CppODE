@@ -104,6 +104,10 @@
 #' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector including derivatives. If `FALSE`, use only the value components for error control.
 #' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
 #' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
+#' @param sparse Controls sparse LU factorization in the Rosenbrock4 stepper.
+#'   `NULL` (default) auto-selects based on Jacobian sparsity (enabled when the
+#'   estimated speedup ratio is >= 2 and the system has >= 4 states).
+#'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
 #' @return
@@ -123,6 +127,7 @@
 #' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
 #' | `deriv` | `logical` | Indicates whether first-order sensitivities (dual numbers) were used |
 #' | `deriv2` | `logical` | Indicates whether nested dual numbers were used for second-order sensitivities |
+#' | `sparse` | `logical` | Whether sparse LU factorization is used in the Rosenbrock4 stepper |
 #' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
 #'
 #' @example inst/examples/example_ODE.R
@@ -133,6 +138,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
+                   sparse = NULL,
                    verbose = FALSE) {
 
   # --- Validate arguments ---
@@ -191,7 +197,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   # Parameters are symbols that are not variables, forcings, or time
 
-  params  <- setdiff(symbols, c(variables, forcings, "time"))
+  params <- setdiff(symbols, c(variables, forcings, "time"))
 
   # --- Handle fixed initial conditions and parameters ---
   if (is.null(fixed)) fixed <- character(0)
@@ -218,9 +224,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     modelname <- paste(c("x", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
   }
 
-  # --- Internal C++ symbol name
-  symbol_name   <- modelname
-
   # Lazy import
   codegen <- get_codegenCppODE_py()
 
@@ -241,15 +244,90 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     num_type = numType,
     fixed_states = fixed_initials,
     fixed_params = fixed_params,
-    forcings_list = forcings
+    forcings_list = forcings,
+    sparse = sparse
   )
 
   ode_code <- codegen_result$ode_code
   jac_code <- codegen_result$jac_code
-  jac_matrix_str <- codegen_result$jac_matrix
   time_derivs_str <- codegen_result$time_derivs
 
   if (verbose) message("  \u2713 ODE and Jacobian generated")
+
+  # --- Sparse LU decision ---
+  # The codegen already decided and generated the matching Jacobian functor.
+  # use_sparse MUST match what codegen produced, otherwise the Jacobian
+  # functor signature won't match the stepper's matrix type.
+  use_sparse <- isTRUE(codegen_result$use_sparse)
+
+  # Display Braille sparsity pattern when sparse LU is selected (always shown)
+  if (use_sparse) {
+    stats <- codegen_result$sparsity_stats
+    n <- stats$n
+    jpat <- stats$jac_pattern
+
+    max_braille_cols <- 30L
+    max_braille_rows <- 15L
+    max_n_direct <- min(max_braille_cols * 2L, max_braille_rows * 4L)
+
+    # Build (row, col) index matrix from pattern
+    ij <- matrix(as.integer(unlist(jpat)), ncol = 2L, byrow = TRUE)
+
+    if (n > max_n_direct) {
+      disp_n <- max_n_direct
+      block <- n / disp_n
+      mat_display <- matrix(FALSE, nrow = disp_n, ncol = disp_n)
+      disp_r <- pmin(as.integer(ij[,1L] / block) + 1L, disp_n)
+      disp_c <- pmin(as.integer(ij[,2L] / block) + 1L, disp_n)
+      mat_display[cbind(disp_r, disp_c)] <- TRUE
+      n_display <- disp_n
+    } else {
+      mat_display <- matrix(FALSE, nrow = n, ncol = n)
+      mat_display[cbind(ij[,1L] + 1L, ij[,2L] + 1L)] <- TRUE
+      n_display <- n
+    }
+
+    braille_base <- 0x2800L
+    bit_map <- c(1L, 2L, 4L, 64L, 8L, 16L, 32L, 128L)
+    n_brow <- ceiling(n_display / 4)
+    n_bcol <- ceiling(n_display / 2)
+
+    nr <- n_brow * 4L; nc <- n_bcol * 2L
+    padded <- matrix(FALSE, nrow = nr, ncol = nc)
+    padded[1:n_display, 1:n_display] <- mat_display
+
+    braille_lines <- character(n_brow)
+    for (br in seq_len(n_brow)) {
+      rows <- (br - 1L) * 4L + 1:4
+      codes <- integer(n_bcol)
+      for (dr in 0:3) {
+        for (dc in 0:1) {
+          r <- rows[dr + 1L]
+          col_seq <- seq.int(dc + 1L, nc, by = 2L)
+          hit <- padded[r, col_seq]
+          codes[hit] <- bitwOr(codes[hit], bit_map[dr + 1L + dc * 4L])
+        }
+      }
+      braille_lines[br] <- paste0(vapply(codes, function(c) intToUtf8(braille_base + c), character(1L)), collapse = "")
+    }
+
+    # Add matrix brackets
+    nb <- length(braille_lines)
+    if (nb == 1L) {
+      braille_lines[1L] <- paste0("\u23a3", braille_lines[1L], "\u23a6")
+    } else {
+      braille_lines[1L]  <- paste0("\u23a1", braille_lines[1L],  "\u23a4")
+      if (nb > 2L) {
+        for (k in 2:(nb - 1L))
+          braille_lines[k] <- paste0("\u23a2", braille_lines[k], "\u23a5")
+      }
+      braille_lines[nb] <- paste0("\u23a3", braille_lines[nb], "\u23a6")
+    }
+
+    message(sprintf("Sparse Jacobian detected (%dx%d, %d nnz, %.3f%% sparse)",
+                    n, n, stats$jac_nnz, stats$jac_zeros_pct))
+    for (line in braille_lines) message("    ", line)
+  }
 
   # --- Generate event code if needed ---
   event_code <- ""
@@ -262,7 +340,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       params_list = params,
       n_states = n_variables,
       num_type = numType,
-      forcings_list = forcings
+      forcings_list = forcings,
+      rhs_dict = as.list(setNames(rhs, variables))
     )
 
     event_code <- paste(event_lines, collapse = "\n")
@@ -343,7 +422,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   externC <- c(
     sprintf(
       'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP fixedSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
-      symbol_name
+      modelname
     ),
     "try {",
     "",
@@ -660,25 +739,36 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # Note: rootfunc_code is inserted later, after sys is defined
 
   # --- Integration setup ---
+  # Rosenbrock4 stepper type: dense or sparse LU
+  if (use_sparse) {
+    rb4_double <- "rosenbrock4<double, sparse_lu_tag>"
+    rb4_AD     <- "rosenbrock4<AD, sparse_lu_tag>"
+    rb4_AD2    <- "rosenbrock4<AD2, sparse_lu_tag>"
+  } else {
+    rb4_double <- "rosenbrock4<double>"
+    rb4_AD     <- "rosenbrock4<AD>"
+    rb4_AD2    <- "rosenbrock4<AD2>"
+  }
+
   if (useDenseOutput) {
     # Dense output version (WITH Interpolation)
     if (deriv2) {
       stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD2, ifelse(fullErr, "true", "false")),
         "  auto denseStepper = rosenbrock4_dense_output_pi_ad<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else if (deriv) {
       stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false")),
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD, ifelse(fullErr, "true", "false")),
         "  auto denseStepper = rosenbrock4_dense_output_pi_ad<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
       integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else {
       stepper_line <- paste(
-        "  auto controlledStepper = rosenbrock4_controller_pi<rosenbrock4<double>>(abstol, reltol);",
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi<%s>(abstol, reltol);", rb4_double),
         "  auto denseStepper = rosenbrock4_dense_output_pi<decltype(controlledStepper)>(controlledStepper);",
         sep = "\n"
       )
@@ -687,19 +777,31 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   } else {
     # Controlled stepper version (WITHOUT Interpolation)
     if (deriv2) {
-      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD2>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
+      stepper_line <- paste(
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD2, ifelse(fullErr, "true", "false")),
+        sep = "\n"
+      )
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else if (deriv) {
-      stepper_line <- sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<rosenbrock4<AD>, %s>(abstol, reltol);", ifelse(fullErr, "true", "false"))
+      stepper_line <- paste(
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD, ifelse(fullErr, "true", "false")),
+        sep = "\n"
+      )
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else {
-      stepper_line <- "  auto controlledStepper = rosenbrock4_controller_pi<rosenbrock4<double>>(abstol, reltol);"
+      stepper_line <- paste(
+        sprintf("  auto controlledStepper = rosenbrock4_controller_pi<%s>(abstol, reltol);", rb4_double),
+        sep = "\n"
+      )
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     }
   }
 
+  # Both dense and sparse paths use the same Jacobian functor name.
+  # Codegen produces exactly one 'struct jacobian' matching the path.
   externC <- c(externC, "",
-               "  // --- Solver setup ---",
+               sprintf("  // --- Solver setup (%s LU) ---",
+                       if (use_sparse) "sparse" else "dense"),
                "  double abstol = REAL(abstolSEXP)[0];",
                "  double reltol = REAL(reltolSEXP)[0];",
                "  double root_tol = REAL(root_tolSEXP)[0];",
@@ -714,15 +816,32 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(externC, rootfunc_code)
   }
 
+  # --- Initial step size estimation ---
+  if (use_sparse) {
+    estimate_dt_block <- c(
+      "  // --- Determine dt (sparse J·dxdt, O(nnz)) ---",
+      sprintf("  %s dt;", numType),
+      "  if (hini == 0.0) {",
+      "    dt = odeint_utils::estimate_initial_dt_local_sparse(sys, jac, x, times.front(), abstol, reltol);",
+      "  } else {",
+      "    dt = hini;",
+      "  }"
+    )
+  } else {
+    estimate_dt_block <- c(
+      "  // --- Determine dt ---",
+      sprintf("  %s dt;", numType),
+      "  if (hini == 0.0) {",
+      "    dt = odeint_utils::estimate_initial_dt_local(sys, jac, x, times.front(), abstol, reltol);",
+      "  } else {",
+      "    dt = hini;",
+      "  }"
+    )
+  }
+
   externC <- c(externC,
                stepper_line, "",
-               "  // --- Determine dt ---",
-               sprintf("  %s dt;", numType),
-               "  if (hini == 0.0) {",
-               sprintf("    dt = odeint_utils::estimate_initial_dt_local(sys, jac, x, times.front(), abstol, reltol);"),
-               "  } else {",
-               "    dt = hini;",
-               "  }",
+               estimate_dt_block,
                "",
                "  // --- Integration ---",
                integrate_line,
@@ -916,7 +1035,9 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   cpp_text <- c(
     paste0("/** Code auto-generated by CppODE ", as.character(utils::packageVersion("CppODE")), " **/"),
-    "", includings, "", usings, "", "namespace {", ode_code, "", jac_code, "", observer_code,
+    "", includings, "", usings, "", "namespace {",
+    ode_code, "", jac_code,
+    "", observer_code,
     "", "}", "", externC
   )
 
@@ -925,8 +1046,16 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   if (verbose) message("Wrote: ", normalizePath(filename, winslash = "/", mustWork = FALSE))
 
   # --- Attach attributes ---
-  jac_matrix_R <- matrix(unlist(jac_matrix_str), nrow = n_variables, ncol = n_variables, byrow = TRUE)
-  dimnames(jac_matrix_R) <- list(variables, variables)
+  # Reconstruct character Jacobian from sparse triplet format
+  jac_matrix_R <- matrix("0", nrow = n_variables, ncol = n_variables,
+                         dimnames = list(variables, variables))
+  jac_rows <- codegen_result$jac_nnz_rows
+  jac_cols <- codegen_result$jac_nnz_cols
+  jac_exprs <- codegen_result$jac_nnz_exprs
+  if (length(jac_rows) > 0L) {
+    jac_matrix_R[cbind(as.integer(jac_rows) + 1L,
+                       as.integer(jac_cols) + 1L)] <- as.character(jac_exprs)
+  }
 
   attr(modelname, "equations")     <- rhs
   attr(modelname, "srcfile")       <- normalizePath(filename, winslash = "/", mustWork = FALSE)
@@ -939,8 +1068,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
-  attr(modelname, "symbol_name")    <- symbol_name
-
+  attr(modelname, "sparse")        <- use_sparse
   # Dimension names
   if (deriv) {
     attr(modelname, "dim_names") <- list(
@@ -1175,10 +1303,7 @@ solveODE <- function(model, times, parms,
   if (maxroot     <= 0L) stop("'maxroot' must be positive")
 
   ## --- Call C++ solver ---
-  # Use the stored symbol_name (includes _d0/_d1/_d2 suffix) to avoid R's
-  # native symbol pointer cache returning a stale function when the same
-  # modelname is recompiled with different deriv/deriv2 settings.
-  sym_name <- paste0("solve_", attr(model, "symbol_name") %||% as.character(model))
+  sym_name <- paste0("solve_", as.character(model))
   SYM <- tryCatch(getNativeSymbolInfo(sym_name),
                   error = function(e) stop("Model not loaded. Run compile() first.", call. = FALSE))
   result <- tryCatch(

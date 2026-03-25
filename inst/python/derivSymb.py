@@ -148,7 +148,12 @@ def _apply_simplify(expr, simplify_func="powsimp"):
     elif simplify_func == "simplify":
         return sp.simplify(expr)
     else:
-        return sp.powsimp(expr)  # default fallback
+        import warnings
+        warnings.warn(
+            f"Unknown simplify_func '{simplify_func}'. Falling back to 'powsimp'.",
+            stacklevel=3
+        )
+        return sp.powsimp(expr)
 
 
 def _make_real_and_simplify(expr, max_iterations=5, simplify_func="powsimp"):
@@ -255,31 +260,51 @@ def _prepare_expressions(exprs, variables=None):
 # -----------------------------------------------------------------------------
 
 def _compute_jacobian_row(expr, vars_syms, use_real, simplify_func):
-    """Compute one row of the Jacobian (for parallelization)."""
+    """Compute one row of the Jacobian (for parallelization).
+    Sparsity-aware: skips sp.diff when the variable is not in the expression."""
+    free = expr.free_symbols
     row = []
     for v in vars_syms:
-        d = sp.diff(expr, v)
-        row.append(_simplify_derivative(d, use_real, simplify_func))
+        if v in free:
+            d = sp.diff(expr, v)
+            row.append(_simplify_derivative(d, use_real, simplify_func))
+        else:
+            row.append("0")
     return row
 
 
 def _compute_hessian_matrix(expr, vars_syms, use_real, simplify_func):
-    """Compute Hessian matrix for one expression."""
+    """Compute Hessian matrix for one expression.
+    Sparsity-aware: skips differentiation when variable not in expression."""
     n = len(vars_syms)
     H = []
     
-    # Compute first derivatives once
-    first_derivs = [sp.diff(expr, v) for v in vars_syms]
+    # Compute first derivatives once, sparsity-aware
+    free = expr.free_symbols
+    first_derivs = []
+    for v in vars_syms:
+        if v in free:
+            first_derivs.append(sp.diff(expr, v))
+        else:
+            first_derivs.append(sp.Integer(0))
     
     for i, v1 in enumerate(vars_syms):
         row = []
-        for j, v2 in enumerate(vars_syms):
-            # Use symmetry: H[i,j] = H[j,i]
-            if j < i:
-                row.append(H[j][i])  # Reference already computed
-            else:
-                d2 = sp.diff(first_derivs[i], v2)
-                row.append(_simplify_derivative(d2, use_real, simplify_func))
+        d1 = first_derivs[i]
+        if d1 == 0 or d1 == sp.Integer(0):
+            # Entire row is zero
+            row = ["0"] * n
+        else:
+            free_d1 = d1.free_symbols
+            for j, v2 in enumerate(vars_syms):
+                # Use symmetry: H[i,j] = H[j,i]
+                if j < i:
+                    row.append(H[j][i])  # Reference already computed
+                elif v2 in free_d1:
+                    d2 = sp.diff(d1, v2)
+                    row.append(_simplify_derivative(d2, use_real, simplify_func))
+                else:
+                    row.append("0")
         H.append(row)
     
     return H
@@ -306,8 +331,9 @@ def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False,
         If True, compute second derivatives (Hessians). Default: False.
     real : bool, optional
         If True, enforce real-valued simplification. Default: False.
-    parallel : bool, optional
-        If True, use parallel processing for large models. Default: False.
+    parallel : bool or None, optional
+        If True, use parallel processing. If None (default when called from
+        generate_ode_cpp), auto-enable for large models. Default: False.
     n_workers : int or None, optional
         Number of worker threads. Default: CPU count.
     simplify_func : str, optional
@@ -334,11 +360,16 @@ def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False,
     n_exprs = len(exprs_syms)
     n_vars = len(vars_syms)
     
-    # Decide on parallelization
-    use_parallel = parallel and n_exprs * n_vars > 100
+    # Decide on parallelization:
+    # Auto-enable for large models (n_exprs * n_vars > 100) even if parallel=False,
+    # since for these sizes the thread overhead is negligible vs sp.diff cost.
+    work_size = n_exprs * n_vars
+    use_parallel = work_size > 100
+    if parallel is False and work_size <= 100:
+        use_parallel = False
     
     if use_parallel:
-        n_workers = n_workers or os.cpu_count() or 4
+        n_workers = n_workers or min(os.cpu_count() or 4, n_exprs)
         jac = _compute_jacobian_parallel(fnames, exprs_syms, vars_syms, real, n_workers, simplify_func)
     else:
         jac = _compute_jacobian_serial(fnames, exprs_syms, vars_syms, real, simplify_func)
@@ -418,12 +449,4 @@ def derivSymb(exprs, variables=None, fixed=None, deriv2=False, real=False, simpl
     Legacy wrapper for backward compatibility.
     Returns jacobian/hessian in the format expected by generate_fun_cpp().
     """
-    result = jac_hess_symb(exprs, variables, fixed, deriv2, real, simplify_func=simplify_func)
-    
-    # Return in format compatible with generate_fun_cpp
-    return {
-        "jacobian": result["jacobian"],
-        "hessian": result["hessian"],
-        "names": result["names"],
-        "vars": result["vars"]
-    }
+    return jac_hess_symb(exprs, variables, fixed, deriv2, real, simplify_func=simplify_func)

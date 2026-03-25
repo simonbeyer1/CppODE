@@ -18,6 +18,7 @@ CppODE(
   fullErr = TRUE,
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
+  sparse = NULL,
   verbose = FALSE
 )
 }
@@ -53,6 +54,11 @@ If \code{NULL}, a random identifier is used.}
 
 \item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
 
+\item{sparse}{Controls sparse LU factorization in the Rosenbrock4 stepper.
+\code{NULL} (default) auto-selects based on Jacobian sparsity (enabled when the
+estimated speedup ratio is >= 2 and the system has >= 4 states).
+\code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
+
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
@@ -70,6 +76,7 @@ and its symbolic structure:\tabular{lll}{
    \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
    \code{deriv} \tab \code{logical} \tab Indicates whether first-order sensitivities (dual numbers) were used \cr
    \code{deriv2} \tab \code{logical} \tab Indicates whether nested dual numbers were used for second-order sensitivities \cr
+   \code{sparse} \tab \code{logical} \tab Whether sparse LU factorization is used in the Rosenbrock4 stepper \cr
    \code{dim_names} \tab \code{list} \tab Dimension names for arrays: \code{time}, \code{variable}, and \code{sens} \cr
 }
 }

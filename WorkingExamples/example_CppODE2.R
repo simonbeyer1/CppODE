@@ -14,33 +14,49 @@ library(data.table)
 source("../AnalyticSolver.R")
 
 # Define ODE system
-eqns <- c(x = "-k*x^2")
-events <- data.frame(var = "x", time = NA, value = "v", root = "x-xc", method = "add", stringsAsFactors = FALSE)
+eqns <- c(x = "-k*x")
+events <- data.frame(var = "x", time = NA, value = "v", root = "xc-x", method = "add", stringsAsFactors = FALSE)
 
 
-# # Generate and compile solver
-model <- CppODE(eqns, events = events, deriv = T, deriv2 = F, outdir = getwd(),
-                modelname = "model_RTEvent2", compile = T, useDenseOutput = T, verbose = T)
+# Generate and compile solver
+model <- CppODE(eqns, events = events, deriv = T, deriv2 = T, outdir = getwd(),
+                modelname = "model_FTEvent2", compile = T)
 
-pars <- c(x=1, k=1, v = 1, xc = 0.1)
-times  <- seq(0, 20, length.out = 1000)
-out.analytical <- solveOdeAnalytic(c(x = "-k*x^2"),times,pars, events = events) %>%
+pars <- c(x=1, k=1, v = 1, xc = 0.25)
+times  <- c(2, seq(0, 10, length.out = 300)) %>% sort()
+out.analytical <- solveOdeAnalytic(c(x = "-k*x"), times, pars, events = events) %>%
   melt(id.vars = 1L) %>%
   mutate(method = "analytical")
 
 
 # Example run
-res <- solveODE(model, times, pars, abstol = 1e-10, reltol = 1e-10, roottol = 1e-10)
-vars <- res$variable
+res <- solveODE(model, times, pars)
+vars <- res$variable %>% t()
 sens <- res$sens1
-out.boost <- matrix(aperm(sens, c(1,2,3)), nrow = dim(sens)[1],
+sens2 <- res$sens2
+out.boost <- matrix(aperm(sens, c(3, 1, 2)), nrow = dim(sens)[3],
                     dimnames = list(NULL,
-                                    paste0("∂", rep(dimnames(sens)[[2]], each = dim(sens)[3]),
-                                           "/∂", dimnames(sens)[[3]]))) %>% cbind(time = res$time, vars, .) %>%
+                                    paste0("∂", rep(dimnames(sens)[[1]], each = dim(sens)[2]),
+                                           "/∂", dimnames(sens)[[2]]))) %>%
+  cbind(time = res$time, vars, .) %>%
   as.data.table() %>%
   melt(id.vars = 1L) %>%
+  (\(dt) rbindlist(list(
+    dt,
+    {
+      p <- dimnames(sens2)[[2]]
+      idx <- which(lower.tri(matrix(1, length(p), length(p)), TRUE), arr.ind = TRUE)
+      rbindlist(lapply(seq_along(res$time), \(i)
+                       data.table(time = res$time[i],
+                                  variable = paste0("∂²x/∂", p[idx[,1]], "∂", p[idx[,2]]),
+                                  value = sens2[1,, ,i][idx]))
+      )
+    }
+  )))() %>%
   mutate(method = "boost")
 
+fwrite(out.boost, "boost.csv")
+fwrite(out.analytical, "analytical.csv")
 
 out <- rbind(out.boost, out.analytical)
 out$variable <- factor(out$variable, levels = unique(as.character(out$variable)))
@@ -54,21 +70,3 @@ ggplot(out, aes(x = time, y = value, color = method, linetype = method)) +
     x = "Time",
     y = "value"
   )
-
-# res$sens2[, "x", "xc", "xc"]
-
-
-
-# solveA <- function(times, pars) {
-#   x0 <- pars[1]; k <- pars[2]; v <- pars[3]; te <- pars[4]
-#   A <- function(t) 0.5*k*t^2
-#   xte <- 1/(A(te)+1/x0)+v
-#   x <- ifelse(times<te, 1/(A(times)+1/x0), 1/(A(times)+1/xte-A(te)))
-#   dx_dx0 <- ifelse(times<te, 1/(x0^2*(A(times)+1/x0)^2), 1/(xte^2*(A(te)+1/x0)^2)/(A(times)+1/xte-A(te))^2)
-#   dx_dk <- ifelse(times<te, -0.5*times^2/(A(times)+1/x0)^2, -(0.5*(times^2-te^2)+0.5*te^2/((A(te)+1/x0)^2*xte^2))/(A(times)+1/xte-A(te))^2)
-#   dx_dv <- ifelse(times<te, 0, 1/(xte^2*(A(times)+1/xte-A(te))^2))
-#   dx_dte <- ifelse(times<te, 0, k*te/(A(times)+1/xte-A(te))^2)
-#   data.table(time=times, x=x, "∂x/∂x"=dx_dx0, "∂x/∂k"=dx_dk, "∂x/∂v"=dx_dv, "∂x/∂te"=dx_dte) %>%
-#     melt(id.vars=1L) %>% mutate(method="analytical")
-# }
-#

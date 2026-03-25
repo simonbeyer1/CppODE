@@ -32,7 +32,7 @@
 #include <algorithm>
 #include <type_traits>
 #include <boost/numeric/odeint/stepper/controlled_step_result.hpp>
-#include <boost/numeric/odeint/stepper/rosenbrock4.hpp>
+#include <cppode/cppode_boost_rosenbrock4.hpp>
 #include <boost/numeric/odeint/util/is_resizeable.hpp>
 #include <fadbad++/fadiff.h>
 
@@ -177,6 +177,7 @@ public:
   /// Minimum step decrease factor
   static constexpr double default_min_factor = 0.2;
 
+
 public:
 
   /**
@@ -211,21 +212,33 @@ public:
   , m_safety(safety)
   , m_max_factor(max_factor)
   , m_min_factor(min_factor)
+  , m_dt_old(1.0)
   , m_err_old(1.0)
   , m_first_step(true)
   , m_last_rejected(false)
   {}
 
+public:
+
+  /**
+   * @brief Compute the jacobian_hint for the next do_step call
+   *
+   * Rejection-only Jacobian reuse (same as non-AD controller).
+   * After a rejected step: reuse J (same x,t). Otherwise: full recompute.
+   */
+  jacobian_hint compute_hint() const
+  {
+    if (m_first_step || !m_stepper.has_valid_jacobian())
+      return jacobian_hint::recompute_all;
+
+    if (m_last_rejected)
+      return jacobian_hint::reuse_jacobian;
+
+    return jacobian_hint::recompute_all;
+  }
+
   /**
    * @brief Try one integration step (separate input/output)
-   *
-   * @tparam System ODE system type (callable: void(x, dxdt, t))
-   * @param system The ODE system
-   * @param x_in Input state (unchanged)
-   * @param t Current time (advanced on success)
-   * @param x_out Output state (new state on success)
-   * @param dt Step size (updated based on error)
-   * @return success if step accepted, fail if rejected
    */
   template<class System>
   controlled_step_result try_step(
@@ -239,7 +252,10 @@ public:
       x_in, detail::bind(&rosenbrock4_controller_pi_ad::template resize_xerr<state_type>,
                          detail::ref(*this), detail::_1));
 
-    m_stepper.do_step(system, x_in, t, x_out, dt, m_xerr.m_v);
+    jacobian_hint hint = compute_hint();
+
+    m_stepper.do_step(system, x_in, t, x_out, dt, m_xerr.m_v, hint);
+
 
     double err = compute_error(x_in, x_out);
 
@@ -248,13 +264,6 @@ public:
 
   /**
    * @brief Try one integration step (in-place modification)
-   *
-   * @tparam System ODE system type
-   * @param system The ODE system
-   * @param x State vector (modified on success)
-   * @param t Current time (advanced on success)
-   * @param dt Step size (updated based on error)
-   * @return success if step accepted, fail if rejected
    */
   template<class System>
   controlled_step_result try_step(
@@ -277,14 +286,6 @@ public:
 
   /**
    * @brief Try step with mutable input state (for dense output compatibility)
-   *
-   * @tparam System ODE system type
-   * @param system The ODE system
-   * @param x_in Input state (may be modified by stepper internals)
-   * @param t Current time (advanced on success)
-   * @param x_out Output state
-   * @param dt Step size (updated based on error)
-   * @return success if step accepted, fail if rejected
    */
   template<class System>
   controlled_step_result try_step(
@@ -298,7 +299,10 @@ public:
       x_in, detail::bind(&rosenbrock4_controller_pi_ad::template resize_xerr<state_type>,
                          detail::ref(*this), detail::_1));
 
-    m_stepper.do_step(system, x_in, t, x_out, dt, m_xerr.m_v);
+    jacobian_hint hint = compute_hint();
+
+    m_stepper.do_step(system, x_in, t, x_out, dt, m_xerr.m_v, hint);
+
 
     double err = compute_error(x_in, x_out);
 
@@ -318,9 +322,11 @@ public:
    */
   void reset_after_event(time_type /*dt_before*/)
   {
+    m_dt_old = 1.0;
     m_err_old = 1.0;
     m_first_step = true;
     m_last_rejected = false;
+    m_stepper.invalidate_lu();
   }
 
   /**
@@ -469,19 +475,6 @@ private:
    * @param t Time (advanced on success)
    * @param dt Step size (updated)
    * @return success if err <= 1.0, fail otherwise
-   *
-   * @par Algorithm
-   * **On acceptance (err <= 1.0):**
-   * - First step or after rejection: factor = safety * (1/err)^(1/5)
-   * - Normal: factor = safety * (err_old/err)^beta * (1/err)^alpha
-   * - After rejection: limit factor <= 1.0
-   * - Clamp: min_factor <= factor <= max_factor
-   * - Update: dt *= factor, t += dt_old
-   *
-   * **On rejection (err > 1.0):**
-   * - factor = safety * (1/err)^(1/5)
-   * - Clamp: min_factor <= factor <= 0.9
-   * - Update: dt *= factor
    */
   controlled_step_result update_stepsize(double err, time_type& t, time_type& dt)
   {
@@ -495,26 +488,24 @@ private:
       double factor;
 
       if (m_first_step || m_last_rejected) {
-        // Pure P-control for first step or after rejection (no history)
         factor = m_safety * std::pow(1.0 / err, 1.0 / (order + 1.0));
       } else {
-        // Full PI control
         factor = m_safety
         * std::pow(m_err_old / err, m_beta)
         * std::pow(1.0 / err, m_alpha);
       }
 
-      // Limit step increase after rejection
       if (m_last_rejected) {
-        // Don't increase step size immediately after rejection
         factor = std::min(factor, 1.0);
       }
       factor = std::clamp(factor, m_min_factor, m_max_factor);
 
       // Update controller state
+      m_dt_old = controller_detail::scalar_value(dt);
       m_err_old = err;
       m_first_step = false;
       m_last_rejected = false;
+
 
       // Advance time and update step size
       t += dt;
@@ -525,8 +516,6 @@ private:
     else {
       // === Step rejected ===
       double factor = m_safety * std::pow(1.0 / err, 1.0 / (order + 1.0));
-
-      // Clamp decrease (not too aggressive, but ensure decrease)
       factor = std::clamp(factor, m_min_factor, 0.9);
 
       m_last_rejected = true;
@@ -562,6 +551,10 @@ private:
       m_xtemp, x, typename is_resizeable<state_type>::type());
   }
 
+public:
+
+
+
 private:
   stepper_type       m_stepper;        ///< Underlying Rosenbrock4 stepper
   resizer_type       m_xerr_resizer;   ///< Error buffer resizer
@@ -581,9 +574,12 @@ private:
   double m_min_factor;  ///< Minimum step decrease
 
   // Controller state
+  double m_dt_old;        ///< Previous step size (for lagged hint)
   double m_err_old;       ///< Previous error (for PI control)
   bool   m_first_step;    ///< First step flag
   bool   m_last_rejected; ///< Rejection flag
+
+
 };
 
 //==============================================================================

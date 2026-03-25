@@ -220,20 +220,14 @@ struct PchipForcing {
   }
 
 private:
-  /**
-   * Extract double value from numeric type (for interval search).
-   * Uses SFINAE to recursively call .x() for any AD-like type.
-   */
+  /// Extract double value from numeric type (for interval search).
+  /// Base case for double is exact; the template handles any AD-like
+  /// type with an .x() accessor (F<T>, F<F<T>>, etc.) recursively.
   static double extract_double(double x) { return x; }
 
-  // For any AD-like type with .x() method (F<T>, F<F<T>>, etc.)
   template<typename U>
   static double extract_double(const U& x) {
-    if constexpr (std::is_same_v<U, double>) {
-      return x;
-    } else {
-      return extract_double(const_cast<U&>(x).x());
-    }
+    return extract_double(const_cast<U&>(x).x());
   }
 
   /**

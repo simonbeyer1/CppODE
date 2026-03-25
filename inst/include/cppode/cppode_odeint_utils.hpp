@@ -376,6 +376,97 @@ inline F<T> estimate_initial_dt_local(
       return estimate_initial_dt_local<T>(sys_f, jac_f, x0, t0, atol, rtol, eta);
 }
 
+// ============================================================================
+//  Sparse estimate_initial_dt_local (double version)
+//
+//  The Jacobian functor writes directly into compressed_matrix (no dense
+//  n×n allocation).  The J·dxdt product uses cppode::sparse_jac_matvec
+//  which iterates only over the non-zero entries.
+// ============================================================================
+
+template<typename System, typename Jacobian>
+inline double estimate_initial_dt_local_sparse(
+    System system,
+    Jacobian jacobian,
+    vector<double>& x0,
+    double t0,
+    double atol,
+    double rtol,
+    double eta = 5e-2)
+{
+  const std::size_t n = x0.size();
+
+  vector<double> dxdt(n);
+  system(x0, dxdt, t0);
+
+  boost::numeric::ublas::compressed_matrix<double> J(n, n);
+  J.reserve(n * n);
+  vector<double> dfdt(n);
+  jacobian(x0, J, t0, dfdt);
+
+  // x'' = df/dt + J·dxdt (sparse product)
+  vector<double> xdd(n);
+  for (std::size_t i = 0; i < n; ++i)
+    xdd(i) = dfdt(i);
+  cppode::sparse_jac_matvec(J, dxdt, xdd);
+
+  double norm_x   = weighted_sup_norm(x0, x0, atol, rtol);
+  double norm_dx  = weighted_sup_norm(dxdt, x0, atol, rtol);
+  double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
+
+  double dt1 = std::numeric_limits<double>::infinity();
+  double dt2 = std::numeric_limits<double>::infinity();
+
+  if (norm_dx > 0.0) dt1 = norm_x / norm_dx;
+  if (norm_xdd > 0.0) dt2 = std::sqrt(norm_x / norm_xdd);
+
+  double dt = eta * std::min(dt1, dt2);
+  if (!std::isfinite(dt) || dt <= 0.0) dt = atol;
+  return dt;
+}
+
+// AD version
+template<typename T, typename System, typename Jacobian>
+inline fadbad::F<T> estimate_initial_dt_local_sparse(
+    System system,
+    Jacobian jacobian,
+    vector<fadbad::F<T>>& x0,
+    const fadbad::F<T> t0,
+    double atol,
+    double rtol,
+    double eta = 5e-2)
+{
+  using AD = fadbad::F<T>;
+  const std::size_t n = x0.size();
+
+  vector<AD> dxdt(n);
+  system(x0, dxdt, t0);
+
+  boost::numeric::ublas::compressed_matrix<AD> J(n, n);
+  J.reserve(n * n);
+  vector<AD> dfdt(n);
+  jacobian(x0, J, t0, dfdt);
+
+  vector<AD> xdd(n);
+  for (std::size_t i = 0; i < n; ++i)
+    xdd(i) = dfdt(i);
+  cppode::sparse_jac_matvec(J, dxdt, xdd);
+
+  double norm_x   = weighted_sup_norm(x0, x0, atol, rtol);
+  double norm_dx  = weighted_sup_norm(dxdt, x0, atol, rtol);
+  double norm_xdd = weighted_sup_norm(xdd, x0, atol, rtol);
+
+  double dt1 = std::numeric_limits<double>::infinity();
+  double dt2 = std::numeric_limits<double>::infinity();
+
+  if (norm_dx > 0.0) dt1 = norm_x / norm_dx;
+  if (norm_xdd > 0.0) dt2 = std::sqrt(norm_x / norm_xdd);
+
+  double dt = eta * std::min(dt1, dt2);
+  if (!std::isfinite(dt) || dt <= 0.0) dt = atol;
+  return dt;
+}
+
 } // namespace odeint_utils
 
 #endif // CPPODE_ODEINT_UTILS_HPP
