@@ -15,7 +15,7 @@ getSymbols <- function(expr, omit = NULL) {
   expr <- expr[expr != "0"]
   if (!length(expr)) return(character(0))
 
-  parsed <- tryCatch(parse(text = expr), error = function(e) NULL)
+  parsed <- tryCatch(parse(text = expr, keep.source = TRUE), error = function(e) NULL)
   if (is.null(parsed)) return(character(0))
 
   pd <- utils::getParseData(parsed)
