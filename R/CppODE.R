@@ -264,35 +264,31 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     n <- stats$n
     jpat <- stats$jac_pattern
 
-    max_braille_cols <- 30L
-    max_braille_rows <- 15L
-    max_n_direct <- min(max_braille_cols * 2L, max_braille_rows * 4L)
+    # Fixed braille grid size (characters), matrix is always scaled into this
+    n_bcol <- 8L   # 8 braille chars wide  = 16 dot columns
+    n_brow <- 4L   # 4 braille chars tall  = 16 dot rows
+    nr <- n_brow * 4L
+    nc <- n_bcol * 2L
 
-    # Build (row, col) index matrix from pattern
+    # Build (row, col) index matrix from pattern and scale into grid
+    # Each matrix entry fills its proportional block of dots
     ij <- matrix(as.integer(unlist(jpat)), ncol = 2L, byrow = TRUE)
-
-    if (n > max_n_direct) {
-      disp_n <- max_n_direct
-      block <- n / disp_n
-      mat_display <- matrix(FALSE, nrow = disp_n, ncol = disp_n)
-      disp_r <- pmin(as.integer(ij[,1L] / block) + 1L, disp_n)
-      disp_c <- pmin(as.integer(ij[,2L] / block) + 1L, disp_n)
-      mat_display[cbind(disp_r, disp_c)] <- TRUE
-      n_display <- disp_n
-    } else {
-      mat_display <- matrix(FALSE, nrow = n, ncol = n)
-      mat_display[cbind(ij[,1L] + 1L, ij[,2L] + 1L)] <- TRUE
-      n_display <- n
+    mat_display <- matrix(FALSE, nrow = nr, ncol = nc)
+    block_r <- nr / n
+    block_c <- nc / n
+    for (k in seq_len(nrow(ij))) {
+      r_start <- as.integer(ij[k, 1L] * block_r)
+      r_end   <- max(as.integer((ij[k, 1L] + 1L) * block_r), r_start + 1L)
+      c_start <- as.integer(ij[k, 2L] * block_c)
+      c_end   <- max(as.integer((ij[k, 2L] + 1L) * block_c), c_start + 1L)
+      rows_fill <- seq.int(r_start + 1L, min(r_end, nr))
+      cols_fill <- seq.int(c_start + 1L, min(c_end, nc))
+      mat_display[rows_fill, cols_fill] <- TRUE
     }
 
     braille_base <- 0x2800L
     bit_map <- c(1L, 2L, 4L, 64L, 8L, 16L, 32L, 128L)
-    n_brow <- ceiling(n_display / 4)
-    n_bcol <- ceiling(n_display / 2)
-
-    nr <- n_brow * 4L; nc <- n_bcol * 2L
-    padded <- matrix(FALSE, nrow = nr, ncol = nc)
-    padded[1:n_display, 1:n_display] <- mat_display
+    padded <- mat_display
 
     braille_lines <- character(n_brow)
     for (br in seq_len(n_brow)) {
@@ -312,7 +308,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     # Add matrix brackets
     nb <- length(braille_lines)
     if (nb == 1L) {
-      braille_lines[1L] <- paste0("\u23a3", braille_lines[1L], "\u23a6")
+      braille_lines[1L] <- paste0("[", braille_lines[1L], "]")
     } else {
       braille_lines[1L]  <- paste0("\u23a1", braille_lines[1L],  "\u23a4")
       if (nb > 2L) {
