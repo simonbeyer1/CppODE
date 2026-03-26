@@ -1455,6 +1455,8 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
             g_dot_dot_lines.append(f"      double {sname}_s = {xtr(f'x[{j}]')};")
         for j, pname in enumerate(params_list):
             g_dot_dot_lines.append(f"      double {pname}_s = {xtr(f'full_params[{n_states + j}]')};")
+        # Extract time as double to avoid clash with C stdlib time() function
+        g_dot_dot_lines.append(f"      double time_s = {xtr('t')};")
 
         # Generate expression using _s suffixed symbol names
         subs_map = {}
@@ -1462,6 +1464,7 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
             subs_map[local_symbols[sname]] = sp.Symbol(sname + "_s")
         for pname in params_list:
             subs_map[local_symbols[pname]] = sp.Symbol(pname + "_s")
+        subs_map[local_symbols["time"]] = sp.Symbol("time_s")
         G_tt_subst = G_tt_sym.subs(subs_map)
 
         G_tt_cpp = _get_cxx_printer().doprint(G_tt_subst)

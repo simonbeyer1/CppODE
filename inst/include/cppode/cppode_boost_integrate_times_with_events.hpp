@@ -272,30 +272,30 @@ inline void apply_event_action_fixed(
 //   1. g_dot from codegen-provided dg_dx, dg_dt  (analytical, full AD)
 //   2. dt* = -g / g_dot                          (FADBAD quotient rule)
 //   3. Forward Heun shift to event surface        (2nd-order AD accurate)
-//   4. Apply event action
+//   4. Apply ALL simultaneous event actions
 //   5. Backward Heun shift to grid time           (2nd-order AD accurate)
+//
+// Batch variant: when multiple root events trigger simultaneously (same
+// root function or coincident crossings), the Heun forward/backward
+// roundtrip is performed ONCE and all event actions are applied at the
+// event surface in between.  This is both correct (all events share the
+// same dt* and event surface) and efficient (4 RHS evaluations total,
+// independent of the number of simultaneous events).
 // ============================================================================
 
+// --- Helper: compute dt* for a root event (IFT + 2nd-order correction) ---
 template<class state_type, class time_type, class System>
-inline void saltation_root_analytical(
-    state_type& x,
+inline typename state_type::value_type compute_dt_star(
     const state_type& x_before,
     const time_type& t_event,
     System& sys,
+    const state_type& f_before,
     const RootEvent<state_type, time_type>& evt)
 {
   using value_type = typename state_type::value_type;
-  const size_t n = x.size();
-  if (n == 0) return;
+  const size_t n = x_before.size();
 
-  // --- 1. RHS before event (full AD) ---
-  state_type f_before(n);
-  sys.first(x_before, f_before, t_event);
-
-  // --- 2. Analytical g_dot = sum_i(dg/dx_i · f_i) + dg/dt ---
-  //     Computed as full AD type: FADBAD chain rule on dg_dx and f
-  //     gives d(g_dot)/dp in the .d() components, which is needed
-  //     for second-order dt* via the quotient rule.
+  // Analytical g_dot = sum_i(dg/dx_i · f_i) + dg/dt
   state_type grad_g(n);
   evt.dg_dx(x_before, t_event, grad_g);
   value_type g_dot = evt.dg_dt(x_before, t_event);
@@ -304,48 +304,21 @@ inline void saltation_root_analytical(
 
   double g_dot_s = scalar_value(g_dot);
   if (std::abs(g_dot_s) < 1e-15) {
-    // Degenerate (tangential crossing): no meaningful dt*, apply event directly
-    apply_event_action(x, x_before, t_event, evt);
-    return;
+    // Degenerate: return zero dt* (caller will fall back to plain action)
+    return value_type(0.0);
   }
 
-  // --- 3. dt* from the IFT (full AD, quotient rule) ---
-  //     g_val has scalar ≈ 0 (root localized by bisection).
-  //     Force scalar to exactly 0 so only AD components drive dt*.
+  // dt* from IFT (FADBAD quotient rule)
   value_type g_val = evt.func(x_before, t_event);
   g_val = g_val - value_type(scalar_value(g_val));
   value_type dt_star = -g_val / g_dot;
 
-  // --- 3b. Second-order IFT correction ---
-  //
-  //   The FADBAD quotient rule on -g/g_dot yields correct first-order
-  //   derivatives dt*.d(a) but MISSES a second-order term.  The full
-  //   second-order IFT for g(x(t,p), t, p) = 0 gives:
-  //
-  //     d²t*/dp_a dp_b = -(1/G_t)[G_{pp} + G_{tp}·dt*/dp_b
-  //                       + G_{tp}·dt*/dp_a + G_tt·(dt*/dp_a)(dt*/dp_b)]
-  //
-  //   FADBAD captures the first three terms but MISSES the G_tt term,
-  //   where G_tt = d(g_dot)/dt is the total second time derivative of g
-  //   along the trajectory.
-  //
-  //   The correction exploits the F<F<double>> identity:
-  //     (dt*²).dd(a,b) = 2 · dt*.d(a) · dt*.d(b)
-  //   so that:
-  //     dt*_corrected = dt* - 0.5 · (G_tt / G_t) · dt*²
-  //   adds exactly -(G_tt/G_t)·dt*.d(a)·dt*.d(b) to dt*.dd(a,b)
-  //   while leaving scalar and first-order derivatives unchanged
-  //   (since scalar(dt*) = 0 → scalar(dt*²) = 0, dt*².d(a) = 0).
-  //
-  //   G_tt is computed analytically from the codegen-provided g_dot_dot
-  //   function, or via scalar finite difference as a fallback.
+  // Second-order IFT correction
   {
     double G_tt;
     if (evt.g_dot_dot) {
-      // Analytical G_tt from codegen (exact, no FD error)
       G_tt = evt.g_dot_dot(x_before, t_event);
     } else {
-      // Fallback: scalar FD on g_dot
       constexpr double eps = 1e-8;
       state_type x_fwd(n);
       for (size_t i = 0; i < n; ++i)
@@ -364,15 +337,74 @@ inline void saltation_root_analytical(
     }
 
     double corr_coeff = -0.5 * G_tt / g_dot_s;
-
-    // Apply: dt* += corr_coeff · dt*²
-    // Since scalar(dt*) = 0, this only affects second-order AD components.
     dt_star = dt_star + value_type(corr_coeff) * dt_star * dt_star;
   }
 
-  // --- 4. Forward Heun shift to event surface ---
-  //     x_star = x + ½·(f(x) + f(x + f(x)·dt*))·dt*
-  //     Second-order accurate in AD: captures ½·(df/dx)·f·dt*² curvature.
+  return dt_star;
+}
+
+// --- Batch saltation: one Heun roundtrip, N event actions in the middle ---
+//
+// All triggered events must share the same root function (same dt*).
+// The first event with valid dg_dx/dg_dt is used to compute dt*.
+// Steps:
+//   1. Compute f_before, dt* (once)
+//   2. Forward Heun shift to event surface → x_star (once)
+//   3. Apply ALL event actions on x_star
+//   4. Backward Heun shift to grid time → x (once)
+//
+// Cost: 4 RHS evaluations, independent of number of events.
+
+template<class state_type, class time_type, class System>
+inline void saltation_root_analytical_batch(
+    state_type& x,
+    const state_type& x_before,
+    const time_type& t_event,
+    System& sys,
+    const std::vector<RootEvent<state_type, time_type>>& root_events,
+    const std::vector<TriggeredEvent>& triggered)
+{
+  using value_type = typename state_type::value_type;
+  const size_t n = x.size();
+  if (n == 0) return;
+
+  // --- 1. RHS before event (full AD) ---
+  state_type f_before(n);
+  sys.first(x_before, f_before, t_event);
+
+  // --- 2. Compute dt* from the first event with valid gradients ---
+  value_type dt_star(0.0);
+  bool have_dt_star = false;
+  for (const auto& te : triggered) {
+    const auto& evt = root_events[te.index];
+    if (evt.terminal) continue;
+    if (evt.dg_dx && evt.dg_dt) {
+      // Check g_dot for degeneracy before computing dt*
+      state_type grad_g(n);
+      evt.dg_dx(x_before, t_event, grad_g);
+      value_type g_dot = evt.dg_dt(x_before, t_event);
+      for (size_t i = 0; i < n; ++i)
+        g_dot += grad_g[i] * f_before[i];
+
+      if (std::abs(scalar_value(g_dot)) >= 1e-15) {
+        dt_star = compute_dt_star(x_before, t_event, sys, f_before, evt);
+        have_dt_star = true;
+      }
+      break;
+    }
+  }
+
+  if (!have_dt_star) {
+    // Fallback: no valid gradients, apply events without saltation
+    for (const auto& te : triggered) {
+      if (!root_events[te.index].terminal) {
+        apply_event_action(x, x_before, t_event, root_events[te.index]);
+      }
+    }
+    return;
+  }
+
+  // --- 3. Forward Heun shift to event surface ---
   state_type x_euler(n);
   for (size_t i = 0; i < n; ++i)
     x_euler[i] = x_before[i] + f_before[i] * dt_star;
@@ -385,21 +417,25 @@ inline void saltation_root_analytical(
   for (size_t i = 0; i < n; ++i)
     x_star[i] = x_before[i] + half * (f_before[i] + f_euler[i]) * dt_star;
 
-  // --- 5. Apply event action at the event surface ---
+  // --- 4. Apply ALL event actions at the event surface ---
   state_type x_after(n);
   for (size_t i = 0; i < n; ++i) x_after[i] = x_star[i];
-  const int k = evt.state_index;
-  if (k >= 0) {
-    value_type h = evt.value_func(x_star, t_event);
-    switch (evt.method) {
-    case EventMethod::Replace:  x_after[k] = h; break;
-    case EventMethod::Add:      x_after[k] = x_star[k] + h; break;
-    case EventMethod::Multiply: x_after[k] = x_star[k] * h; break;
+
+  for (const auto& te : triggered) {
+    const auto& evt = root_events[te.index];
+    if (evt.terminal) continue;
+    const int k = evt.state_index;
+    if (k >= 0) {
+      value_type h = evt.value_func(x_star, t_event);
+      switch (evt.method) {
+      case EventMethod::Replace:  x_after[k] = h; break;
+      case EventMethod::Add:      x_after[k] = x_star[k] + h; break;
+      case EventMethod::Multiply: x_after[k] = x_star[k] * h; break;
+      }
     }
   }
 
-  // --- 6. Backward Heun shift to grid time ---
-  //     x_final = x_after - ½·(f(x_after) + f(x_after - f(x_after)·dt*))·dt*
+  // --- 5. Backward Heun shift to grid time ---
   state_type f_after(n);
   sys.first(x_after, f_after, t_event);
 
@@ -605,7 +641,8 @@ private:
  // Apply root events with SFINAE-dispatched saltation correction
  //
  // double:  plain event action, no sensitivity correction
- // AD/AD2:  analytical IFT-based saltation (requires dg_dx, dg_dt)
+ // AD/AD2:  batch analytical saltation — one Heun roundtrip for all
+ //          simultaneous events (requires dg_dx, dg_dt on at least one)
  // --------------------------------------------------------------------------
 
  bool apply_root_events(
@@ -617,29 +654,46 @@ private:
    for (const auto& te : triggered)
      if (m_root[te.index].terminal) { has_terminal = true; break; }
 
-     for (const auto& te : triggered) {
-       size_t i = te.index;
-
-       if (m_root[i].terminal) {
-         fired[i]++;
-         continue;
-       }
-
-       if constexpr (std::is_arithmetic_v<value_type>) {
-         // double: plain event action
+     if constexpr (std::is_arithmetic_v<value_type>) {
+       // double path: plain event actions, no saltation needed
+       for (const auto& te : triggered) {
+         size_t i = te.index;
+         if (m_root[i].terminal) { fired[i]++; continue; }
          apply_event_action(x_root, x_before, t_root, m_root[i]);
-       } else {
-         // AD path: analytical saltation if gradients are available
-         if (m_root[i].dg_dx && m_root[i].dg_dt) {
-           saltation_root_analytical(x_root, x_before, t_root, m_sys, m_root[i]);
-         } else {
-           // Fallback: apply event without saltation correction
-           // (e.g. steady-state terminal events, or missing gradients)
-           apply_event_action(x_root, x_before, t_root, m_root[i]);
+         fired[i]++;
+       }
+     } else {
+       // AD path: batch saltation — one Heun roundtrip, all events in the middle
+       //
+       // Check if at least one non-terminal event has valid gradients
+       bool has_gradients = false;
+       bool has_non_terminal = false;
+       for (const auto& te : triggered) {
+         if (m_root[te.index].terminal) continue;
+         has_non_terminal = true;
+         if (m_root[te.index].dg_dx && m_root[te.index].dg_dt) {
+           has_gradients = true;
+           break;
          }
        }
 
-       fired[i]++;
+       if (has_non_terminal && has_gradients) {
+         // Batch saltation: forward Heun → all events → backward Heun
+         saltation_root_analytical_batch(x_root, x_before, t_root, m_sys,
+                                         m_root, triggered);
+       } else if (has_non_terminal) {
+         // Fallback: no gradients available, apply without saltation
+         for (const auto& te : triggered) {
+           if (!m_root[te.index].terminal) {
+             apply_event_action(x_root, x_before, t_root, m_root[te.index]);
+           }
+         }
+       }
+
+       // Update fire counts
+       for (const auto& te : triggered) {
+         fired[te.index]++;
+       }
      }
      return has_terminal;
  }
