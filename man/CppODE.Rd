@@ -55,8 +55,7 @@ If \code{NULL}, a random identifier is used.}
 \item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
 
 \item{sparse}{Controls sparse LU factorization in the Rosenbrock4 stepper.
-\code{NULL} (default) auto-selects based on Jacobian sparsity (enabled when the
-estimated speedup ratio is >= 2 and the system has >= 4 states).
+\code{NULL} (default) auto-selects based on Jacobian sparsity.
 \code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
@@ -71,7 +70,6 @@ and its symbolic structure:\tabular{lll}{
    \code{parameters} \tab \code{character} \tab Names of model parameters \cr
    \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
    \code{rootfunc} \tab \code{character} \tab Root function specification (if any) \cr
-   \code{solver} \tab \code{list} \tab Description of the numerical solver configuration \cr
    \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
    \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
    \code{deriv} \tab \code{logical} \tab Indicates whether first-order sensitivities (dual numbers) were used \cr
@@ -87,7 +85,7 @@ equations (ODEs) of the form
 \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 
 using \href{https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html}{\strong{Boost.Odeint's}}
-stiff Rosenbrock4 method with dense output and error control (using third order in combination).
+stiff method Rosenbrock4 with dense output and error control (using third order in combination).
 The solver supports \strong{time-based} and \strong{root-triggered events} and can, optionally,
 compute \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
 \strong{dual number} types provided by
@@ -160,13 +158,13 @@ Returns \code{list(time, variable)}
 Returns \code{list(time, variable, sens1)}
 \itemize{
 \item \code{sens1}: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_x,n_s,n_t)}, containing
-\eqn{\partial x_j(t_i)/\partial p_k}
+\eqn{\partial x_i(t_k)/\partial p_j}
 }
 \item \code{deriv = TRUE}, \code{deriv2 = TRUE}
 Returns \code{list(time, variable, sens1, sens2)}
 \itemize{
 \item \code{sens2}: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_x,n_s,n_s,n_t)},
-containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
+containing \eqn{\partial^2 x_i(t_k)/\partial p_j\,\partial p_k}
 }
 }
 

@@ -1,24 +1,23 @@
 /*
  Sparse LU for ublas::compressed_matrix
- ========================================
- Two-phase sparse LU that works directly on compressed_matrix<T>.
+ Two-phase sparse LU that works directly on ublas::compressed_matrix<T>.
 
- Phase 1 — Symbolic (ONCE per sparsity pattern):
- 1. Approximate Minimum Degree (AMD) reordering to minimize fill-in.
- 2. Simulate Gaussian elimination on the reordered pattern to discover
- fill-in (static pivoting — no row swaps).
- 3. Build an expanded CSR structure in the AMD-reordered space.
- 4. Precompute direct offsets for all elimination operations so the
- numerical phase uses O(1) array access — no binary search.
+ Phase 1: Symbolic (ONCE per sparsity pattern):
+ - Approximate Minimum Degree (AMD) reordering to minimize fill-in.
+ - Simulate Gaussian elimination on the reordered pattern to discover
+   fill-in (static pivoting, no row swaps).
+ - Build an expanded CSR structure in the AMD-reordered space.
+ - Precompute direct offsets for all elimination operations so the
+   numerical phase uses O(1) array access intead of a binary search.
 
- Phase 2 — Numerical (every Rosenbrock step):
- 1. Copy values from compressed_matrix into the reordered CSR using
- a precomputed scatter map — O(nnz_original).
- 2. Execute elimination using precomputed offset pairs — O(nnz_lu).
- 3. Check diagonal pivots; return status flag for fallback.
+ Phase 2: Numerical (every Rosenbrock step):
+ - Copy values from compressed_matrix into the reordered CSR using
+   precomputed scatter map ~ O(nnz_original).
+ - Execute elimination using precomputed offset pairs ~ O(nnz_lu).
+ - Check diagonal pivots; return status flag for fallback.
 
  The symbolic structure is cached in sparse_lu_cache<T> and reused
- across integration steps.  The Rosenbrock stepper holds one cache
+ across integration steps. The Rosenbrock stepper holds one cache
  as a member.
 
  Works with double, F<double>, F<F<double>> via templates.
@@ -43,9 +42,9 @@
 
 namespace cppode {
 
-// ============================================================================
+// =========================================================================================
 //  Scalar value extraction (for pivot checking with AD types)
-// ============================================================================
+// =========================================================================================
 namespace detail {
 
 template<class T>
@@ -59,13 +58,13 @@ inline double abs_val(const fadbad::F<T>& v) {
 
 } // namespace detail
 
-// ============================================================================
-//  AMD — Approximate Minimum Degree ordering
+// =========================================================================================
+//  Approximate Minimum Degree ordering (AMD)
 //
 //  Lightweight implementation operating on a symmetric sparsity pattern
 //  (|A| + |A^T|).  Produces a fill-reducing permutation for LU.
-//  Pure integer algorithm — independent of the value type T.
-// ============================================================================
+//  Pure integer algorithm, independent of the value type T.
+// =========================================================================================
 namespace detail {
 
 inline void amd_order(int n,
@@ -147,9 +146,9 @@ inline void amd_order(int n,
 
 } // namespace detail
 
-// ============================================================================
+// =========================================================================================
 //  sparse_lu_cache<T>
-// ============================================================================
+// =========================================================================================
 template<class T>
 struct sparse_lu_cache {
   int n = 0;
@@ -217,9 +216,9 @@ struct sparse_lu_cache {
   // --- Numerical storage ---
   std::vector<T> values;
 
-  // ============================================================================
+  // =========================================================================================
   //  Binary search helper (used only during symbolic analysis)
-  // ============================================================================
+  // =========================================================================================
   int find_in_row(int row, int col) const {
     int lo = row_ptr[row], hi = row_ptr[row + 1];
     while (lo < hi) {
@@ -232,17 +231,15 @@ struct sparse_lu_cache {
     return -1;
   }
 
-  // ============================================================================
+  // =========================================================================================
   //  Symbolic analysis with AMD reordering
-  // ============================================================================
+  // =========================================================================================
   template<class CM>
   void symbolic_analyze(const CM& W)
   {
     n = static_cast<int>(W.size1());
 
-    // ------------------------------------------------------------------
-    //  Step 1: Extract pattern and build symmetric adjacency for AMD
-    // ------------------------------------------------------------------
+    // --- Extract pattern and build symmetric adjacency for AMD ---
     std::vector<std::vector<int>> orig_rows(n);
     for (auto it1 = W.begin1(); it1 != W.end1(); ++it1) {
       int i = static_cast<int>(it1.index1());
@@ -271,15 +268,11 @@ struct sparse_lu_cache {
       a.erase(std::unique(a.begin(), a.end()), a.end());
     }
 
-    // ------------------------------------------------------------------
-    //  Step 2: AMD ordering
-    // ------------------------------------------------------------------
+    // --- AMD ordering ---
     detail::amd_order(n, sym_adj, amd_perm, amd_iperm);
     sym_adj.clear(); // free memory
 
-    // ------------------------------------------------------------------
-    //  Step 3: Reorder pattern into AMD space
-    // ------------------------------------------------------------------
+    // --- Reorder pattern into AMD space ---
     // rows_reord[new_i] = sorted set of new_j where A(perm[new_i], perm[new_j]) != 0
     std::vector<std::vector<int>> rows_reord(n);
     for (int old_i = 0; old_i < n; ++old_i) {
@@ -299,10 +292,8 @@ struct sparse_lu_cache {
         r.insert(dit, i);
     }
 
-    // ------------------------------------------------------------------
-    //  Step 4: Symbolic factorization (static pivoting, no row swaps)
-    //  Simulate elimination to discover fill-in.
-    // ------------------------------------------------------------------
+    // --- Symbolic factorization (static pivoting, no row swaps) ---
+    // Simulate elimination to discover fill-in.
     // Column lists for quick lookup of "which rows have entry in column k"
     std::vector<std::vector<int>> col_lists(n);
     for (int i = 0; i < n; ++i)
@@ -365,9 +356,7 @@ struct sparse_lu_cache {
           pre_plan.push_back(std::move(pec));
     }
 
-    // ------------------------------------------------------------------
-    //  Step 5: Build expanded CSR from the filled-in reordered pattern
-    // ------------------------------------------------------------------
+    // --- Build expanded CSR from the filled-in reordered pattern ---
     row_ptr.resize(n + 1);
     col_idx.clear();
     row_ptr[0] = 0;
@@ -390,9 +379,7 @@ struct sparse_lu_cache {
       diag_pos[i] = pos;
     }
 
-    // ------------------------------------------------------------------
-    //  Step 6: Build scatter map for copy_values_from
-    // ------------------------------------------------------------------
+    // --- Build scatter map for copy_values_from ---
     // Count original nonzeros to size the scatter map
     int nnz_orig = 0;
     for (int i = 0; i < n; ++i)
@@ -409,9 +396,7 @@ struct sparse_lu_cache {
       }
     }
 
-    // ------------------------------------------------------------------
-    //  Step 7: Build elimination plan with precomputed direct offsets
-    // ------------------------------------------------------------------
+    // --- Build elimination plan with precomputed direct offsets ---
     elim_cols.clear();
     elim_rows.clear();
     updates_flat.clear();
@@ -444,9 +429,7 @@ struct sparse_lu_cache {
       elim_cols.push_back(eco);
     }
 
-    // ------------------------------------------------------------------
-    //  Step 8: Build forward/backward substitution plans
-    // ------------------------------------------------------------------
+    // --- Build forward/backward substitution plans ---
     L_row_ptr.resize(n + 1);
     U_row_ptr.resize(n + 1);
     L_entries.clear();
@@ -472,18 +455,16 @@ struct sparse_lu_cache {
       U_row_ptr[i + 1] = static_cast<int>(U_entries.size());
     }
 
-    // ------------------------------------------------------------------
-    //  Step 9: Allocate numerical storage
-    // ------------------------------------------------------------------
+    // --- Allocate numerical storage ---
     values.resize(nnz_lu, T(0));
 
     symbolic_ready = true;
   }
 
-  // ============================================================================
+  // =========================================================================================
   //  Copy values from compressed_matrix into reordered CSR
-  //  Uses precomputed scatter map — O(nnz_original), no binary search.
-  // ============================================================================
+  //  Uses precomputed scatter map ~ O(nnz_original), no binary search.
+  // =========================================================================================
   template<class CM>
   void copy_values_from(const CM& W)
   {
@@ -501,13 +482,13 @@ struct sparse_lu_cache {
     }
   }
 
-  // ============================================================================
-  //  Numerical LU factorize — static pivoting, precomputed offsets
+  // =========================================================================================
+  //  Numerical LU factorize with static pivoting, precomputed offsets
   //
-  //  All array accesses are direct (O(1)), no binary search.
+  //  All array accesses are direct, no binary search.
   //  Returns true if all pivots are acceptable, false if a near-zero
   //  diagonal was detected (caller should fall back to dense).
-  // ============================================================================
+  // =========================================================================================
   bool numeric_factorize()
   {
     for (const auto& eco : elim_cols) {
@@ -530,10 +511,10 @@ struct sparse_lu_cache {
     return check_pivots();
   }
 
-  // ============================================================================
+  // =========================================================================================
   //  Check diagonal pivots after factorization
   //  Returns true if all pivots are acceptable.
-  // ============================================================================
+  // =========================================================================================
   bool check_pivots() const
   {
     double max_diag = 0.0;
@@ -552,12 +533,12 @@ struct sparse_lu_cache {
     return true;
   }
 
-  // ============================================================================
-  //  Forward/backward substitution — precomputed plans, no binary search
+  // =========================================================================================
+  //  Forward/backward substitution: precomputed plans, no binary search
   //
   //  Solves LU·x = b  where L and U are stored in values[].
   //  The permutation is the AMD reordering.
-  // ============================================================================
+  // =========================================================================================
   void solve(boost::numeric::ublas::vector<T>& b) const
   {
     // Permute b into reordered space: pb[new_i] = b[old_i]
@@ -586,7 +567,7 @@ struct sparse_lu_cache {
       b[i] = pb[amd_iperm[i]];
   }
 
-  // ============================================================================
+  // =========================================================================================
   //  Combined factorize: symbolic (if needed) + copy + numerical
   //
   //  Returns 0 on success, -1 if pivots are unacceptable (caller should
@@ -594,7 +575,7 @@ struct sparse_lu_cache {
   //  The permutation_matrix parameter is kept for interface compatibility
   //  with the Rosenbrock stepper but is set to identity since AMD
   //  reordering is handled internally.
-  // ============================================================================
+  // =========================================================================================
   template<class CM>
   int factorize(CM& W,
                 boost::numeric::ublas::permutation_matrix<std::size_t>& pm)
@@ -618,9 +599,9 @@ struct sparse_lu_cache {
   }
 };
 
-// ============================================================================
+// =========================================================================================
 //  Sparse Jacobian matrix-vector product:  y += W * x
-// ============================================================================
+// =========================================================================================
 template<class T>
 void sparse_jac_matvec(
     const boost::numeric::ublas::compressed_matrix<T>& W,

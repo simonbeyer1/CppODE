@@ -438,15 +438,3 @@ def _compute_hessian_parallel(fnames, exprs_syms, vars_syms, use_real, n_workers
             hess[fname] = future.result()
     
     return hess
-
-
-# -----------------------------------------------------------------------------
-# Convenience wrapper (original API compatibility)
-# -----------------------------------------------------------------------------
-
-def derivSymb(exprs, variables=None, fixed=None, deriv2=False, real=False, simplify_func="powsimp"):
-    """
-    Legacy wrapper for backward compatibility.
-    Returns jacobian/hessian in the format expected by generate_fun_cpp().
-    """
-    return jac_hess_symb(exprs, variables, fixed, deriv2, real, simplify_func=simplify_func)

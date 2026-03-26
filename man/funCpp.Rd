@@ -13,7 +13,6 @@ funCpp(
   outdir = tempdir(),
   compile = FALSE,
   verbose = FALSE,
-  warnings = TRUE,
   convenient = TRUE,
   deriv = TRUE,
   deriv2 = FALSE
@@ -39,8 +38,6 @@ Defaults to all symbols found in \code{eqns} not listed in \code{parameters}.}
 \item{compile}{Logical; if \code{TRUE}, compile and load generated C++ code.}
 
 \item{verbose}{Logical; if \code{TRUE}, print progress messages.}
-
-\item{warnings}{Logical; reserved for future use.}
 
 \item{convenient}{Logical; if \code{TRUE}, return wrappers accepting named arguments.}
 

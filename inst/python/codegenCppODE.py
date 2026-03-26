@@ -524,7 +524,6 @@ def generate_ode_cpp(
     # Dense path:  writes to matrix<T> via J(i,j) = expr (with zero_matrix init)
     # Only ONE is generated — the one matching use_sparse.
     if use_sparse:
-        import re
         jac_re = re.compile(r'^\s*J\((\d+),(\d+)\)\s*=\s*(.+);')
         num = num_type
 

@@ -45,8 +45,7 @@ flat vector) of second-order sensitivity initial values. Only allowed when
 \item{fixed}{Optional character vector of sensitivity parameter names to treat
 as fixed at runtime. These parameters will not have their dual-number
 components allocated, so the integrator runs with a strictly smaller AD
-state — providing a genuine speed-up proportional to how many parameters are
-fixed. Names must be a subset of \code{attr(model, "dim_names")$sens}. Unlike
+state. Names must be a subset of \code{attr(model, "dim_names")$sens}. Unlike
 compile-time \code{fixed} in \code{\link[=CppODE]{CppODE()}}, runtime fixed parameters can be changed
 between calls without recompilation. Default \code{NULL} (all parameters active).}
 
@@ -71,8 +70,8 @@ before an error is raised. Default \code{100}.}
 \item{maxroot}{Maximum triggers per root event. Default \code{1}.}
 }
 \value{
-A named list with components \code{time}, \code{variable}, and — when
-\code{attr(model, "deriv") == TRUE} — \code{sens1}, and additionally \code{sens2} when
+A named list with components \code{time}, \code{variable}, and, when
+\code{attr(model, "deriv") == TRUE}), \code{sens1}, and additionally \code{sens2} when
 \code{attr(model, "deriv2") == TRUE}. Dimension names of \code{sens1}/\code{sens2} reflect
 only the active (non-fixed) sensitivity parameters.
 }
@@ -82,7 +81,7 @@ specified time span.
 \subsection{Sensitivity initial values and \code{fixed}}{
 
 \code{sens1ini} and \code{sens2ini} always refer to the \strong{active} sensitivity
-parameters — i.e., \code{attr(model, "dim_names")$sens} minus whatever is listed
+parameters, i.e., \code{attr(model, "dim_names")$sens} minus whatever is listed
 in \code{fixed}. This means:
 \itemize{
 \item If \code{fixed = NULL} (default), the active set equals all compile-time

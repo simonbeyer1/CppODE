@@ -7,7 +7,7 @@
 #' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
 #' using [**Boost.Odeint's**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
-#' stiff Rosenbrock4 method with dense output and error control (using third order in combination).
+#' stiff method Rosenbrock4 with dense output and error control (using third order in combination).
 #' The solver supports **time-based** and **root-triggered events** and can, optionally,
 #' compute **first- and second-order sensitivities** by evaluating the *same system* with
 #' **dual number** types provided by
@@ -76,12 +76,12 @@
 #' - `deriv = TRUE`, `deriv2 = FALSE`
 #'   Returns `list(time, variable, sens1)`
 #'   - `sens1`: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_x,n_s,n_t)}, containing
-#'     \eqn{\partial x_j(t_i)/\partial p_k}
+#'     \eqn{\partial x_i(t_k)/\partial p_j}
 #'
 #' - `deriv = TRUE`, `deriv2 = TRUE`
 #'   Returns `list(time, variable, sens1, sens2)`
 #'   - `sens2`: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_x,n_s,n_s,n_t)},
-#'     containing \eqn{\partial^2 x_j(t_i)/\partial p_k\,\partial p_l}
+#'     containing \eqn{\partial^2 x_i(t_k)/\partial p_j\,\partial p_k}
 #'
 #' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
 #' variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
@@ -105,8 +105,7 @@
 #' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
 #' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
 #' @param sparse Controls sparse LU factorization in the Rosenbrock4 stepper.
-#'   `NULL` (default) auto-selects based on Jacobian sparsity (enabled when the
-#'   estimated speedup ratio is >= 2 and the system has >= 4 states).
+#'   `NULL` (default) auto-selects based on Jacobian sparsity.
 #'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
@@ -122,7 +121,6 @@
 #' | `parameters` | `character` | Names of model parameters |
 #' | `events` | `data.frame` | Table of event specifications (if any) |
 #' | `rootfunc` | `character` | Root function specification (if any) |
-#' | `solver` | `list` | Description of the numerical solver configuration |
 #' | `fixed` | `character` | Names of fixed initial conditions or parameters |
 #' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
 #' | `deriv` | `logical` | Indicates whether first-order sensitivities (dual numbers) were used |
@@ -1345,7 +1343,6 @@ solveODE <- function(model, times, parms,
 #' @param outdir Directory for generated C++ source files. Defaults to \code{tempdir()}.
 #' @param compile Logical; if \code{TRUE}, compile and load generated C++ code.
 #' @param verbose Logical; if \code{TRUE}, print progress messages.
-#' @param warnings Logical; reserved for future use.
 #' @param convenient Logical; if \code{TRUE}, return wrappers accepting named arguments.
 #' @param deriv Logical; if \code{TRUE}, enable Jacobian computation.
 #' @param deriv2 Logical; if \code{TRUE}, enable Hessian computation (implies \code{deriv}).
@@ -1383,7 +1380,7 @@ solveODE <- function(model, times, parms,
 #' @export
 funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parameters = NULL,
                    fixed = NULL, modelname = NULL, outdir = tempdir(), compile = FALSE,
-                   verbose = FALSE, warnings = TRUE, convenient = TRUE, deriv = TRUE, deriv2 = FALSE) {
+                   verbose = FALSE, convenient = TRUE, deriv = TRUE, deriv2 = FALSE) {
 
   if (deriv2 && !deriv) { warning("deriv2 requires deriv. Setting deriv = TRUE."); deriv <- TRUE }
 
