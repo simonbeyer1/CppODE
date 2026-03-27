@@ -258,69 +258,102 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # functor signature won't match the stepper's matrix type.
   use_sparse <- isTRUE(codegen_result$use_sparse)
 
-  # Display Braille sparsity pattern when sparse LU is selected (always shown)
+  # Display sparsity pattern when sparse LU is selected (always shown)
+  # Small matrices (n <= 12): discrete grid with one char per entry (exact)
+  # Larger matrices (n > 12): Braille encoding (compact, scaled)
   if (use_sparse) {
     stats <- codegen_result$sparsity_stats
     n <- stats$n
     jpat <- stats$jac_pattern
 
-    # Fixed braille grid size (characters), matrix is always scaled into this
-    n_bcol <- 8L   # 8 braille chars wide  = 16 dot columns
-    n_brow <- 4L   # 4 braille chars tall  = 16 dot rows
-    nr <- n_brow * 4L
-    nc <- n_bcol * 2L
-
-    # Build (row, col) index matrix from pattern and scale into grid
-    # Each matrix entry fills its proportional block of dots
-    ij <- matrix(as.integer(unlist(jpat)), ncol = 2L, byrow = TRUE)
-    mat_display <- matrix(FALSE, nrow = nr, ncol = nc)
-    block_r <- nr / n
-    block_c <- nc / n
-    for (k in seq_len(nrow(ij))) {
-      r_start <- as.integer(ij[k, 1L] * block_r)
-      r_end   <- max(as.integer((ij[k, 1L] + 1L) * block_r), r_start + 1L)
-      c_start <- as.integer(ij[k, 2L] * block_c)
-      c_end   <- max(as.integer((ij[k, 2L] + 1L) * block_c), c_start + 1L)
-      rows_fill <- seq.int(r_start + 1L, min(r_end, nr))
-      cols_fill <- seq.int(c_start + 1L, min(c_end, nc))
-      mat_display[rows_fill, cols_fill] <- TRUE
-    }
-
-    braille_base <- 0x2800L
-    bit_map <- c(1L, 2L, 4L, 64L, 8L, 16L, 32L, 128L)
-    padded <- mat_display
-
-    braille_lines <- character(n_brow)
-    for (br in seq_len(n_brow)) {
-      rows <- (br - 1L) * 4L + 1:4
-      codes <- integer(n_bcol)
-      for (dr in 0:3) {
-        for (dc in 0:1) {
-          r <- rows[dr + 1L]
-          col_seq <- seq.int(dc + 1L, nc, by = 2L)
-          hit <- padded[r, col_seq]
-          codes[hit] <- bitwOr(codes[hit], bit_map[dr + 1L + dc * 4L])
-        }
-      }
-      braille_lines[br] <- paste0(vapply(codes, function(c) intToUtf8(braille_base + c), character(1L)), collapse = "")
-    }
-
-    # Add matrix brackets
-    nb <- length(braille_lines)
-    if (nb == 1L) {
-      braille_lines[1L] <- paste0("[", braille_lines[1L], "]")
-    } else {
-      braille_lines[1L]  <- paste0("\u23a1", braille_lines[1L],  "\u23a4")
-      if (nb > 2L) {
-        for (k in 2:(nb - 1L))
-          braille_lines[k] <- paste0("\u23a2", braille_lines[k], "\u23a5")
-      }
-      braille_lines[nb] <- paste0("\u23a3", braille_lines[nb], "\u23a6")
-    }
-
     message(sprintf("Sparse Jacobian detected (%dx%d, %d nnz, %.3f%% sparse)",
                     n, n, stats$jac_nnz, stats$jac_zeros_pct))
-    for (line in braille_lines) message("    ", line)
+
+    # Build nonzero set for fast lookup
+    ij <- matrix(as.integer(unlist(jpat)), ncol = 2L, byrow = TRUE)
+    nz_set <- paste0(ij[, 1L], ",", ij[, 2L])
+
+    if (n <= 12L) {
+      # --- Discrete display: one character per matrix entry ---
+      pattern_lines <- character(n)
+      for (i in seq_len(n)) {
+        chars <- character(n)
+        for (j in seq_len(n)) {
+          key <- paste0(i - 1L, ",", j - 1L)
+          chars[j] <- if (key %in% nz_set) "\u25a0" else "\u00b7"
+        }
+        pattern_lines[i] <- paste0(chars, collapse = " ")
+      }
+
+      # Add matrix brackets
+      if (n == 1L) {
+        pattern_lines[1L] <- paste0("[ ", pattern_lines[1L], " ]")
+      } else {
+        pattern_lines[1L] <- paste0("\u23a1 ", pattern_lines[1L], " \u23a4")
+        if (n > 2L) {
+          for (k in 2:(n - 1L))
+            pattern_lines[k] <- paste0("\u23a2 ", pattern_lines[k], " \u23a5")
+        }
+        pattern_lines[n] <- paste0("\u23a3 ", pattern_lines[n], " \u23a6")
+      }
+      for (line in pattern_lines) message("    ", line)
+
+    } else {
+      # --- Braille display: scaled into a compact dot grid ---
+      # Each braille char encodes 4 dot rows x 2 dot columns.
+      # n_brow scales with n (3..10 braille rows), giving ~2 dots per entry.
+      # n_bcol = 2 * n_brow to compensate the 4:2 aspect ratio → square dots.
+      n_brow <- as.integer(max(3L, min(10L, ceiling(n / 2))))
+      n_bcol <- n_brow * 2L
+      nr <- n_brow * 4L
+      nc <- n_bcol * 2L
+
+      # Scale matrix entries into the dot grid
+      mat_display <- matrix(FALSE, nrow = nr, ncol = nc)
+      block_r <- nr / n
+      block_c <- nc / n
+      for (k in seq_len(nrow(ij))) {
+        r_start <- as.integer(ij[k, 1L] * block_r)
+        r_end   <- max(as.integer((ij[k, 1L] + 1L) * block_r), r_start + 1L)
+        c_start <- as.integer(ij[k, 2L] * block_c)
+        c_end   <- max(as.integer((ij[k, 2L] + 1L) * block_c), c_start + 1L)
+        rows_fill <- seq.int(r_start + 1L, min(r_end, nr))
+        cols_fill <- seq.int(c_start + 1L, min(c_end, nc))
+        mat_display[rows_fill, cols_fill] <- TRUE
+      }
+
+      braille_base <- 0x2800L
+      bit_map <- c(1L, 2L, 4L, 64L, 8L, 16L, 32L, 128L)
+
+      braille_lines <- character(n_brow)
+      for (br in seq_len(n_brow)) {
+        rows <- (br - 1L) * 4L + 1:4
+        codes <- integer(n_bcol)
+        for (dr in 0:3) {
+          for (dc in 0:1) {
+            r <- rows[dr + 1L]
+            col_seq <- seq.int(dc + 1L, nc, by = 2L)
+            hit <- mat_display[r, col_seq]
+            codes[hit] <- bitwOr(codes[hit], bit_map[dr + 1L + dc * 4L])
+          }
+        }
+        braille_lines[br] <- paste0(vapply(codes, function(c) intToUtf8(braille_base + c), character(1L)), collapse = "")
+      }
+
+      # Add matrix brackets
+      nb <- length(braille_lines)
+      if (nb == 1L) {
+        braille_lines[1L] <- paste0("[", braille_lines[1L], "]")
+      } else {
+        braille_lines[1L]  <- paste0("\u23a1", braille_lines[1L],  "\u23a4")
+        if (nb > 2L) {
+          for (k in 2:(nb - 1L))
+            braille_lines[k] <- paste0("\u23a2", braille_lines[k], "\u23a5")
+        }
+        braille_lines[nb] <- paste0("\u23a3", braille_lines[nb], "\u23a6")
+      }
+      for (line in braille_lines) message("    ", line)
+    }
   }
 
   # --- Generate event code if needed ---
