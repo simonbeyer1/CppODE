@@ -3,3 +3,8 @@
 ^\.github$
 ^CRAN-SUBMISSION$
 ^dev$
+^README\.Rmd$
+^LICENSE\.md$
+^doc$
+^Meta$
+^README\.html$

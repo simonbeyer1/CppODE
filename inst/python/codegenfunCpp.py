@@ -19,8 +19,6 @@ import os
 import re
 from functools import lru_cache
 from io import StringIO
-
-
 # =====================================================================
 # Safe parsing configuration (cached)
 # =====================================================================
@@ -64,8 +62,6 @@ def _ensure_double_literals(cpp_code):
         temp = temp.replace(f'__SCI_PLACEHOLDER_{i}__', sci)
     
     return temp
-
-
 @lru_cache(maxsize=1)
 def _get_safe_parse_dict_cached():
     """
@@ -142,8 +138,6 @@ def _get_safe_parse_dict_cached():
         # Complex functions
         're': sp.re, 'im': sp.im, 'conjugate': sp.conjugate, 'arg': sp.arg,
     }
-
-
 # =====================================================================
 # Code Generation Context
 # =====================================================================
@@ -163,8 +157,6 @@ _MATH_MACRO_MAP = {
     "M_SQRT2": "std::sqrt(2.0)",
     "M_SQRT1_2": "std::sqrt(0.5)",
 }
-
-
 class CodeGenContext:
     """
     Holds precomputed state for efficient code generation.
@@ -276,8 +268,6 @@ class CodeGenContext:
             return d
         
         return expr.replace(lambda x: isinstance(x, sp.DiracDelta), dirac_to_piecewise)
-
-
 # =====================================================================
 # Public interface
 # =====================================================================
@@ -343,8 +333,6 @@ def generate_fun_cpp(exprs, variables, parameters=None,
         f.write(cpp_code)
 
     return {"filename": os.path.abspath(filename), "modelname": modelname}
-
-
 # =====================================================================
 # Parsing
 # =====================================================================
@@ -374,8 +362,6 @@ def _parse_expressions(exprs, ctx):
                 f"Failed to parse expression '{name}': {expr_str}\nError: {e}"
             )
     return parsed
-
-
 # =====================================================================
 # C++ source assembly (using StringIO)
 # =====================================================================
@@ -409,8 +395,6 @@ def _generate_cpp_code(exprs, ctx, jacobian, hessian, modelname, version):
     buf.write("} // extern \"C\"\n")
     
     return buf.getvalue()
-
-
 def _write_eval_function(buf, exprs, out_names, ctx, modelname):
     """Generate main evaluation loop in C++."""
     n_out = len(out_names)
@@ -432,8 +416,6 @@ def _write_eval_function(buf, exprs, out_names, ctx, modelname):
         buf.write(f"        y[obs * n_out + {i}] = {cpp_code};\n")
 
     buf.write("    }\n}\n\n")
-
-
 def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
     """
     Generate Jacobian evaluation function (sparse: only non-zero entries).
@@ -484,8 +466,6 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
             buf.write("\n")
 
     buf.write("    }\n}\n\n")
-
-
 def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
     """
     Generate Hessian evaluation function (sparse: only non-zero entries).

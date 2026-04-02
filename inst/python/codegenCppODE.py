@@ -13,7 +13,7 @@ This module provides entry points for generating C++ code:
     For root events, analytical partial derivatives dg/dx and dg/dt
     of the root function g(x, t) are derived symbolically via SymPy
     and emitted as C++ lambdas.  These are used at runtime for the
-    IFT-based saltation correction (see cppode_boost_integrate_times_with_events.hpp):
+    IFT-based saltation correction (see cppode_integrate_times.hpp):
 
       g_dot = sum_i(dg/dx_i * f_i) + dg/dt      (total time derivative of g)
       dt*   = -g / g_dot                          (event timing residual, AD quotient rule)
@@ -101,8 +101,6 @@ def _get_safe_parse_dict():
         "Piecewise": sp.Piecewise,
         "pi": sp.pi, "E": sp.E, "oo": sp.oo,
     }
-
-
 def _safe_sympify(expr_str, local_symbols=None):
     """Safely parse a string expression to SymPy."""
     expr_str = str(expr_str).strip()
@@ -120,8 +118,6 @@ def _safe_sympify(expr_str, local_symbols=None):
         transformations=transformations,
         evaluate=True,
     )
-
-
 def _ensure_double_literals(cpp_code):
     """Convert integer literals to double literals in C++ code."""
     sci_pattern = r'(\d+\.?\d*[eE][+-]?\d+)'
@@ -139,8 +135,6 @@ def _ensure_double_literals(cpp_code):
         temp = temp.replace(f'__SCI_PLACEHOLDER_{i}__', sci)
     
     return temp
-
-
 # =====================================================================
 # Cached single-pass symbol replacer for _to_cpp
 # =====================================================================
@@ -183,8 +177,6 @@ class _SymbolReplacer:
 
     def __call__(self, cpp_code):
         return self._pattern.sub(lambda m: self._map[m.group(0)], cpp_code)
-
-
 @lru_cache(maxsize=8)
 def _get_replacer(states_tuple, params_tuple, n_states, forcings_tuple, use_initial_states):
     """Cached factory – the replacer is rebuilt only when the signature changes."""
@@ -192,8 +184,6 @@ def _get_replacer(states_tuple, params_tuple, n_states, forcings_tuple, use_init
         list(states_tuple), list(params_tuple), n_states,
         list(forcings_tuple), use_initial_states,
     )
-
-
 # =====================================================================
 # Math macro replacement map
 # =====================================================================
@@ -228,13 +218,48 @@ _FADBAD_FN_PATTERN = re.compile(
 # Precompiled whitespace collapse pattern
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
+# Precompiled regex for std::pow(expr, 2.0) → (expr)*(expr) optimization.
+# Matches std::pow(ARG, 2.0) or std::pow(ARG, 2) where ARG may contain
+# nested parentheses (up to 2 levels) or simple identifiers.
+_POW2_PATTERN = re.compile(
+    r'std::pow\('
+    r'((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))+)'  # capture group 1: argument
+    r',\s*2(?:\.0)?\)'
+)
+
+def _optimize_pow2(cpp_str):
+    """Replace std::pow(expr, 2.0) with (expr)*(expr) for performance.
+    Also handles fadbad::pow for AD types."""
+    result = _POW2_PATTERN.sub(r'(\1)*(\1)', cpp_str)
+    # Same for fadbad::pow in AD mode
+    result = re.sub(
+        r'fadbad::pow\('
+        r'((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))+)'
+        r',\s*2(?:\.0)?\)',
+        r'(\1)*(\1)', result)
+    return result
+
+def _negate_cpp_expr(expr_str):
+    """Negate a C++ expression string for pre-negated Jacobian storage.
+    Produces -(expr) for complex expressions, handles simple cases directly."""
+    stripped = expr_str.strip()
+    if stripped == '0.0' or stripped == '0':
+        return stripped
+    # Simple negation: if it starts with '-', remove it
+    if stripped.startswith('-(') and stripped.endswith(')'):
+        return stripped[1:]  # -(expr) -> (expr)
+    if stripped.startswith('-') and not stripped.startswith('-('):
+        # -simple_expr -> simple_expr
+        rest = stripped[1:]
+        if re.match(r'^[a-zA-Z0-9_\[\]\.\*]+$', rest):
+            return rest
+    return f'-({stripped})'
+
 # Cached CXX17CodePrinter instance — avoids repeated printer construction
 @lru_cache(maxsize=1)
 def _get_cxx_printer():
     """Return a reusable CXX17CodePrinter instance."""
     return CXX17CodePrinter()
-
-
 # =====================================================================
 # _to_cpp - Convert SymPy expression to C++ code
 # =====================================================================
@@ -295,9 +320,12 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
     
     cpp_code = _WHITESPACE_PATTERN.sub("", cpp_code)
     cpp_code = _ensure_double_literals(cpp_code)
+    cpp_code = _optimize_pow2(cpp_code)
     
     return cpp_code
-
+# NOTE: eval_scalar method removed — the unified BDF stepper no longer
+# uses a separate scalar-Newton path.  All Newton iterations use the
+# full AD lu_solve() which dispatches to IFT internally.
 
 # =====================================================================
 # Main ODE generator
@@ -520,59 +548,256 @@ def generate_ode_cpp(
                         jac_nnz_exprs.append(str(e))
 
     # --- Generate the Jacobian functor ---
-    # Sparse path: writes to compressed_matrix<T> via W(i,j) = expr
+    # Sparse path: raw CSC with direct Ax[] writes
     # Dense path:  writes to matrix<T> via J(i,j) = expr (with zero_matrix init)
     # Only ONE is generated — the one matching use_sparse.
     if use_sparse:
         jac_re = re.compile(r'^\s*J\((\d+),(\d+)\)\s*=\s*(.+);')
         num = num_type
 
-        # Count non-zero entries for reserve()
         jac_nnz_count = len(jac_nnz_rows)
 
-        # Build sparse Jacobian from the dense jac_cpp_lines by replacing
-        # the matrix type and removing zero_matrix init
+        # Determine which diagonal entries are missing from J's pattern.
+        # The W matrix (I/gamma - J) needs all diagonals for the identity term.
+        diag_in_pattern = set()
+        for r, c in zip(jac_nnz_rows, jac_nnz_cols):
+            if r == c:
+                diag_in_pattern.add(r)
+        missing_diags = sorted(set(range(n_states)) - diag_in_pattern)
+        total_nnz = jac_nnz_count + len(missing_diags)
+
+        # =================================================================
+        # Sparse Jacobian via raw CSC (csc_matrix).
+        #
+        # All (row, col) entries are sorted into CSC order (by col, then
+        # row) and assigned a linear Ax index k = 0, 1, ..., nnz-1.
+        #
+        # First call (!W.pattern_built): build_pattern() allocates Ap/Ai
+        #   from static row/col arrays and sets pattern_built = true.
+        # All calls: W.Ax[k] = expr  (direct array write, O(1) per entry).
+        #
+        # When template dedup is available (MOL systems), a loop-based
+        # form uses a precomputed Ax offset table per template instance.
+        # =================================================================
+
+        def _fmt_int_array(values, per_line=20):
+            lines = []
+            for i in range(0, len(values), per_line):
+                chunk = values[i:i + per_line]
+                lines.append("        " + ",".join(str(v) for v in chunk))
+            return ",\n".join(lines)
+
+        # --- Build CSC-sorted (row, col) → Ax index mapping ---
+        # Merge real entries + missing diagonal zeros
+        all_rows = list(jac_nnz_rows) + missing_diags
+        all_cols = list(jac_nnz_cols) + missing_diags
+        all_exprs = list(jac_nnz_exprs) + [None] * len(missing_diags)  # None = zero diag
+
+        # Sort into CSC order: primary by col, secondary by row
+        csc_order = sorted(range(total_nnz), key=lambda k: (all_cols[k], all_rows[k]))
+        sorted_rows = [all_rows[k] for k in csc_order]
+        sorted_cols = [all_cols[k] for k in csc_order]
+        sorted_exprs = [all_exprs[k] for k in csc_order]
+
+        # Build (row, col) → Ax index lookup for the loop-based path
+        rc_to_ax = {}
+        for ax_k, (r, c) in enumerate(zip(sorted_rows, sorted_cols)):
+            rc_to_ax[(r, c)] = ax_k
+
         sparse_jac_lines = []
-        sparse_jac_lines.append(f"// Jacobian: writes to compressed_matrix (no dense n×n allocation)")
+        sparse_jac_lines.append(f"// Sparse Jacobian — raw CSC, {n_states}x{n_states}, {total_nnz} nnz")
+        sparse_jac_lines.append(f"// Stores NEGATED Jacobian (-J) for pre-negated W = (1/γh)I - J.")
         sparse_jac_lines.append(f"struct jacobian {{")
-        sparse_jac_lines.append(f"  ublas::vector<{num}> params;")
+        sparse_jac_lines.append(f"  std::vector<{num}> params;")
         sparse_jac_lines.append(f"  std::vector<const cppode::PchipForcing<{num}>*> F;")
+        sparse_jac_lines.append(f"  bool m_jac_consts_set = false;  // one-time init for constant entries")
         sparse_jac_lines.append(f"")
-        sparse_jac_lines.append(f"  jacobian(const ublas::vector<{num}>& p_,")
+        sparse_jac_lines.append(f"  jacobian(const std::vector<{num}>& p_,")
         sparse_jac_lines.append(f"           const std::vector<const cppode::PchipForcing<{num}>*>& F_)")
         sparse_jac_lines.append(f"    : params(p_), F(F_) {{}}")
         sparse_jac_lines.append(f"")
-        sparse_jac_lines.append(f"  void operator()(const ublas::vector<{num}>& x,")
-        sparse_jac_lines.append(f"                  ublas::compressed_matrix<{num}>& W,")
+        sparse_jac_lines.append(f"  void operator()(const std::vector<{num}>& x,")
+        sparse_jac_lines.append(f"                  cppode::csc_matrix<{num}>& W,")
         sparse_jac_lines.append(f"                  const {num}& t,")
-        sparse_jac_lines.append(f"                  ublas::vector<{num}>& dfdt) {{")
-        sparse_jac_lines.append(f"    W.clear();")
-        sparse_jac_lines.append(f"    W.resize({n_states}, {n_states}, false);")
-        sparse_jac_lines.append(f"    W.reserve({jac_nnz_count + n_states});")
+        sparse_jac_lines.append(f"                  std::vector<{num}>& dfdt) {{")
 
-        # Extract body from dense Jacobian lines, convert J(i,j) to W(i,j)
-        in_body = False
-        brace_depth = 0
-        for line in jac_cpp_lines:
-            stripped = line.strip()
-            if not in_body:
-                if 'dfdt)' in stripped and '{' in stripped:
-                    in_body = True
-                    brace_depth = 1
-                continue
-            brace_depth += stripped.count('{') - stripped.count('}')
-            if brace_depth <= 0:
-                break
-            # Skip zero_matrix line
-            if 'zero_matrix' in stripped:
-                continue
-            # Convert J(i,j) = expr to W(i,j) = expr
-            m = jac_re.match(line)
-            if m:
-                row_idx, col_idx = m.group(1), m.group(2)
-                expr_str = m.group(3)
-                sparse_jac_lines.append(f"    W({row_idx},{col_idx}) = {expr_str};")
-            else:
+        # First-call: build CSC pattern from static arrays
+        rows_str = _fmt_int_array(sorted_rows)
+        cols_str = _fmt_int_array(sorted_cols)
+        sparse_jac_lines.append(f"    if (!W.pattern_built) {{")
+        sparse_jac_lines.append(f"      static const int _rows[] = {{")
+        sparse_jac_lines.append(rows_str)
+        sparse_jac_lines.append(f"      }};")
+        sparse_jac_lines.append(f"      static const int _cols[] = {{")
+        sparse_jac_lines.append(cols_str)
+        sparse_jac_lines.append(f"      }};")
+        sparse_jac_lines.append(f"      W.build_pattern({n_states}, {total_nnz}, _rows, _cols);")
+        sparse_jac_lines.append(f"    }}")
+
+        use_loop = (dedup_result is not None and 'groups' in dedup_result)
+
+        if use_loop:
+            # =============================================================
+            # LOOP-BASED: one loop per template group.
+            # Each (row, dep[j]) → Ax offset is precomputed into a static
+            # table.  The loop body writes W.Ax[ax_offsets[c*n_jac+j]].
+            # =============================================================
+            groups = dedup_result['groups']
+            tmpl_cpp = dedup_result['template_cpp']
+            name_to_idx = dedup_result['name_to_state_idx']
+
+            param_map = {}
+            for i, p in enumerate(params_list):
+                param_map[p] = f'params[{n_states + i}]'
+            param_map['time'] = 't'
+            param_names_sorted = sorted(param_map.keys(), key=len, reverse=True)
+            param_alt = "|".join(re.escape(n) for n in param_names_sorted)
+            param_re = re.compile(
+                r"(?<![a-zA-Z0-9_])(?:" + param_alt + r")(?![a-zA-Z0-9_\[])"
+            ) if param_names_sorted else None
+
+            def _tmpl_to_loop_cpp(tmpl_str):
+                result = _GENERIC_PATTERN.sub(lambda m: f'x[s[{m.group(1)}]]', tmpl_str)
+                if param_re is not None:
+                    result = param_re.sub(lambda m: param_map[m.group(0)], result)
+                result = _WHITESPACE_PATTERN.sub(" ", result).strip()
+                result = _ensure_double_literals(result)
+                result = _optimize_pow2(result)
+                return result
+
+            # Emit shared data tables + Ax offset tables at function scope
+            for tmpl_idx, (key, members) in enumerate(groups.items()):
+                n_instances = len(members)
+                n_deps = len(members[0][1])
+                jac_positions = sorted(tmpl_cpp[key]['jac'].keys())
+                n_jac = len(jac_positions)
+
+                deps_data = []
+                rows_data = []
+                ax_offsets_data = []
+                for expr_idx, dep_names in members:
+                    rows_data.append(expr_idx)
+                    dep_indices = [name_to_idx[dep_names[j]] for j in range(n_deps)]
+                    deps_data.extend(dep_indices)
+                    # Precompute Ax offset for each Jacobian entry of this instance
+                    for j in jac_positions:
+                        col_idx = dep_indices[j]
+                        ax_k = rc_to_ax.get((expr_idx, col_idx), -1)
+                        ax_offsets_data.append(ax_k)
+
+                sparse_jac_lines.append(f"    // Template {tmpl_idx}: {n_instances} instances, {n_deps} deps, {n_jac} jac entries")
+                sparse_jac_lines.append(f"    static const int t{tmpl_idx}_deps[] = {{")
+                sparse_jac_lines.append(_fmt_int_array(deps_data))
+                sparse_jac_lines.append(f"    }};")
+                sparse_jac_lines.append(f"    static const int t{tmpl_idx}_rows[] = {{")
+                sparse_jac_lines.append(_fmt_int_array(rows_data))
+                sparse_jac_lines.append(f"    }};")
+                sparse_jac_lines.append(f"    static const int t{tmpl_idx}_ax[] = {{")
+                sparse_jac_lines.append(_fmt_int_array(ax_offsets_data))
+                sparse_jac_lines.append(f"    }};")
+
+            # Hot path: loops with direct W.Ax[] writes
+            # Expressions are NEGATED for pre-negated Jacobian storage:
+            # W = (1/gamma*h)*I - J, so we store -J directly in W.Ax.
+            # This eliminates the O(nnz) negate-copy in factorize_W.
+            #
+            # Constant entries (not depending on x[]) are written once
+            # in a one-time init block, reducing per-call writes.
+            for tmpl_idx, (key, members) in enumerate(groups.items()):
+                n_instances = len(members)
+                n_deps = len(members[0][1])
+                jac_tmpl = tmpl_cpp[key]['jac']
+                td_tmpl = tmpl_cpp[key]['time_deriv']
+                jac_positions = sorted(jac_tmpl.keys())
+                n_jac = len(jac_positions)
+
+                # Classify entries: constant (no x[s[) vs state-dependent
+                const_entries = []  # (local_j, negated_expr)
+                state_entries = []  # (local_j, negated_expr)
+                for local_j, j in enumerate(jac_positions):
+                    loop_expr = _tmpl_to_loop_cpp(jac_tmpl[j])
+                    neg_expr = _negate_cpp_expr(loop_expr)
+                    if 'x[s[' in loop_expr:
+                        state_entries.append((local_j, neg_expr))
+                    else:
+                        const_entries.append((local_j, neg_expr))
+
+                # Constant entries: write once (guarded by m_jac_consts_set flag)
+                if const_entries:
+                    sparse_jac_lines.append(f"    // Template {tmpl_idx}: {len(const_entries)} constant + {len(state_entries)} state-dependent entries")
+                    sparse_jac_lines.append(f"    if (!m_jac_consts_set) {{")
+                    sparse_jac_lines.append(f"      for (int c = 0; c < {n_instances}; ++c) {{")
+                    for local_j, neg_expr in const_entries:
+                        sparse_jac_lines.append(f"        W.Ax[t{tmpl_idx}_ax[c * {n_jac} + {local_j}]] = {neg_expr};")
+                    sparse_jac_lines.append(f"      }}")
+                    sparse_jac_lines.append(f"    }}")
+
+                # State-dependent entries: always written
+                sparse_jac_lines.append(f"    for (int c = 0; c < {n_instances}; ++c) {{")
+                sparse_jac_lines.append(f"      const int* s = t{tmpl_idx}_deps + c * {n_deps};")
+                for local_j, neg_expr in state_entries:
+                    sparse_jac_lines.append(f"      W.Ax[t{tmpl_idx}_ax[c * {n_jac} + {local_j}]] = {neg_expr};")
+
+                loop_dfdt = _tmpl_to_loop_cpp(td_tmpl)
+                sparse_jac_lines.append(f"      dfdt[t{tmpl_idx}_rows[c]] = {loop_dfdt};")
+                sparse_jac_lines.append(f"    }}")
+
+            # Set the flag after first complete evaluation
+            sparse_jac_lines.append(f"    m_jac_consts_set = true;")
+
+        else:
+            # =============================================================
+            # PER-ENTRY: unrolled W.Ax[k] for small/irregular systems.
+            #
+            # Each sorted entry gets its Ax index directly in the code.
+            # =============================================================
+
+            # Build (row, col) → expression mapping from the dense Jacobian code
+            dense_jac_entries = {}
+            dfdt_lines = []
+            in_body = False
+            brace_depth = 0
+            other_lines = []  # CSE temporaries etc.
+            for line in jac_cpp_lines:
+                stripped = line.strip()
+                if not in_body:
+                    if 'dfdt)' in stripped and '{' in stripped:
+                        in_body = True
+                        brace_depth = 1
+                    continue
+                brace_depth += stripped.count('{') - stripped.count('}')
+                if brace_depth <= 0:
+                    break
+                if 'set_zero' in stripped or 'zero_matrix' in stripped or '::Zero(' in stripped:
+                    continue
+                m = jac_re.match(line)
+                if m:
+                    row_idx, col_idx = int(m.group(1)), int(m.group(2))
+                    expr_str = m.group(3)
+                    dense_jac_entries[(row_idx, col_idx)] = expr_str
+                elif 'dfdt[' in stripped:
+                    dfdt_lines.append(line)
+                else:
+                    other_lines.append(line)
+
+            # Emit CSE temporaries first
+            for line in other_lines:
+                sparse_jac_lines.append(line)
+
+            # Emit Ax writes in CSC order (NEGATED for pre-negated W storage)
+            for ax_k, (r, c, expr) in enumerate(zip(sorted_rows, sorted_cols, sorted_exprs)):
+                if expr is not None:
+                    # Real entry — look up the C++ expression and negate
+                    cpp_expr = dense_jac_entries.get((r, c), expr)
+                    cpp_expr = _optimize_pow2(cpp_expr)
+                    neg_expr = _negate_cpp_expr(cpp_expr)
+                    sparse_jac_lines.append(f"    W.Ax[{ax_k}] = {neg_expr};")
+                else:
+                    # Missing diagonal — zero (will get identity term from factorize_W)
+                    sparse_jac_lines.append(f"    W.Ax[{ax_k}] = {num}(0);")
+
+            # Emit dfdt lines
+            for line in dfdt_lines:
                 sparse_jac_lines.append(line)
 
         sparse_jac_lines.append(f"  }}")
@@ -583,6 +808,11 @@ def generate_ode_cpp(
         jac_cpp_lines = sparse_jac_lines
     else:
         jac_code = "\n".join(jac_cpp_lines)
+
+    # KLU auto-tuning: analyze pattern at codegen time
+    klu_settings = None
+    if use_sparse:
+        klu_settings = analyze_klu_settings(n_states, jac_nnz_rows, jac_nnz_cols)
 
     return {
         "ode_code": "\n".join(ode_cpp_lines),
@@ -596,9 +826,8 @@ def generate_ode_cpp(
         "forcings": forcings_list,
         "use_sparse": use_sparse,
         "sparsity_stats": sparsity_stats,
+        "klu_settings": klu_settings,
     }
-
-
 # =====================================================================
 # Parallel Jacobian computation for generate_ode_cpp
 # =====================================================================
@@ -614,8 +843,6 @@ def _compute_ode_jac_row(expr, states_syms_list, states_syms_set):
         else:
             row.append(sp.Integer(0))
     return row
-
-
 def _compute_ode_jacobian_parallel(exprs, states_syms_list, states_syms_set, n_workers):
     """Compute ODE Jacobian in parallel across rows."""
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
@@ -625,8 +852,6 @@ def _compute_ode_jacobian_parallel(exprs, states_syms_list, states_syms_set, n_w
         ]
         # Preserve row order
         return [f.result() for f in futures]
-
-
 def _compute_ode_jacobian_serial(exprs, states_syms_list, states_syms_set):
     """Compute ODE Jacobian serially."""
     jac_matrix = []
@@ -640,8 +865,6 @@ def _compute_ode_jacobian_serial(exprs, states_syms_list, states_syms_set):
                 row.append(sp.Integer(0))
         jac_matrix.append(row)
     return jac_matrix
-
-
 # =====================================================================
 # CSE-based ODE and Jacobian code generation
 # =====================================================================
@@ -658,8 +881,6 @@ def _is_nontrivial(expr):
             and isinstance(expr.args[1], sp.Symbol)):
         return False
     return True
-
-
 def _apply_cse(expr_list):
     """Apply CSE to a list of expressions, returning (replacements, reduced).
     
@@ -677,8 +898,6 @@ def _apply_cse(expr_list):
     except Exception:
         # Fallback: no CSE if it fails
         return [], expr_list
-
-
 def _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list):
     """Convert CSE temporary variable assignments to C++ code lines."""
     lines = []
@@ -689,8 +908,6 @@ def _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type
         cpp = _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
         lines.append(f"    const {num_type} {sym} = {cpp};")
     return lines
-
-
 def _reduced_expr_to_cpp(expr, cse_syms, states_list, params_list, n_states, num_type, forcings_list):
     """Convert a CSE-reduced expression to C++ code.
     
@@ -734,8 +951,6 @@ def _reduced_expr_to_cpp(expr, cse_syms, states_list, params_list, n_states, num
         cpp = cpp.replace(ph, name)
     
     return cpp
-
-
 def _generate_ode_code_with_cse(exprs, states_list, params_list, n_states, num_type, forcings_list):
     """Generate ODE system C++ code with Common Subexpression Elimination."""
     
@@ -746,15 +961,15 @@ def _generate_ode_code_with_cse(exprs, states_list, params_list, n_states, num_t
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
-        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
         "",
-        f"  ode_system(const ublas::vector<{num_type}>& p_,",
+        f"  ode_system(const std::vector<{num_type}>& p_,",
         f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
         "    : params(p_), F(F_) {}",
         "",
-        f"  void operator()(const ublas::vector<{num_type}>& x,",
-        f"                  ublas::vector<{num_type}>& dxdt,",
+        f"  void operator()(const std::vector<{num_type}>& x,",
+        f"                  std::vector<{num_type}>& dxdt,",
         f"                  const {num_type}& t) {{",
     ]
 
@@ -773,8 +988,6 @@ def _generate_ode_code_with_cse(exprs, states_list, params_list, n_states, num_t
 
     ode_cpp_lines += ["  }", "};"]
     return ode_cpp_lines
-
-
 def _generate_jac_code_with_cse(jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
                                  states_list, params_list, n_states, num_type):
     """Generate Jacobian C++ code with Common Subexpression Elimination."""
@@ -809,21 +1022,21 @@ def _generate_jac_code_with_cse(jac_matrix, time_derivs, exprs, forcing_syms, fo
     jac_cpp_lines = [
         "// Jacobian for stiff solver",
         "struct jacobian {",
-        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
         "",
-        f"  jacobian(const ublas::vector<{num_type}>& p_,",
+        f"  jacobian(const std::vector<{num_type}>& p_,",
         f"           const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
         "    : params(p_), F(F_) {}",
         "",
-        f"  void operator()(const ublas::vector<{num_type}>& x,",
-        f"                  ublas::matrix<{num_type}>& J,",
+        f"  void operator()(const std::vector<{num_type}>& x,",
+        f"                  cppode::dense_matrix<{num_type}>& J,",
         f"                  const {num_type}& t,",
-        f"                  ublas::vector<{num_type}>& dfdt) {{",
+        f"                  std::vector<{num_type}>& dfdt) {{",
     ]
 
     # Zero the full matrix once, then set only non-zero entries
-    jac_cpp_lines.append(f"    J = ublas::zero_matrix<{num_type}>({n_states}, {n_states});")
+    jac_cpp_lines.append(f"    J.set_zero();")
 
     # Emit CSE temporaries
     if replacements:
@@ -865,8 +1078,6 @@ def _generate_jac_code_with_cse(jac_matrix, time_derivs, exprs, forcing_syms, fo
 
     jac_cpp_lines += ["  }", "};"]
     return jac_cpp_lines
-
-
 # =====================================================================
 # Plain (no-CSE) code generation for large systems
 # =====================================================================
@@ -876,15 +1087,15 @@ def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
-        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
         "",
-        f"  ode_system(const ublas::vector<{num_type}>& p_,",
+        f"  ode_system(const std::vector<{num_type}>& p_,",
         f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
         "    : params(p_), F(F_) {}",
         "",
-        f"  void operator()(const ublas::vector<{num_type}>& x,",
-        f"                  ublas::vector<{num_type}>& dxdt,",
+        f"  void operator()(const std::vector<{num_type}>& x,",
+        f"                  std::vector<{num_type}>& dxdt,",
         f"                  const {num_type}& t) {{",
     ]
     for i, expr in enumerate(exprs):
@@ -892,13 +1103,11 @@ def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type
         ode_cpp_lines.append(f"    dxdt[{i}] = {cpp};")
     ode_cpp_lines += ["  }", "};"]
     return ode_cpp_lines
-
-
 def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
                              states_list, params_list, n_states, num_type):
     """Generate Jacobian C++ code without CSE (for large systems).
 
-    Always produces DENSE signature (ublas::matrix<T>& J, J(i,j) = ...).
+    Always produces DENSE signature (cppode::dense_matrix<T>& J, J(i,j) = ...).
     The caller in generate_ode_cpp converts to sparse if use_sparse is True.
     """
     _zero = sp.Integer(0)
@@ -907,18 +1116,18 @@ def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forci
     jac_cpp_lines = [
         "// Jacobian for stiff solver",
         "struct jacobian {",
-        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
         "",
-        f"  jacobian(const ublas::vector<{num_type}>& p_,",
+        f"  jacobian(const std::vector<{num_type}>& p_,",
         f"           const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
         "    : params(p_), F(F_) {}",
         "",
-        f"  void operator()(const ublas::vector<{num_type}>& x,",
-        f"                  ublas::matrix<{num_type}>& J,",
+        f"  void operator()(const std::vector<{num_type}>& x,",
+        f"                  cppode::dense_matrix<{num_type}>& J,",
         f"                  const {num_type}& t,",
-        f"                  ublas::vector<{num_type}>& dfdt) {{",
-        f"    J = ublas::zero_matrix<{num_type}>({n_states}, {n_states});",
+        f"                  std::vector<{num_type}>& dfdt) {{",
+        f"    J.set_zero();",
     ]
     # fill entries
     for i in range(n_states):
@@ -942,16 +1151,12 @@ def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forci
         jac_cpp_lines.append(f"    dfdt[{i}] = {cpp_code};")
     jac_cpp_lines += ["  }", "};"]
     return jac_cpp_lines
-
-
 # =====================================================================
 # Template-based structural deduplication for large MOL systems
 # =====================================================================
 
 # Precompiled regex for generic placeholder substitution
 _GENERIC_PATTERN = re.compile(r'_s(\d+)')
-
-
 def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
                          forcings_list, t_sym):
     """
@@ -1088,15 +1293,15 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
-        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
         "",
-        f"  ode_system(const ublas::vector<{num_type}>& p_,",
+        f"  ode_system(const std::vector<{num_type}>& p_,",
         f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
         "    : params(p_), F(F_) {}",
         "",
-        f"  void operator()(const ublas::vector<{num_type}>& x,",
-        f"                  ublas::vector<{num_type}>& dxdt,",
+        f"  void operator()(const std::vector<{num_type}>& x,",
+        f"                  std::vector<{num_type}>& dxdt,",
         f"                  const {num_type}& t) {{",
     ]
     for key, members in groups.items():
@@ -1110,19 +1315,19 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
     jac_cpp_lines = [
         "// Jacobian for stiff solver",
         "struct jacobian {",
-        f"  ublas::vector<{num_type}> params;",
+        f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
         "",
-        f"  jacobian(const ublas::vector<{num_type}>& p_,",
+        f"  jacobian(const std::vector<{num_type}>& p_,",
         f"           const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
         "    : params(p_), F(F_) {}",
         "",
-        f"  void operator()(const ublas::vector<{num_type}>& x,",
-        f"                  ublas::matrix<{num_type}>& J,",
+        f"  void operator()(const std::vector<{num_type}>& x,",
+        f"                  cppode::dense_matrix<{num_type}>& J,",
         f"                  const {num_type}& t,",
-        f"                  ublas::vector<{num_type}>& dfdt) {{",
+        f"                  std::vector<{num_type}>& dfdt) {{",
     ]
-    jac_cpp_lines.append(f"    J = ublas::zero_matrix<{num_type}>({n_states}, {n_states});")
+    jac_cpp_lines.append(f"    J.set_zero();")
 
     jac_nnz_rows = []
     jac_nnz_cols = []
@@ -1176,9 +1381,11 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
         "jac_nnz_rows": jac_nnz_rows,
         "jac_nnz_cols": jac_nnz_cols,
         "jac_nnz_exprs": jac_nnz_exprs,
+        # Extra data for loop-based sparse codegen
+        "groups": dict(groups),              # canonical -> [(expr_idx, dep_names)]
+        "template_cpp": template_cpp,        # canonical -> {rhs, jac: {j: str}, time_deriv}
+        "name_to_state_idx": name_to_state_idx,  # state_name -> int
     }
-
-
 # =====================================================================
 # Forcing initialization code generation
 # =====================================================================
@@ -1205,8 +1412,6 @@ def generate_forcing_init_code(n_forcings, num_type="AD"):
         "  }",
         "",
     ]
-
-
 # =====================================================================
 # Event code generation with analytical saltation gradients
 #
@@ -1237,8 +1442,6 @@ def _get_list_value(dict_or_df, key, index, n_events):
             return value[index]
         return None
     return value
-
-
 def _is_valid_value(value):
     """Check whether a value is meaningful (not NA/None/boolean)."""
     if value is None:
@@ -1258,8 +1461,6 @@ def _is_valid_value(value):
     if str_val in {"true", "false"}:
         return False
     return True
-
-
 def _parse_value_or_expression(value, local_symbols, states_list, params_list, 
                                 n_states, num_type, forcings_list=None):
     """Interpret a value as numeric literal or symbolic expression."""
@@ -1286,8 +1487,6 @@ def _parse_value_or_expression(value, local_symbols, states_list, params_list,
         return str(value_code)
     except Exception as e:
         raise ValueError(f"Failed to parse expression '{value_str}': {e}")
-
-
 def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
                                      n_states, num_type, forcings_list,
                                      local_symbols, event_idx,
@@ -1337,7 +1536,7 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
     g_dot_dot_lines : list of str
         C++ lambda lines for g_dot_dot (G_tt), or ["    nullptr  // g_dot_dot"].
     """
-    state_type = f"ublas::vector<{num_type}>"
+    state_type = f"std::vector<{num_type}>"
     t = local_symbols["time"]
 
     # --- dg/dx_i for each state ---
@@ -1478,8 +1677,6 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
         g_dot_dot_lines.append(f"    nullptr  // g_dot_dot (FD fallback)")
 
     return dg_dx_lines, dg_dt_lines, g_dot_dot_lines
-
-
 def generate_event_code(events_df, states_list, params_list, n_states, 
                         num_type="AD", forcings_list=None, rhs_dict=None):
     """
@@ -1549,7 +1746,7 @@ def generate_event_code(events_df, states_list, params_list, n_states,
     local_symbols["time"] = t
 
     event_lines = []
-    state_type = f"ublas::vector<{num_type}>"
+    state_type = f"std::vector<{num_type}>"
 
     # Parse ODE RHS expressions for analytical G_tt computation
     rhs_exprs_parsed = None
@@ -1695,8 +1892,6 @@ def generate_event_code(events_df, states_list, params_list, n_states,
             raise ValueError(f"Event {i}: must specify either 'time' or 'root'")
 
     return event_lines
-
-
 # =====================================================================
 # Root function code generation
 # =====================================================================
@@ -1729,8 +1924,6 @@ def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
     return _generate_user_rootfunc_code(
         rootfunc, states_list, params_list, n_states, num_type, forcings_list
     )
-
-
 def _generate_equilibrate_code(num_type):
     """
     Generate C++ code for steady-state detection (terminal event).
@@ -1739,7 +1932,7 @@ def _generate_equilibrate_code(num_type):
     when max(|dxdt|) drops below a tolerance.  No state modification,
     hence no saltation correction needed: dg_dx / dg_dt are nullptr.
     """
-    state_type = f"ublas::vector<{num_type}>"
+    state_type = f"std::vector<{num_type}>"
     
     return [
         "",
@@ -1758,8 +1951,6 @@ def _generate_equilibrate_code(num_type):
         f"  }});",
         ""
     ]
-
-
 def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list, 
                                   n_states, num_type, forcings_list):
     """
@@ -1780,7 +1971,7 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
         local_symbols[name] = sp.Symbol(name, real=True)
     local_symbols["time"] = t
     
-    state_type = f"ublas::vector<{num_type}>"
+    state_type = f"std::vector<{num_type}>"
     lines = [
         "",
         "  // --- User-defined root function termination ---"
@@ -1818,8 +2009,6 @@ def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list,
     
     lines.append("")
     return lines
-
-
 # =====================================================================
 # Sparse LU pattern code generation
 # =====================================================================
@@ -1836,3 +2025,115 @@ def _extract_jac_sparsity(jac_matrix, n):
             if expr is not _zero and expr is not _szero and expr != 0:
                 pattern.add((i, j))
     return pattern
+
+
+def analyze_klu_settings(n, jac_nnz_rows, jac_nnz_cols):
+    """
+    Analyze the Jacobian sparsity pattern to determine optimal KLU settings.
+
+    Returns a dict with:
+      - use_btf (bool):  True if BTF decomposition is beneficial
+      - ordering (int):  0=AMD, 1=COLAMD
+
+    BTF decision:
+      Find strongly connected components of the directed graph defined
+      by the Jacobian pattern.  If nblocks > 1, BTF can decompose the
+      problem into smaller independent blocks → enable BTF.
+      If nblocks == 1 (strongly connected), BTF is pure overhead → disable.
+
+    Ordering decision:
+      For PDE-like patterns (uniform row degree, wide bandwidth),
+      AMD typically produces less fill-in than COLAMD.
+      For irregular patterns (high degree variance, hub nodes),
+      COLAMD often wins.
+      Heuristic: if the coefficient of variation of row degrees > 0.5 → COLAMD.
+    """
+    import numpy as np
+
+    rows = list(jac_nnz_rows)
+    cols = list(jac_nnz_cols)
+
+    if n == 0 or len(rows) == 0:
+        return {"use_btf": False, "ordering": 0}
+
+    # --- BTF: strongly connected components via Tarjan's algorithm ---
+    # Build adjacency list from (row, col) pairs
+    adj = [[] for _ in range(n)]
+    for r, c in zip(rows, cols):
+        if r != c:  # skip self-loops for SCC analysis
+            adj[r].append(c)
+
+    # Iterative Tarjan's SCC
+    index_counter = [0]
+    stack = []
+    on_stack = [False] * n
+    index = [-1] * n
+    lowlink = [0] * n
+    n_scc = [0]
+
+    def _strongconnect_iter(v):
+        """Iterative Tarjan's SCC."""
+        work_stack = [(v, 0)]  # (node, neighbor_index)
+        index[v] = lowlink[v] = index_counter[0]
+        index_counter[0] += 1
+        stack.append(v)
+        on_stack[v] = True
+
+        while work_stack:
+            v, ni = work_stack[-1]
+            if ni < len(adj[v]):
+                work_stack[-1] = (v, ni + 1)
+                w = adj[v][ni]
+                if index[w] == -1:
+                    index[w] = lowlink[w] = index_counter[0]
+                    index_counter[0] += 1
+                    stack.append(w)
+                    on_stack[w] = True
+                    work_stack.append((w, 0))
+                elif on_stack[w]:
+                    lowlink[v] = min(lowlink[v], index[w])
+            else:
+                # Done with v's neighbors
+                if lowlink[v] == index[v]:
+                    # Pop SCC
+                    while True:
+                        w = stack.pop()
+                        on_stack[w] = False
+                        if w == v:
+                            break
+                    n_scc[0] += 1
+                work_stack.pop()
+                if work_stack:
+                    w = v
+                    v = work_stack[-1][0]
+                    lowlink[v] = min(lowlink[v], lowlink[w])
+
+    for v in range(n):
+        if index[v] == -1:
+            _strongconnect_iter(v)
+
+    nblocks = n_scc[0]
+    use_btf = nblocks > 1
+
+    # --- Ordering: row degree variance heuristic ---
+    row_degrees = np.zeros(n, dtype=np.int32)
+    for r in rows:
+        row_degrees[r] += 1
+
+    mean_deg = np.mean(row_degrees)
+    std_deg = np.std(row_degrees)
+    cv = std_deg / mean_deg if mean_deg > 0 else 0.0
+
+    # High CV → irregular pattern (pathway models with hub nodes) → COLAMD
+    # Low CV → uniform pattern (PDE stencils) → AMD
+    ordering = 1 if cv > 0.5 else 0
+    ordering_name = "COLAMD" if ordering == 1 else "AMD"
+
+    return {
+        "use_btf": use_btf,
+        "ordering": ordering,
+        "nblocks": nblocks,
+        "ordering_name": ordering_name,
+        "cv_row_degree": float(cv),
+        "mean_row_degree": float(mean_deg),
+    }

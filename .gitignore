@@ -3,7 +3,6 @@
 .Rhistory
 .RData
 .Ruserdata
-CRAN-SUBMISSION
 
 # ---- Python ----
 __pycache__/
@@ -13,9 +12,25 @@ __pycache__/
 .quarto/
 _quarto/
 
+# ---- Compiled code ----
+src/*.o
+src/*.so
+src/*.dll
+src/*.a
+src/suitesparse/*.o
+
 # ---- OS ----
 .DS_Store
 
 # ---- Secrets ----
 .httr-oauth
 .env
+
+doc/
+Meta/
+vignettes/*.html
+vignettes/*.R
+/doc/
+/Meta/
+
+*.html

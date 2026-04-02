@@ -1,6 +1,12 @@
 /*
  Main header for CppODE – ODE integration and sensitivity calculation
- using FADBAD++ automatic differentiation and Boost.Odeint.
+ using FADBAD++ automatic differentiation.
+
+ The stepper architecture (Rosenbrock4, BDF) is derived from Boost.Odeint
+ by Karsten Ahnert, Mario Mulansky, and Christoph Koke (2011–2015),
+ distributed under the Boost Software License, Version 1.0.
+ Substantially rewritten: LAPACK/KLU linear algebra, AD-aware LU
+ decomposition, event handling, BDF support, PI step-size control.
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -27,40 +33,52 @@
 #include <cppode/cppode_fadiff_extensions.hpp>
 
 // ============================================================================
-//  Boost.Odeint and uBLAS
-//
-//  Block BH's stock rosenbrock4.hpp and generation_rosenbrock4.hpp before
-//  the odeint aggregator pulls them in.  Both are permanently superseded by
-//  cppode_boost_rosenbrock4.hpp which redefines rosenbrock4 with an extra
-//  JacobianPattern parameter, containing the sparsitity patttern, and provides
-//  its own get_controller / get_dense_output specialisations.
+//  CppODE types and infrastructure
 // ============================================================================
-#define BOOST_NUMERIC_ODEINT_STEPPER_ROSENBROCK4_HPP_INCLUDED
-#define BOOST_NUMERIC_ODEINT_STEPPER_GENERATION_GENERATION_ROSENBROCK4_HPP_INCLUDED
-#include <boost/numeric/odeint.hpp>
-#include <boost/numeric/ublas/vector.hpp>
-#include <boost/numeric/ublas/matrix.hpp>
+#include <cppode/cppode_types.hpp>
+#include <cppode/cppode_odeint_compat.hpp>
 
 // ============================================================================
-//  CppODE sparse LU for compressed_matrix
+//  CppODE AD-aware LU solvers (IFT for dense and sparse)
 // ============================================================================
-#include <cppode/cppode_sparse_lu.hpp>
+#include <cppode/cppode_ad_lu.hpp>
+#include <cppode/cppode_sparse_ad_lu.hpp>
+
+// ============================================================================
+//  CppODE unified LU iteration matrix solver
+// ============================================================================
+#include <cppode/cppode_lu.hpp>
+
+// ============================================================================
+//  CppODE Newton solver
+// ============================================================================
+#include <cppode/cppode_newton.hpp>
 
 // ============================================================================
 //  CppODE utilities
 // ============================================================================
-#include <cppode/cppode_odeint_utils.hpp>
+#include <cppode/cppode_utils.hpp>
 #include <cppode/cppode_pchip_forcing.hpp>
 
 // ============================================================================
-//  CppODE Rosenbrock stepper (drop-in replacement with sparse LU extension)
+//  CppODE stepper traits (multi-step vs single-step dispatch)
 // ============================================================================
-#include <cppode/cppode_boost_rosenbrock4.hpp>
-#include <cppode/cppode_boost_rosenbrock4_controller_pi.hpp>
-#include <cppode/cppode_boost_rosenbrock4_controller_pi_ad.hpp>
-#include <cppode/cppode_boost_rosenbrock4_dense_output_pi.hpp>
-#include <cppode/cppode_boost_rosenbrock4_dense_output_pi_ad.hpp>
-#include <cppode/cppode_boost_integrate_times_with_events.hpp>
-#include <cppode/cppode_boost_step_checker.hpp>
+#include <cppode/cppode_stepper_traits.hpp>
+
+// ============================================================================
+//  CppODE Rosenbrock4 stepper (unified: double + AD)
+// ============================================================================
+#include <cppode/cppode_rosenbrock4.hpp>
+#include <cppode/cppode_rosenbrock4_controller.hpp>
+#include <cppode/cppode_rosenbrock4_dense_output.hpp>
+#include <cppode/cppode_integrate_times.hpp>
+#include <cppode/cppode_step_checker.hpp>
+
+// ============================================================================
+//  CppODE BDF stepper (unified: double + AD, variable order 1–5)
+// ============================================================================
+#include <cppode/cppode_bdf.hpp>
+#include <cppode/cppode_bdf_controller.hpp>
+#include <cppode/cppode_bdf_dense_output.hpp>
 
 #endif // CPPODE_HPP

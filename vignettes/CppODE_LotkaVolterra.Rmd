@@ -1,0 +1,174 @@
+---
+title: "Sensitivity Analysis for a Predator–Prey Model"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Sensitivity Analysis for a Predator–Prey Model}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, dpi = 150)
+```
+
+## The Model
+
+This vignette demonstrates how to define, compile, and integrate an ODE
+system with **CppODE**, including automatic computation of parameter
+sensitivities via forward-mode AD (FADBAD++).
+
+As a simple example from theoretical ecology, we use the classic
+**Lotka–Volterra** predator–prey model:
+
+$$
+\begin{aligned}
+\dot{x} &= \alpha \, x - \beta \, x \, y \\
+\dot{y} &= \delta \, x \, y - \gamma \, y
+\end{aligned}
+$$
+
+where $x$ is the prey population and $y$ the predator population.
+
+## Define and compile the model
+
+```{r compile}
+library(CppODE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+eqns <- c(
+  x = "alpha * x - beta * x * y",
+  y = "delta * x * y - gamma * y"
+)
+
+# Compile with first-order sensitivities enabled
+model <- CppODE(eqns, deriv = TRUE, modelname = "lotka_volterra")
+```
+
+## Solve the system
+
+```{r solve}
+parms <- c(x = 1.0, y = 0.5, alpha = 1.5, beta = 1.0, delta = 1.0, gamma = 3.0)
+times <- seq(0, 15, length.out = 500)
+
+res <- solveODE(model, times, parms)
+diagnostics(res)
+```
+
+## State trajectories
+
+```{r plot-states, fig.cap="Prey and predator population dynamics."}
+df_states <- data.frame(
+  time = res$time,
+  x    = res$variable["x", ],
+  y    = res$variable["y", ]
+) |>
+  pivot_longer(cols = c(x, y), names_to = "Species", values_to = "Population")
+
+ggplot(df_states, aes(x = time, y = Population, colour = Species)) +
+  geom_line(linewidth = 0.8) +
+  scale_colour_manual(
+    values = c(x = "#0072B2", y = "#D55E00"),
+    labels = c(x = "Prey (x)", y = "Predator (y)")
+  ) +
+  labs(x = "Time", y = "Population", colour = NULL,
+       title = "Lotka-Volterra Population Dynamics") +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "top")
+```
+
+## Phase portrait
+
+```{r phase, fig.cap="Phase portrait in (x, y) space."}
+df_phase <- data.frame(
+  x = res$variable["x", ],
+  y = res$variable["y", ]
+)
+
+ggplot(df_phase, aes(x = x, y = y)) +
+  geom_path(colour = "#009E73", linewidth = 0.7) +
+  geom_point(data = df_phase[1, ], colour = "black", size = 3) +
+  annotate("text", x = df_phase$x[1] + 0.08, y = df_phase$y[1] + 0.05,
+           label = "Start", hjust = 0, size = 3.5) +
+  labs(x = "Prey (x)", y = "Predator (y)", title = "Phase Portrait") +
+  theme_bw(base_size = 13) +
+  coord_equal()
+```
+
+## Parameter sensitivities
+
+The sensitivities $\partial x_i / \partial p_j$ are computed automatically
+via forward-mode AD. `res$sens1` is a 3D array with dimensions
+`[n_states, n_sens, n_times]`.
+
+```{r plot-sensitivities, fig.height=7, fig.cap="First-order parameter sensitivities."}
+sens_names <- dimnames(res$sens1)$sens
+n_t <- length(res$time)
+
+df_sens <- expand.grid(
+  variable  = dimnames(res$sens1)$variable,
+  parameter = sens_names,
+  t_idx     = seq_len(n_t),
+  stringsAsFactors = FALSE
+)
+df_sens$time  <- res$time[df_sens$t_idx]
+df_sens$value <- as.vector(res$sens1)
+df_sens$t_idx <- NULL
+
+ggplot(df_sens, aes(x = time, y = value, colour = variable)) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ parameter, scales = "free_y", ncol = 2,
+             labeller = labeller(parameter = setNames(
+               paste0("\u2202\u00b7/\u2202", sens_names), sens_names
+             ))) +
+  scale_colour_manual(
+    values = c(x = "#0072B2", y = "#D55E00"),
+    labels = c(x = "\u2202x/\u2202p", y = "\u2202y/\u2202p")
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50",
+             linewidth = 0.3) +
+  labs(x = "Time", y = "Sensitivity", colour = "State",
+       title = "First-Order Parameter Sensitivities") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "top",
+        strip.background = element_rect(fill = "grey95"))
+```
+
+## Sensitivity to α in detail
+
+How sensitive is the system to the prey growth rate $\alpha$?
+
+```{r sens-alpha, fig.cap="Sensitivity of both populations to α."}
+df_alpha <- data.frame(
+  time      = res$time,
+  dx_dalpha = res$sens1["x", "alpha", ],
+  dy_dalpha = res$sens1["y", "alpha", ]
+) |>
+  pivot_longer(-time, names_to = "Sensitivity", values_to = "value")
+
+ggplot(df_alpha, aes(x = time, y = value, colour = Sensitivity)) +
+  geom_line(linewidth = 0.8) +
+  scale_colour_manual(
+    values = c(dx_dalpha = "#0072B2", dy_dalpha = "#D55E00"),
+    labels = c(dx_dalpha = expression(partialdiff*x / partialdiff*alpha),
+               dy_dalpha = expression(partialdiff*y / partialdiff*alpha))
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey50") +
+  labs(x = "Time", y = "Sensitivity", colour = NULL,
+       title = expression("Sensitivity w.r.t. " * alpha)) +
+  theme_bw(base_size = 13) +
+  theme(legend.position = "top")
+```
+
+## Summary
+
+- **CppODE** generates and compiles C++ code for the ODE system at runtime.
+- Sensitivities are computed automatically via forward-mode AD (FADBAD++) —
+  no manual derivation of sensitivity equations required.
+- Results are numerically exact (machine precision, no finite differences).
+
+```{r session}
+sessionInfo()
+```

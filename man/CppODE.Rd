@@ -19,6 +19,9 @@ CppODE(
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
+  method = c("bdf", "rosenbrock4"),
+  profile = FALSE,
+  stepTrace = FALSE,
   verbose = FALSE
 )
 }
@@ -58,6 +61,13 @@ If \code{NULL}, a random identifier is used.}
 \code{NULL} (default) auto-selects based on Jacobian sparsity.
 \code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
 
+\item{method}{Character string selecting the integration method: \code{"bdf"} (default) or \code{"rosenbrock4"}.}
+
+\item{profile}{Logical. If \code{TRUE}, compile with profiling counters (\code{-DCPPODE_PROFILE}).}
+
+\item{stepTrace}{Logical. If \code{TRUE}, emit per-step diagnostics (order, step size, gamrat,
+setup triggers) to stderr. Verbose; intended for debugging only.}
+
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
@@ -84,7 +94,7 @@ equations (ODEs) of the form
 
 \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 
-using \href{https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html}{\strong{Boost.Odeint's}}
+the Rosenbrock4 method (derived from Boost.Odeint's architecture) with dense output
 stiff method Rosenbrock4 with dense output and error control (using third order in combination).
 The solver supports \strong{time-based} and \strong{root-triggered events} and can, optionally,
 compute \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with

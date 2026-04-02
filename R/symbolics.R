@@ -24,8 +24,6 @@ getSymbols <- function(expr, omit = NULL) {
   if (!is.null(omit)) syms <- setdiff(syms, omit)
   syms
 }
-
-
 #' Sanitize expressions for SymPy compatibility
 #'
 #' Scans character expressions for reserved Python keywords and replaces them
@@ -60,8 +58,6 @@ sanitizeExprs <- function(exprs) {
   }
   sanitized
 }
-
-
 #' Symbolic differentiation (Jacobian and optional Hessian) via SymPy
 #'
 #' @description

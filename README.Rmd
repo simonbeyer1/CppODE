@@ -1,0 +1,60 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.path = "man/figures/README-",
+  out.width = "100%"
+)
+```
+
+# CppODE
+
+<!-- badges: start -->
+[![R-CMD-check](https://github.com/simonbeyer1/CppODE/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/simonbeyer1/CppODE/actions/workflows/R-CMD-check.yaml)
+<!-- badges: end -->
+
+**Automated C++ code generation for ODE integration with sensitivity
+calculation using FADBAD++.**
+
+CppODE generates, compiles, and runs C++ solvers for ODE systems, with
+optional first- and second-order parameter sensitivities computed
+automatically via forward-mode automatic differentiation.
+
+## Features
+
+- **BDF solver** (variable-order 1–5, variable-step, Nordsieck form) adapted from
+  [SUNDIALS/CVODE](https://computing.llnl.gov/projects/sundials), with dense LU via R's
+  LAPACK interface or sparse LU via KLU (bundled SuiteSparse)
+- **Rosenbrock4 solver** extended from [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/doc/html/index.html)
+- **Automatic differentiation** — FADBAD++ dual numbers for exact
+  first- and second-order parameter sensitivities in a single
+  integration pass
+- **Event handling** — time-based and root-triggered events with
+  saltation matrix corrections for sensitivity continuity
+- **Symbolic Jacobian** — automatically derived and compiled as
+  analytic C++ code
+- **Sparse support** — auto-detection of Jacobian sparsity with
+  KLU factorization for large systems
+
+## Installation
+
+```r
+install.packages("devtools")
+devtools::install_github("simonbeyer1/CppODE")
+```
+
+## Getting started
+
+For a worked example — defining an ODE system, computing sensitivities,
+and plotting the results — see the
+[Predator–Prey vignette](vignettes/CppODE_LotkaVolterra.Rmd).
+
+## License
+
+MIT

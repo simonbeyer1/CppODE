@@ -6,7 +6,7 @@
 #'
 #' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' using [**Boost.Odeint's**](https://www.boost.org/doc/libs/1_89_0/libs/numeric/odeint/doc/html/index.html)
+#' the Rosenbrock4 method (derived from Boost.Odeint's architecture) with dense output
 #' stiff method Rosenbrock4 with dense output and error control (using third order in combination).
 #' The solver supports **time-based** and **root-triggered events** and can, optionally,
 #' compute **first- and second-order sensitivities** by evaluating the *same system* with
@@ -107,6 +107,10 @@
 #' @param sparse Controls sparse LU factorization in the Rosenbrock4 stepper.
 #'   `NULL` (default) auto-selects based on Jacobian sparsity.
 #'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
+#' @param method Character string selecting the integration method: `"bdf"` (default) or `"rosenbrock4"`.
+#' @param profile Logical. If `TRUE`, compile with profiling counters (`-DCPPODE_PROFILE`).
+#' @param stepTrace Logical. If `TRUE`, emit per-step diagnostics (order, step size, gamrat,
+#'   setup triggers) to stderr. Verbose; intended for debugging only.
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
 #' @return
@@ -136,14 +140,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
-                   sparse = NULL,
-                   verbose = FALSE) {
+                   sparse = NULL, method = c("bdf", "rosenbrock4"),
+                   profile = FALSE, stepTrace = FALSE, verbose = FALSE) {
 
   # --- Validate arguments ---
   if (deriv2 && !deriv) {
     warning("deriv2 = TRUE requires deriv = TRUE. Setting deriv = TRUE automatically.")
     deriv <- TRUE
   }
+  method <- match.arg(method)
 
   # --- Clean up ODE definitions ---
   rhs <- unclass(rhs)
@@ -409,21 +414,18 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # --- Using declarations ---
   if (deriv2) {
     usings <- c(
-      "using namespace boost::numeric::odeint;",
-      "namespace ublas = boost::numeric::ublas;",
-      "using AD = fadbad::F<double>;",
-      "using AD2 = fadbad::F<fadbad::F<double>>;"
+      "using namespace cppode;",
+      sprintf("using AD = fadbad::F<double, %d>;", n_total_sens),
+      sprintf("using AD2 = fadbad::F<fadbad::F<double, %d>, %d>;", n_total_sens, n_total_sens)
     )
   } else if (deriv) {
     usings <- c(
-      "using namespace boost::numeric::odeint;",
-      "namespace ublas = boost::numeric::ublas;",
-      "using AD = fadbad::F<double>;"
+      "using namespace cppode;",
+      sprintf("using AD = fadbad::F<double, %d>;", n_total_sens)
     )
   } else {
     usings <- c(
-      "using namespace boost::numeric::odeint;",
-      "namespace ublas = boost::numeric::ublas;"
+      "using namespace cppode;"
     )
   }
 
@@ -437,7 +439,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     sprintf("  explicit observer(std::vector<%s>& t, std::vector<%s>& y_)", numType, numType),
     "    : times(t), y(y_) {}",
     "",
-    sprintf("  void operator()(const ublas::vector<%s>& x, const %s& t) {", numType, numType),
+    sprintf("  void operator()(const cppode::vector_t<%s>& x, const %s& t) {", numType, numType),
     "    times.push_back(t);",
     "    for (size_t i = 0; i < x.size(); ++i) y.push_back(x[i]);",
     "  }",
@@ -455,8 +457,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
     "",
-    sprintf("  ublas::vector<%s> x(%d);", numType, n_variables),
-    sprintf("  ublas::vector<%s> full_params(%d);", numType, n_variables + n_params),
+    sprintf("  cppode::vector_t<%s> x(%d);", numType, n_variables),
+    sprintf("  cppode::vector_t<%s> full_params(%d);", numType, n_variables + n_params),
     ""
   )
 
@@ -608,13 +610,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      if (ai >= 0) {",
       "        // First-order sensitivities (inner layer)",
       "        if (has_sens1ini) {",
-      "          x[i].x().diff(0, n_sens);  // Allocate n_sens (active) first-order components",
+      "          x[i].x().diff(0);  // Allocate n_sens (active) first-order components (static)",
       "          for (int v1 = 0; v1 < n_sens_total; ++v1) {",
       "            int av1 = active_idx[v1];",
       "            if (av1 >= 0) x[i].x().d(av1) = sens1ini[IDX1(i, av1)];",
       "          }",
       "        } else {",
-      "          x[i].x().diff(ai, n_sens);  // Identity: d(ai) = 1",
+      "          x[i].x().diff(ai);  // Identity: d(ai) = 1 (static)",
       "        }",
       "        // Second-order sensitivities (outer layer)",
       "        if (has_sens2ini) {",
@@ -622,15 +624,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "          for (int v1 = 0; v1 < n_sens_total; ++v1) {",
       "            int av1 = active_idx[v1];",
       "            if (av1 < 0) continue;",
-      "            x[i].diff(av1, n_sens).diff(0, n_sens);  // Allocate",
+      "            x[i].diff(av1).diff(0);  // Allocate (static)",
       "            for (int v2 = 0; v2 < n_sens_total; ++v2) {",
       "              int av2 = active_idx[v2];",
-      "              if (av2 >= 0) x[i].diff(av1, n_sens).d(av2) = sens2ini[IDX2(i, av1, av2)];",
+      "              if (av2 >= 0) x[i].diff(av1).d(av2) = sens2ini[IDX2(i, av1, av2)];",
       "            }",
       "          }",
       "        } else {",
       "          // Default: allocate outer layer with zeros",
-      "          x[i].diff(ai, n_sens);  // Allocate n_sens outer components (inner defaults to 0)",
+      "          x[i].diff(ai);  // Allocate n_sens outer components (inner defaults to 0, static)",
       "        }",
       "      }",
       "    }"
@@ -644,13 +646,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index (-1 if any-fixed)",
       "      if (ai >= 0) {",
       "        if (has_sens1ini) {",
-      "          x[i].diff(0, n_sens);  // Allocate n_sens (= n_active) dual components",
+      "          x[i].diff(0);  // Allocate n_sens (= n_active) dual components (static)",
       "          for (int v = 0; v < n_sens_total; ++v) {",
       "            int av = active_idx[v];",
       "            if (av >= 0) x[i].d(av) = sens1ini[IDX1(i, av)];",
       "          }",
       "        } else {",
-      "          x[i].diff(ai, n_sens);  // Identity: d(ai) = 1, only n_sens components",
+      "          x[i].diff(ai);  // Identity: d(ai) = 1, only n_sens components (static)",
       "        }",
       "      }",
       "    }"
@@ -691,9 +693,9 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
       "      if (ai >= 0) {",
       "        // First-order (inner layer): identity seeding with active index",
-      "        full_params[param_index].x().diff(ai, n_sens);",
+      "        full_params[param_index].x().diff(ai);",
       "        // Second-order (outer layer): allocate n_sens components (inner defaults to 0)",
-      "        full_params[param_index].diff(ai, n_sens);",
+      "        full_params[param_index].diff(ai);",
       "      }",
       "    }"
     )
@@ -707,7 +709,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
       "      if (ai >= 0) {",
       "        // Parameters use identity seeding: dp_i/dp_j = delta_{ij}",
-      "        full_params[param_index].diff(ai, n_sens);",
+      "        full_params[param_index].diff(ai);",
       "      }",
       "    }"
     )
@@ -716,8 +718,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   }
 
   externC <- c(externC, "  }", "")
-
-
   # --- Forcing Initialization ---
   externC <- c(externC, forcing_init_code, "")
 
@@ -754,8 +754,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                sprintf("  std::vector<%s> y;", numType),
                "",
                "  // --- Event containers ---",
-               sprintf("  std::vector<FixedEvent<ublas::vector<%s>, %s>> fixed_events;", numType, numType),
-               sprintf("  std::vector<RootEvent<ublas::vector<%s>, %s>> root_events;", numType, numType)
+               sprintf("  std::vector<FixedEvent<cppode::vector_t<%s>, %s>> fixed_events;", numType, numType),
+               sprintf("  std::vector<RootEvent<cppode::vector_t<%s>, %s>> root_events;", numType, numType)
   )
 
   # Insert event code from Python
@@ -766,60 +766,93 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # Note: rootfunc_code is inserted later, after sys is defined
 
   # --- Integration setup ---
-  # Rosenbrock4 stepper type: dense or sparse LU
+  # Stepper types: dense or sparse LU, Rosenbrock4 or BDF
   if (use_sparse) {
     rb4_double <- "rosenbrock4<double, sparse_lu_tag>"
     rb4_AD     <- "rosenbrock4<AD, sparse_lu_tag>"
     rb4_AD2    <- "rosenbrock4<AD2, sparse_lu_tag>"
+    bdf_double <- "cppode::bdf_stepper<double, sparse_lu_tag>"
+    bdf_AD     <- "cppode::bdf_stepper<AD, sparse_lu_tag>"
+    bdf_AD2    <- "cppode::bdf_stepper<AD2, sparse_lu_tag>"
   } else {
     rb4_double <- "rosenbrock4<double>"
     rb4_AD     <- "rosenbrock4<AD>"
     rb4_AD2    <- "rosenbrock4<AD2>"
+    bdf_double <- "cppode::bdf_stepper<double>"
+    bdf_AD     <- "cppode::bdf_stepper<AD>"
+    bdf_AD2    <- "cppode::bdf_stepper<AD2>"
   }
 
-  if (useDenseOutput) {
-    # Dense output version (WITH Interpolation)
-    if (deriv2) {
-      stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD2, ifelse(fullErr, "true", "false")),
-        "  auto denseStepper = rosenbrock4_dense_output_pi_ad<decltype(controlledStepper)>(controlledStepper);",
-        sep = "\n"
-      )
-      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
-    } else if (deriv) {
-      stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD, ifelse(fullErr, "true", "false")),
-        "  auto denseStepper = rosenbrock4_dense_output_pi_ad<decltype(controlledStepper)>(controlledStepper);",
-        sep = "\n"
-      )
-      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+  if (method == "bdf") {
+    # ---- BDF stepper ----
+    if (useDenseOutput) {
+      if (deriv2) {
+        stepper_line <- paste(
+          sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
+                  bdf_AD2, ifelse(fullErr, "true", "false")),
+          "  auto denseStepper = cppode::bdf_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+          sep = "\n"
+        )
+      } else if (deriv) {
+        stepper_line <- paste(
+          sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
+                  bdf_AD, ifelse(fullErr, "true", "false")),
+          "  auto denseStepper = cppode::bdf_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+          sep = "\n"
+        )
+      } else {
+        stepper_line <- paste(
+          sprintf("  auto controlledStepper = cppode::bdf_controller<%s>(abstol, reltol);",
+                  bdf_double),
+          "  auto denseStepper = cppode::bdf_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+          sep = "\n"
+        )
+      }
+      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot, dt_est);"
     } else {
-      stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi<%s>(abstol, reltol);", rb4_double),
-        "  auto denseStepper = rosenbrock4_dense_output_pi<decltype(controlledStepper)>(controlledStepper);",
-        sep = "\n"
-      )
-      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+      if (deriv2) {
+        stepper_line <- sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
+                                bdf_AD2, ifelse(fullErr, "true", "false"))
+      } else if (deriv) {
+        stepper_line <- sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
+                                bdf_AD, ifelse(fullErr, "true", "false"))
+      } else {
+        stepper_line <- sprintf("  auto controlledStepper = cppode::bdf_controller<%s>(abstol, reltol);",
+                                bdf_double)
+      }
+      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot, dt_est);"
     }
   } else {
-    # Controlled stepper version (WITHOUT Interpolation)
-    if (deriv2) {
-      stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD2, ifelse(fullErr, "true", "false")),
-        sep = "\n"
-      )
-      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
-    } else if (deriv) {
-      stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi_ad<%s, %s>(abstol, reltol);", rb4_AD, ifelse(fullErr, "true", "false")),
-        sep = "\n"
-      )
-      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    # ---- Rosenbrock4 stepper (existing) ----
+    if (useDenseOutput) {
+      if (deriv2) {
+        stepper_line <- paste(
+          sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD2),
+          "  auto denseStepper = cppode::rosenbrock4_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+          sep = "\n"
+        )
+      } else if (deriv) {
+        stepper_line <- paste(
+          sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD),
+          "  auto denseStepper = cppode::rosenbrock4_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+          sep = "\n"
+        )
+      } else {
+        stepper_line <- paste(
+          sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_double),
+          "  auto denseStepper = cppode::rosenbrock4_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+          sep = "\n"
+        )
+      }
+      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     } else {
-      stepper_line <- paste(
-        sprintf("  auto controlledStepper = rosenbrock4_controller_pi<%s>(abstol, reltol);", rb4_double),
-        sep = "\n"
-      )
+      if (deriv2) {
+        stepper_line <- sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD2)
+      } else if (deriv) {
+        stepper_line <- sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD)
+      } else {
+        stepper_line <- sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_double)
+      }
       integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
     }
   }
@@ -844,50 +877,115 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   }
 
   # --- Initial step size estimation ---
+  if (method == "bdf") {
+    dt_func_dense  <- "bdf_utils::estimate_initial_dt_bdf"
+    dt_func_sparse <- "bdf_utils::estimate_initial_dt_bdf_sparse"
+  } else {
+    dt_func_dense  <- "odeint_utils::estimate_initial_dt_local"
+    dt_func_sparse <- "odeint_utils::estimate_initial_dt_local_sparse"
+  }
   if (use_sparse) {
     estimate_dt_block <- c(
-      "  // --- Determine dt (sparse J x dxdt, O(nnz)) ---",
+      sprintf("  // --- Determine dt (%s, sparse J x dxdt, O(nnz)) ---", method),
       sprintf("  %s dt;", numType),
       "  if (hini == 0.0) {",
-      "    dt = odeint_utils::estimate_initial_dt_local_sparse(sys, jac, x, times.front(), abstol, reltol);",
+      sprintf("    dt = %s(sys, jac, x, times.front(), abstol, reltol);", dt_func_sparse),
       "  } else {",
       "    dt = hini;",
       "  }"
     )
   } else {
     estimate_dt_block <- c(
-      "  // --- Determine dt ---",
+      sprintf("  // --- Determine dt (%s) ---", method),
       sprintf("  %s dt;", numType),
       "  if (hini == 0.0) {",
-      "    dt = odeint_utils::estimate_initial_dt_local(sys, jac, x, times.front(), abstol, reltol);",
+      sprintf("    dt = %s(sys, jac, x, times.front(), abstol, reltol);", dt_func_dense),
       "  } else {",
       "    dt = hini;",
       "  }"
     )
   }
 
+  # --- BDF: dt re-estimator lambda for event restarts ---
+  dt_est_block <- character(0)
+  if (method == "bdf") {
+    dt_func_event <- if (use_sparse) dt_func_sparse else dt_func_dense
+    dt_est_block <- c(
+      "  // --- BDF event restart: re-estimate dt from post-event state ---",
+      sprintf("  auto dt_est = [&](auto& x_ev, auto t_ev) { return %s(sys, jac, x_ev, t_ev, abstol, reltol); };",
+              dt_func_event)
+    )
+  }
+
   externC <- c(externC,
                stepper_line, "",
                estimate_dt_block,
+               dt_est_block,
                "",
-               "  // --- Integration ---",
-               integrate_line,
+               "  // --- Integration (catch step-limit errors for partial results) ---",
+               "  std::string solver_message;",
+               "  try {",
+               paste0("    ", integrate_line),
+               "  } catch (const cppode::no_progress_error& e) {",
+               "    solver_message = e.what();",
+               "  }",
+               "",
+               "  // --- Populate diagnostics from available state ---",
+               "  if (!result_times.empty()) {",
+               sprintf("    checker.set_t_reached(static_cast<double>(%s));",
+                       if (deriv2) "result_times.back().x().x()"
+                       else if (deriv) "result_times.back().x()"
+                       else "result_times.back()"),
+               "  }",
+               "  // last_dt is set by the integration loop (process_dense/process_controlled)",
+               "  // and reflects the true controller step size, not the output grid spacing.",
                "",
                "  const int n_out = static_cast<int>(result_times.size());",
                "  if (n_out <= 0) Rf_error(\"Integration produced no output\");",
+               "",
+               "  // --- Build diagnostics list ---",
+               "  // diagnostics: list(return_code, message, accepted, rejected,",
+               "  //                   fevals, jevals, setups, last_dt, last_order, t_reached)",
+               "  SEXP diag = PROTECT(Rf_allocVector(VECSXP, 10));",
+               "  SEXP diag_names = PROTECT(Rf_allocVector(STRSXP, 10));",
+               "  SET_STRING_ELT(diag_names, 0, Rf_mkChar(\"return_code\"));",
+               "  SET_STRING_ELT(diag_names, 1, Rf_mkChar(\"message\"));",
+               "  SET_STRING_ELT(diag_names, 2, Rf_mkChar(\"accepted\"));",
+               "  SET_STRING_ELT(diag_names, 3, Rf_mkChar(\"rejected\"));",
+               "  SET_STRING_ELT(diag_names, 4, Rf_mkChar(\"fevals\"));",
+               "  SET_STRING_ELT(diag_names, 5, Rf_mkChar(\"jevals\"));",
+               "  SET_STRING_ELT(diag_names, 6, Rf_mkChar(\"setups\"));",
+               "  SET_STRING_ELT(diag_names, 7, Rf_mkChar(\"last_dt\"));",
+               "  SET_STRING_ELT(diag_names, 8, Rf_mkChar(\"last_order\"));",
+               "  SET_STRING_ELT(diag_names, 9, Rf_mkChar(\"t_reached\"));",
+               "  Rf_setAttrib(diag, R_NamesSymbol, diag_names);",
+               "  SET_VECTOR_ELT(diag, 0, Rf_ScalarInteger(checker.return_code()));",
+               "  {",
+               "    SEXP msg_sexp = PROTECT(Rf_allocVector(STRSXP, 1));",
+               "    SET_STRING_ELT(msg_sexp, 0, Rf_mkChar(solver_message.empty() ? \"Integration was successful.\" : solver_message.c_str()));",
+               "    SET_VECTOR_ELT(diag, 1, msg_sexp);",
+               "    UNPROTECT(1);",
+               "  }",
+               "  SET_VECTOR_ELT(diag, 2, Rf_ScalarInteger(checker.n_accepted()));",
+               "  SET_VECTOR_ELT(diag, 3, Rf_ScalarInteger(checker.n_rejected()));",
+               "  SET_VECTOR_ELT(diag, 4, Rf_ScalarInteger(checker.n_fevals()));",
+               "  SET_VECTOR_ELT(diag, 5, Rf_ScalarInteger(checker.n_jevals()));",
+               "  SET_VECTOR_ELT(diag, 6, Rf_ScalarInteger(checker.n_setups()));",
+               "  SET_VECTOR_ELT(diag, 7, Rf_ScalarReal(checker.last_dt()));",
+               "  SET_VECTOR_ELT(diag, 8, Rf_ScalarInteger(checker.last_order()));",
+               "  SET_VECTOR_ELT(diag, 9, Rf_ScalarReal(checker.t_reached()));",
                ""
   )
-
-
   # --- Copy back results - CONSISTENT LIST OUTPUT ---
   if (!deriv) {
     # deriv = FALSE: list(time, variable)
     externC <- c(externC,
-                 "  // --- Return list(time, variable) ---",
-                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 2));",
-                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 2));",
+                 "  // --- Return list(time, variable, diagnostics) ---",
+                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 3));",
+                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 3));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
                  "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
+                 "  SET_STRING_ELT(names, 2, Rf_mkChar(\"diagnostics\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
@@ -904,7 +1002,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
-                 "  UNPROTECT(4);",
+                 "  SET_VECTOR_ELT(ans, 2, diag);",
+                 "  UNPROTECT(6);",
                  "  return ans;")
 
   } else if (!deriv2) {
@@ -922,11 +1021,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "    return active_idx[si] < 0;  // runtime fixed",
                  "  };",
                  "",
-                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 3));",
-                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 3));",
+                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
+                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
                  "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"sens1\"));",
+                 "  SET_STRING_ELT(names, 3, Rf_mkChar(\"diagnostics\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
@@ -960,7 +1060,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  SET_VECTOR_ELT(ans, 2, sens1_arr);",
-                 "  UNPROTECT(6);",
+                 "  SET_VECTOR_ELT(ans, 3, diag);",
+                 "  UNPROTECT(8);",
                  "  return ans;")
 
   } else {
@@ -978,12 +1079,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "    return active_idx[si] < 0;  // runtime fixed",
                  "  };",
                  "",
-                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
-                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));",
+                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 5));",
+                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 5));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
                  "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"sens1\"));",
                  "  SET_STRING_ELT(names, 3, Rf_mkChar(\"sens2\"));",
+                 "  SET_STRING_ELT(names, 4, Rf_mkChar(\"diagnostics\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
@@ -1033,7 +1135,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  SET_VECTOR_ELT(ans, 2, sens1_arr);",
                  "  SET_VECTOR_ELT(ans, 3, sens2_arr);",
-                 "  UNPROTECT(8);",
+                 "  SET_VECTOR_ELT(ans, 4, diag);",
+                 "  UNPROTECT(10);",
                  "  return ans;")
   }
 
@@ -1110,11 +1213,31 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     )
   }
 
-  if (compile) compile(modelname, verbose = verbose)
+  if (compile) {
+    profile_args <- if (isTRUE(profile)) "-DCPPODE_PROFILE" else ""
+    if (isTRUE(stepTrace)) profile_args <- paste0(profile_args, " -DCPPODE_STEP_TRACE")
+
+    # KLU auto-tuning: pass codegen-determined settings as compile-time defines
+    klu_settings <- codegen_result$klu_settings
+    if (!is.null(klu_settings)) {
+      klu_btf <- if (isTRUE(klu_settings$use_btf)) 1L else 0L
+      klu_ord <- as.integer(klu_settings$ordering)
+      profile_args <- paste0(profile_args,
+                             sprintf(" -DCPPODE_KLU_BTF=%d -DCPPODE_KLU_ORDERING=%d",
+                                     klu_btf, klu_ord))
+      if (verbose) {
+        message(sprintf("  KLU settings (codegen): BTF=%s, ordering=%s (nblocks=%d, cv=%.2f)",
+                        if (klu_btf) "on" else "off",
+                        klu_settings$ordering_name,
+                        as.integer(klu_settings$nblocks),
+                        klu_settings$cv_row_degree))
+      }
+    }
+
+    compile(modelname, args = profile_args, verbose = verbose)
+  }
   return(modelname)
 }
-
-
 #' Solver Interface for Ordinary Differential Equation Models
 #'
 #' @description
@@ -1347,11 +1470,74 @@ solveODE <- function(model, times, parms,
   if (!is.null(result$sens2))
     dimnames(result$sens2) <- list(variable = variables, sens1 = active_sens,
                                    sens2 = active_sens, time = NULL)
+
+  ## --- Handle diagnostics ---
+  diag <- result$diagnostics
+  if (!is.null(diag) && diag$return_code != 0L) {
+    warning(
+      "Solver did not complete: ", diag$message,
+      "\n  Returning partial results up to t = ", format(diag$t_reached, digits = 6),
+      " (", length(result$time), " of ", length(times), " time points).",
+      call. = FALSE, immediate. = TRUE
+    )
+  }
+
   result
 }
+#' Print Solver Diagnostics
+#'
+#' @description
+#' Prints a summary of solver diagnostics from a solved ODE model, similar to
+#' the diagnostic output of deSolve's lsodes solver.
+#'
+#' @param result A list returned by [solveODE()], containing a `diagnostics` element.
+#'
+#' @return Invisibly returns the diagnostics list.
+#'
+#' @examples
+#' \dontrun{
+#' res <- solveODE(model, times, params)
+#' diagnostics(res)
+#' }
+#'
+#' @export
+diagnostics <- function(result) {
+  UseMethod("diagnostics")
+}
 
+#' @export
+diagnostics.default <- function(result) {
+  diag <- result$diagnostics
+  if (is.null(diag)) {
+    message("No solver diagnostics available.")
+    return(invisible(NULL))
+  }
 
+  rc <- diag$return_code
+  rc_text <- switch(as.character(rc),
+                    "0"  = "Integration was successful.",
+                    "1"  = "Maximum number of total steps exceeded.",
+                    "2"  = "Maximum number of steps without progress exceeded.",
+                    "-1" = "Other solver error.",
+                    paste0("Unknown return code: ", rc)
+  )
 
+  cat("--------------------  CppODE solver diagnostics  --------------------\n")
+  cat(sprintf("  Return code                  : %d\n", rc))
+  cat(sprintf("  Message                      : %s\n", rc_text))
+  cat("---------------------------------------------------------------------\n")
+  cat(sprintf("  Accepted steps               : %d\n", diag$accepted))
+  cat(sprintf("  Rejected steps               : %d\n", diag$rejected))
+  cat(sprintf("  Function evaluations         : %d\n", diag$fevals))
+  cat(sprintf("  Jacobian evaluations         : %d\n", diag$jevals))
+  cat(sprintf("  LU factorizations            : %d\n", diag$setups))
+  cat(sprintf("  Last step size (successful)  : %g\n", diag$last_dt))
+  cat(sprintf("  Last method order            : %d\n", diag$last_order))
+  cat(sprintf("  Time reached                 : %g\n", diag$t_reached))
+  cat("---------------------------------------------------------------------\n")
+
+  invisible(diag)
+}
 #' Generate Algebraic Model Functions with Optional C++ Backend and Derivatives
 #'
 #' @description

@@ -1,5 +1,5 @@
 /*
- Extensions for FADBAD++ fadiff.h to work with Boost.Odeint
+ Extensions for FADBAD++ fadiff.h for use in CppODE
 
  This header provides additional functionality for fadbad::F<T> types:
  - abs() function for F<T> types
@@ -34,10 +34,10 @@ to_double(const T& v) {
   return static_cast<double>(v);
 }
 
-// Recursive case: F<T> -> extract .val() recursively
-template<class T>
-inline double to_double(const F<T>& v) {
-  return to_double(const_cast<F<T>&>(v).val());
+// Recursive case: F<T,N> -> extract .val() recursively
+template<class T, unsigned int N>
+inline double to_double(const F<T,N>& v) {
+  return to_double(const_cast<F<T,N>&>(v).val());
 }
 
 } // namespace detail
@@ -61,10 +61,10 @@ inline double to_double(const F<T>& v) {
  * @param x Argument
  * @return sinh(x) = (exp(x) - exp(-x)) / 2
  */
-template<class T>
-inline F<T> sinh(const F<T>& x) {
-  F<T> ep = exp(x);
-  F<T> em = exp(-x);
+template<class T, unsigned int N>
+inline F<T,N> sinh(const F<T,N>& x) {
+  F<T,N> ep = exp(x);
+  F<T,N> em = exp(-x);
   return (ep - em) * T(0.5);
 }
 
@@ -74,10 +74,10 @@ inline F<T> sinh(const F<T>& x) {
  * @param x Argument
  * @return cosh(x) = (exp(x) + exp(-x)) / 2
  */
-template<class T>
-inline F<T> cosh(const F<T>& x) {
-  F<T> ep = exp(x);
-  F<T> em = exp(-x);
+template<class T, unsigned int N>
+inline F<T,N> cosh(const F<T,N>& x) {
+  F<T,N> ep = exp(x);
+  F<T,N> em = exp(-x);
   return (ep + em) * T(0.5);
 }
 
@@ -87,10 +87,10 @@ inline F<T> cosh(const F<T>& x) {
  * @param x Argument
  * @return tanh(x) = sinh(x) / cosh(x)
  */
-template<class T>
-inline F<T> tanh(const F<T>& x) {
-  F<T> ep = exp(x);
-  F<T> em = exp(-x);
+template<class T, unsigned int N>
+inline F<T,N> tanh(const F<T,N>& x) {
+  F<T,N> ep = exp(x);
+  F<T,N> em = exp(-x);
   return (ep - em) / (ep + em);
 }
 
@@ -100,8 +100,8 @@ inline F<T> tanh(const F<T>& x) {
  * @param x Argument
  * @return asinh(x) = log(x + sqrt(x^2 + 1))
  */
-template<class T>
-inline F<T> asinh(const F<T>& x) {
+template<class T, unsigned int N>
+inline F<T,N> asinh(const F<T,N>& x) {
   return log(x + sqrt(x * x + T(1)));
 }
 
@@ -111,8 +111,8 @@ inline F<T> asinh(const F<T>& x) {
  * @param x Argument (must be >= 1)
  * @return acosh(x) = log(x + sqrt(x^2 - 1))
  */
-template<class T>
-inline F<T> acosh(const F<T>& x) {
+template<class T, unsigned int N>
+inline F<T,N> acosh(const F<T,N>& x) {
   return log(x + sqrt(x * x - T(1)));
 }
 
@@ -122,8 +122,8 @@ inline F<T> acosh(const F<T>& x) {
  * @param x Argument (must satisfy |x| < 1)
  * @return atanh(x) = 0.5 * log((1 + x) / (1 - x))
  */
-template<class T>
-inline F<T> atanh(const F<T>& x) {
+template<class T, unsigned int N>
+inline F<T,N> atanh(const F<T,N>& x) {
   return T(0.5) * log((T(1) + x) / (T(1) - x));
 }
 
@@ -141,8 +141,8 @@ inline F<T> atanh(const F<T>& x) {
  * @param x Value to take the absolute of.
  * @return |x|
  */
-template<class T>
-inline F<T> abs(const F<T>& x) {
+template<class T, unsigned int N>
+inline F<T,N> abs(const F<T,N>& x) {
   return (detail::to_double(x) < 0.0) ? -x : x;
 }
 
@@ -162,16 +162,16 @@ inline F<T> abs(const F<T>& x) {
  * @param b Second operand (F<Inner>).
  * @return True if scalar value of a < scalar value of b.
  */
-template <typename Inner>
-inline bool operator<(const F<F<Inner>>& a, const F<Inner>& b) {
+template <typename Inner, unsigned int N1, unsigned int N2>
+inline bool operator<(const F<F<Inner,N1>,N2>& a, const F<Inner,N1>& b) {
   return detail::to_double(a) < detail::to_double(b);
 }
 
 /**
  * @brief Symmetric overload for comparing F<T> with F<F<T>>.
  */
-template <typename Inner>
-inline bool operator<(const F<Inner>& a, const F<F<Inner>>& b) {
+template <typename Inner, unsigned int N1, unsigned int N2>
+inline bool operator<(const F<Inner,N1>& a, const F<F<Inner,N1>,N2>& b) {
   return detail::to_double(a) < detail::to_double(b);
 }
 
@@ -191,8 +191,8 @@ inline bool operator<(const F<Inner>& a, const F<F<Inner>>& b) {
 /**
  * @brief min for two fadbad::F types
  */
-template<class T>
-inline fadbad::F<T> min(const fadbad::F<T>& a, const fadbad::F<T>& b) {
+template<class T, unsigned int N>
+inline fadbad::F<T,N> min(const fadbad::F<T,N>& a, const fadbad::F<T,N>& b) {
   return (detail::to_double(a) < detail::to_double(b)) ? a : b;
 }
 
@@ -201,11 +201,11 @@ inline fadbad::F<T> min(const fadbad::F<T>& a, const fadbad::F<T>& b) {
  *
  * Works with both int and double scalars: max(x, 0) and max(x, 0.0)
  */
-template<class T, class U>
-inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
-min(const fadbad::F<T>& a, const U& b) {
+template<class T, unsigned int N, class U>
+inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T,N>>::type
+min(const fadbad::F<T,N>& a, const U& b) {
   double b_val = static_cast<double>(b);
-  return (detail::to_double(a) < b_val) ? a : fadbad::F<T>(b_val);
+  return (detail::to_double(a) < b_val) ? a : fadbad::F<T,N>(b_val);
 }
 
 /**
@@ -213,18 +213,18 @@ min(const fadbad::F<T>& a, const U& b) {
  *
  * Works with both int and double scalars: max(0, x) and max(0.0, x)
  */
-template<class T, class U>
-inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
-min(const U& a, const fadbad::F<T>& b) {
+template<class T, unsigned int N, class U>
+inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T,N>>::type
+min(const U& a, const fadbad::F<T,N>& b) {
   double a_val = static_cast<double>(a);
-  return (a_val < detail::to_double(b)) ? fadbad::F<T>(a_val) : b;
+  return (a_val < detail::to_double(b)) ? fadbad::F<T,N>(a_val) : b;
 }
 
 /**
  * @brief max for two fadbad::F types
  */
-template<class T>
-inline fadbad::F<T> max(const fadbad::F<T>& a, const fadbad::F<T>& b) {
+template<class T, unsigned int N>
+inline fadbad::F<T,N> max(const fadbad::F<T,N>& a, const fadbad::F<T,N>& b) {
   return (detail::to_double(a) > detail::to_double(b)) ? a : b;
 }
 
@@ -233,11 +233,11 @@ inline fadbad::F<T> max(const fadbad::F<T>& a, const fadbad::F<T>& b) {
  *
  * Works with both int and double scalars: max(x, 0) and max(x, 0.0)
  */
-template<class T, class U>
-inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
-max(const fadbad::F<T>& a, const U& b) {
+template<class T, unsigned int N, class U>
+inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T,N>>::type
+max(const fadbad::F<T,N>& a, const U& b) {
   double b_val = static_cast<double>(b);
-  return (detail::to_double(a) > b_val) ? a : fadbad::F<T>(b_val);
+  return (detail::to_double(a) > b_val) ? a : fadbad::F<T,N>(b_val);
 }
 
 /**
@@ -245,11 +245,11 @@ max(const fadbad::F<T>& a, const U& b) {
  *
  * Works with both int and double scalars: max(0, x) and max(0.0, x)
  */
-template<class T, class U>
-inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T>>::type
-max(const U& a, const fadbad::F<T>& b) {
+template<class T, unsigned int N, class U>
+inline typename std::enable_if<std::is_arithmetic<U>::value, fadbad::F<T,N>>::type
+max(const U& a, const fadbad::F<T,N>& b) {
   double a_val = static_cast<double>(a);
-  return (a_val > detail::to_double(b)) ? fadbad::F<T>(a_val) : b;
+  return (a_val > detail::to_double(b)) ? fadbad::F<T,N>(a_val) : b;
 }
 
 // ----------------------------------------------------------------------------
@@ -266,20 +266,20 @@ max(const U& a, const fadbad::F<T>& b) {
  * @param hi Upper bound
  * @return x clamped to [lo, hi]
  */
-template<class T, class Lo, class Hi>
+template<class T, unsigned int N, class Lo, class Hi>
 inline typename std::enable_if<
   std::is_arithmetic<Lo>::value && std::is_arithmetic<Hi>::value,
-  fadbad::F<T>
+  fadbad::F<T,N>
 >::type
-clamp(const fadbad::F<T>& x, const Lo& lo, const Hi& hi) {
+clamp(const fadbad::F<T,N>& x, const Lo& lo, const Hi& hi) {
   return min(max(x, lo), hi);
 }
 
 /**
  * @brief Clamp with all fadbad::F types
  */
-template<class T>
-inline fadbad::F<T> clamp(const fadbad::F<T>& x, const fadbad::F<T>& lo, const fadbad::F<T>& hi) {
+template<class T, unsigned int N>
+inline fadbad::F<T,N> clamp(const fadbad::F<T,N>& x, const fadbad::F<T,N>& lo, const fadbad::F<T,N>& hi) {
   return min(max(x, lo), hi);
 }
 
@@ -318,17 +318,17 @@ max_abs_all_levels(const T& v)
   return std::abs(static_cast<double>(v));
 }
 
-// Recursive case: fadbad::F<T>
-template<class T>
-inline double max_abs_all_levels(const fadbad::F<T>& v)
+// Recursive case: fadbad::F<T,N>
+template<class T, unsigned int N>
+inline double max_abs_all_levels(const fadbad::F<T,N>& v)
 {
   // Get max from the main value
-  double m = max_abs_all_levels(const_cast<fadbad::F<T>&>(v).x());
+  double m = max_abs_all_levels(const_cast<fadbad::F<T,N>&>(v).x());
 
   // Get max from all derivative components
-  unsigned n = const_cast<fadbad::F<T>&>(v).size();
-  for (unsigned i = 0; i < n; ++i) {
-    m = std::max(m, max_abs_all_levels(const_cast<fadbad::F<T>&>(v).d(i)));
+  unsigned nd = const_cast<fadbad::F<T,N>&>(v).size();
+  for (unsigned i = 0; i < nd; ++i) {
+    m = std::max(m, max_abs_all_levels(const_cast<fadbad::F<T,N>&>(v).d(i)));
   }
 
   return m;
@@ -341,13 +341,13 @@ inline double max_abs_all_levels(const fadbad::F<T>& v)
  * the overall maximum. This gives the infinity norm (sup norm) over both
  * state dimensions and AD derivative levels.
  *
- * @tparam State Vector type (e.g., ublas::vector<F<F<double>>>)
+ * @tparam State Vector type (e.g., vector_t<F<F<double>>>)
  * @param v The state vector
  * @return max_{i,levels} |v[i]|
  *
  * @par Example
  * @code
- * ublas::vector<F<F<double>>> dxdt(3);
+ * vector_t<F<F<double>>> dxdt(3);
  * // ... compute derivatives ...
  * double max_rate = max_abs_all_levels_vec(dxdt);
  * // max_rate contains the largest |value| across:

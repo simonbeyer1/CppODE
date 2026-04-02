@@ -18,8 +18,6 @@ from sympy.parsing.sympy_parser import (
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
-
-
 # -----------------------------------------------------------------------------
 # Safe parsing configuration (cached)
 # -----------------------------------------------------------------------------
@@ -97,12 +95,8 @@ def _get_safe_parse_dict_cached():
         # Constants
         'pi': sp.pi, 'E': sp.E, 'oo': sp.oo,
     }
-
-
 # Precompiled transformations (module-level constant)
 _TRANSFORMATIONS = standard_transformations + (convert_xor,)
-
-
 def _safe_sympify(expr_str, local_symbols=None):
     """
     Safely parse a string expression to SymPy, avoiding singleton conflicts.
@@ -124,8 +118,6 @@ def _safe_sympify(expr_str, local_symbols=None):
         transformations=_TRANSFORMATIONS,
         evaluate=True,
     )
-
-
 # -----------------------------------------------------------------------------
 # Helper: Enforce real-valued simplification (optimized)
 # -----------------------------------------------------------------------------
@@ -133,8 +125,6 @@ def _safe_sympify(expr_str, local_symbols=None):
 # Precompute wildcards once at module level
 _Z = sp.Wild('Z')
 _V = sp.Wild('V')
-
-
 def _apply_simplify(expr, simplify_func="powsimp"):
     """
     Apply the specified simplification function.
@@ -154,8 +144,6 @@ def _apply_simplify(expr, simplify_func="powsimp"):
             stacklevel=3
         )
         return sp.powsimp(expr)
-
-
 def _make_real_and_simplify(expr, max_iterations=5, simplify_func="powsimp"):
     """
     Aggressively strip complex parts from an expression.
@@ -196,8 +184,6 @@ def _make_real_and_simplify(expr, max_iterations=5, simplify_func="powsimp"):
     except Exception:
         # Conservative fallback
         return expr
-
-
 def _simplify_derivative(deriv_expr, use_real=False, simplify_func="powsimp"):
     """
     Simplify a single derivative expression.
@@ -212,8 +198,6 @@ def _simplify_derivative(deriv_expr, use_real=False, simplify_func="powsimp"):
         result = _apply_simplify(deriv_expr, simplify_func)
     
     return str(result)
-
-
 # -----------------------------------------------------------------------------
 # Helper: Parse expressions and infer variables (optimized)
 # -----------------------------------------------------------------------------
@@ -253,8 +237,6 @@ def _prepare_expressions(exprs, variables=None):
         vars_syms = [local_symbols[v] for v in variables]
 
     return fnames, exprs_syms, vars_syms
-
-
 # -----------------------------------------------------------------------------
 # Optimized Jacobian computation
 # -----------------------------------------------------------------------------
@@ -271,8 +253,6 @@ def _compute_jacobian_row(expr, vars_syms, use_real, simplify_func):
         else:
             row.append("0")
     return row
-
-
 def _compute_hessian_matrix(expr, vars_syms, use_real, simplify_func):
     """Compute Hessian matrix for one expression.
     Sparsity-aware: skips differentiation when variable not in expression."""
@@ -308,8 +288,6 @@ def _compute_hessian_matrix(expr, vars_syms, use_real, simplify_func):
         H.append(row)
     
     return H
-
-
 # -----------------------------------------------------------------------------
 # Main function: Compute Jacobian and optional Hessians
 # -----------------------------------------------------------------------------
@@ -388,16 +366,12 @@ def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False,
         "names": fnames,
         "vars": [v.name for v in vars_syms]
     }
-
-
 def _compute_jacobian_serial(fnames, exprs_syms, vars_syms, use_real, simplify_func):
     """Compute Jacobian serially."""
     jac = {}
     for fname, expr in zip(fnames, exprs_syms):
         jac[fname] = _compute_jacobian_row(expr, vars_syms, use_real, simplify_func)
     return jac
-
-
 def _compute_jacobian_parallel(fnames, exprs_syms, vars_syms, use_real, n_workers, simplify_func):
     """Compute Jacobian in parallel."""
     jac = {}
@@ -413,16 +387,12 @@ def _compute_jacobian_parallel(fnames, exprs_syms, vars_syms, use_real, n_worker
             jac[fname] = future.result()
     
     return jac
-
-
 def _compute_hessian_serial(fnames, exprs_syms, vars_syms, use_real, simplify_func):
     """Compute Hessians serially."""
     hess = {}
     for fname, expr in zip(fnames, exprs_syms):
         hess[fname] = _compute_hessian_matrix(expr, vars_syms, use_real, simplify_func)
     return hess
-
-
 def _compute_hessian_parallel(fnames, exprs_syms, vars_syms, use_real, n_workers, simplify_func):
     """Compute Hessians in parallel."""
     hess = {}
