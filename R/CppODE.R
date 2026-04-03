@@ -1140,8 +1140,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     klu_btf <- if (isTRUE(klu_settings$use_btf)) 1L else 0L
     klu_ord <- as.integer(klu_settings$ordering)
     compile_args <- c(compile_args,
-                      sprintf("-DCPPODE_KLU_BTF=%d", klu_btf),
-                      sprintf("-DCPPODE_KLU_ORDERING=%d", klu_ord))
+                      sprintf("-DKLUBTF=%d", klu_btf),
+                      sprintf("-DKLUAMD=%d", klu_ord))
     if (verbose) {
       message(sprintf("  KLU settings (codegen): BTF=%s, ordering=%s (nblocks=%d, cv=%.2f)",
                       if (klu_btf) "on" else "off",

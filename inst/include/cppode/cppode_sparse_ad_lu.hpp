@@ -1,7 +1,7 @@
 /*
  AD-aware sparse LU solver for CppODE — raw CSC + KLU.
 
- Backend: KLU (CPPODE_HAS_KLU) or Eigen::SparseLU fallback.
+ Backend: KLU (KLU) or Eigen::SparseLU fallback.
  Operates on csc_matrix<T> with raw Ap/Ai/Ax arrays.
 
  Copyright (C) 2026 Simon Beyer
@@ -18,7 +18,7 @@
 #include <cppode/cppode_ad_lu.hpp>   // for is_ad, extract_values, etc.
 #include <fadbad++/fadiff.h>
 
-#ifdef CPPODE_HAS_KLU
+#ifdef KLU
 #include <cppode/cppode_klu_solver.hpp>
 #endif
 
@@ -51,7 +51,7 @@ inline csc_matrix<Inner> extract_csc_values(const csc_matrix<fadbad::F<Inner,N>>
 // ============================================================================
 //  sparse_lu_solver<T> — Base case: T is a non-AD scalar
 //
-//  CPPODE_HAS_KLU → klu_lu_solver (preferred)
+//  KLU → klu_lu_solver (preferred)
 //  otherwise      → compile error (KLU is now required for sparse)
 // ============================================================================
 
@@ -63,7 +63,7 @@ class sparse_lu_solver<Scalar, std::enable_if_t<!is_ad<Scalar>::value>>
 {
 public:
 
-#if defined(CPPODE_HAS_KLU)
+#if defined(KLU)
 
   sparse_lu_solver() = default;
   sparse_lu_solver(sparse_lu_solver&& o) noexcept
@@ -111,7 +111,7 @@ private:
 #else
   // Without KLU, sparse is not supported — static_assert at compile time
   static_assert(sizeof(Scalar) == 0,
-                "CppODE sparse LU requires KLU (CPPODE_HAS_KLU). "
+                "CppODE sparse LU requires KLU (KLU). "
                 "Rebuild the package or use dense mode.");
 #endif
 };

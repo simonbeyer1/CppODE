@@ -7,8 +7,8 @@
  KLU settings (BTF, ordering) are determined at codegen time by
  analyzing the Jacobian sparsity pattern in Python and passed as
  compile-time defines:
- -DCPPODE_KLU_BTF=0|1        (0=off, 1=on; default: 1)
- -DCPPODE_KLU_ORDERING=0|1   (0=AMD, 1=COLAMD; default: 0)
+ -DKLUBTF=0|1   (0=off, 1=on; default: 1)
+ -DKLUAMD=0|1   (0=AMD, 1=COLAMD; default: 0)
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -16,7 +16,7 @@
 #ifndef CPPODE_KLU_SOLVER_HPP
 #define CPPODE_KLU_SOLVER_HPP
 
-#ifdef CPPODE_HAS_KLU
+#ifdef KLU
 
 #include "suitesparse/cppode_ss_prefix.h"
 
@@ -28,12 +28,12 @@
 
 // Compile-time KLU settings (set by codegen via -D flags).
 // Defaults match KLU's own defaults (BTF on, AMD ordering).
-#ifndef CPPODE_KLU_BTF
-#define CPPODE_KLU_BTF 1
+#ifndef KLUBTF
+#define KLUBTF 1
 #endif
 
-#ifndef CPPODE_KLU_ORDERING
-#define CPPODE_KLU_ORDERING 0
+#ifndef KLUAMD
+#define KLUAMD 0
 #endif
 
 namespace cppode {
@@ -48,11 +48,11 @@ public:
     // BTF: determined at codegen time by SCC analysis of the Jacobian graph.
     // nblocks > 1 (e.g. pathway models with causal chains) → BTF on.
     // nblocks == 1 (e.g. PDE stencils, strongly connected) → BTF off.
-    m_common.btf = CPPODE_KLU_BTF;
+    m_common.btf = KLUBTF;
     // Ordering: determined at codegen time by row-degree variance heuristic.
     // Low variance (uniform stencil patterns) → AMD (0).
     // High variance (hub nodes, irregular networks) → COLAMD (1).
-    m_common.ordering = CPPODE_KLU_ORDERING;
+    m_common.ordering = KLUAMD;
     // Disable row scaling.  BDF iteration matrices W = 1/(γh)I − J
     // are diagonally dominant, so scaling adds O(nnz) work per
     // klu_factor/klu_refactor with no numerical benefit.
@@ -119,8 +119,8 @@ public:
                      "BTF=%s, ordering=%s\n",
                      m_n, m_symbolic->nz, m_numeric->lnz, m_numeric->unz,
                      (double)(m_numeric->lnz + m_numeric->unz) / (double)m_symbolic->nz,
-                     CPPODE_KLU_BTF ? "on" : "off",
-                     CPPODE_KLU_ORDERING == 0 ? "AMD" : "COLAMD");
+                     KLUBTF ? "on" : "off",
+                     KLUAMD == 0 ? "AMD" : "COLAMD");
 #endif
     } else {
       // Fast path: reuse symbolic analysis + numeric structure
@@ -214,5 +214,5 @@ private:
 } // namespace ad_lu
 } // namespace cppode
 
-#endif // CPPODE_HAS_KLU
+#endif // KLU
 #endif // CPPODE_KLU_SOLVER_HPP

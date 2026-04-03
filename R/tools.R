@@ -55,7 +55,6 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   if (.Platform$OS.type == "windows") cores <- 1
   pic  <- if (.Platform$OS.type == "windows") "" else "-fPIC"
   base <- paste("-O2 -DNDEBUG -w", pic)
-  if (nzchar(all_args)) base <- paste(base, all_args)
 
   # --- LAPACK (always available via R) ---
   cfg <- function(x) trimws(system(paste(Rbin, "CMD config", x), intern = TRUE))
@@ -74,13 +73,15 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
     lib_subdir <- if (nzchar(.Platform$r_arch)) file.path("lib", .Platform$r_arch) else "lib"
     klu_lib <- system.file(lib_subdir, "libcppode_ss.a", package = "CppODE")
     if (file.exists(klu_lib)) {
-      klu_cflags <- "-DCPPODE_HAS_KLU"
+      klu_cflags <- "-DKLU"
       klu_libs   <- shQuote(klu_lib)
     }
   }
 
+  cxxflagsString <- paste(base, klu_cflags)
+  if (nzchar(all_args)) cxxflagsString <- paste(cxxflagsString, all_args)
   Sys.setenv(
-    PKG_CXXFLAGS = paste(base, klu_cflags),
+    PKG_CXXFLAGS = cxxflagsString,
     PKG_CPPFLAGS = paste0("-I", system.file("include", package = "CppODE")),
     PKG_LIBS = paste(klu_libs, lapack_libs, blas_libs)
   )

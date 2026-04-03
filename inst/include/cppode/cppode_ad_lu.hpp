@@ -266,6 +266,22 @@ public:
     F77_CALL(dgetrf)(&m_n, &m_n, m_lu_data.data(), &m_n, m_ipiv.data(), &info);
   }
 
+  /// Factorize by MOVING the data out of the source matrix (zero-copy).
+  /// The source matrix is left in a valid but unspecified state.
+  /// Use when the caller no longer needs the original W (e.g. m_W_temp
+  /// which gets rebuilt from scratch on every factorize_W call).
+  void factorize_move(dense_matrix<Scalar>& W)
+  {
+    detail::ensure_single_thread_blas();
+    const int n = W.rows();
+    m_n = n;
+    m_lu_data.swap(W.data);   // O(1) pointer swap, no memcpy
+    m_ipiv.resize(n);
+
+    int info = 0;
+    F77_CALL(dgetrf)(&m_n, &m_n, m_lu_data.data(), &m_n, m_ipiv.data(), &info);
+  }
+
   /// Solve in-place: b ← W⁻¹ b
   void solve(std::vector<Scalar>& b) const
   {
@@ -362,8 +378,10 @@ public:
     if (m_W_val.rows() != n)
       m_W_val.resize(n, n);
     for (int k = 0; k < nn; ++k)
-      m_W_val.data[k] = const_cast<F&>(W.data[k]).x();
+      m_W_val.data[k] = const_cast<F&>(m_W_stored.data[k]).x();
 
+    // Recursive: inner solver factorizes the scalar matrix.
+    // For Inner=double, this calls the base-case factorize (or factorize_move).
     m_inner.factorize(m_W_val);
   }
 

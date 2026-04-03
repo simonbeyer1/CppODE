@@ -266,101 +266,110 @@ public:
         }
 
 #ifdef CPPODE_STEP_TRACE
-        std::fprintf(stderr, "STEP %4d: q=%d h=%.6e gamma=%.6e gamrat=%.6f setup=%d",
-                     m_nst, m_q, static_cast<double>(bdf_detail::scalar_value(m_h)),
-                     static_cast<double>(bdf_detail::scalar_value(m_gamma)),
-                     m_gamrat, callSetup ? 1 : 0);
-        if (callSetup) {
-          const char* reason = force_setup ? "force" :
-          !m_lu.has_valid_jacobian() ? "no_jac" :
-          (m_nst == 0) ? "init" :
-          (m_nst >= m_nstlp + bdf_constants::MSBP) ? "MSBP" :
-          (std::abs(m_gamrat - 1.0) > bdf_constants::DGMAX) ? "DGMAX" : "?";
-          std::fprintf(stderr, " [%s]", reason);
-        }
-        std::fprintf(stderr, "\n");
+{
+  double l1_val = static_cast<double>(bdf_detail::scalar_value(m_l[1]));
+  double h_ratio = (m_nst > 0 && m_gammap > 0)
+    ? static_cast<double>(bdf_detail::scalar_value(m_h)) /
+      static_cast<double>(bdf_detail::scalar_value(m_gammap / m_l1_at_setup))
+    : 1.0;
+  double l1_ratio = (m_l1_at_setup > 0) ? l1_val / m_l1_at_setup : 1.0;
+  std::fprintf(stderr, "STEP %4d: q=%d h=%.6e gamma=%.6e gamrat=%.6f l1=%.6f h_ratio=%.6f l1_ratio=%.6f setup=%d",
+               m_nst, m_q, static_cast<double>(bdf_detail::scalar_value(m_h)),
+               static_cast<double>(bdf_detail::scalar_value(m_gamma)),
+               m_gamrat, l1_val, h_ratio, l1_ratio, callSetup ? 1 : 0);
+  if (callSetup) {
+    const char* reason = force_setup ? "force" :
+    !m_lu.has_valid_jacobian() ? "no_jac" :
+    (m_nst == 0) ? "init" :
+    (m_nst >= m_nstlp + bdf_constants::MSBP) ? "MSBP" :
+    (std::abs(m_gamrat - 1.0) > bdf_constants::DGMAX) ? "DGMAX" : "?";
+    std::fprintf(stderr, " [%s]", reason);
+  }
+  std::fprintf(stderr, "\n");
+}
 #endif
 
-        bool jcur = false;
-        convfail_t nls_convfail = convfail;
+bool jcur = false;
+convfail_t nls_convfail = convfail;
 
-        for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
+for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
 
-          if (callSetup) {
-            bool need_new_jacobian =
-              (nls_convfail != convfail_t::no_failures)
-            || !m_lu.has_valid_jacobian()
-            || (m_nst == 0);
+  if (callSetup) {
+    bool need_new_jacobian =
+      (nls_convfail != convfail_t::no_failures)
+    || !m_lu.has_valid_jacobian()
+    || (m_nst == 0);
 
-            if (need_new_jacobian) {
-              { auto _tp = m_prof.timer(prof_cat::jac_eval);
-                m_lu.call_jacobian(jacobi_func, m_zn[0].m_v, t_new_s); }
-              ++m_n_jevals;
-              m_lu.cache_jacobian(n);
-              { auto _tp = m_prof.timer(prof_cat::lu_factor);
-                m_lu.factorize_W(n, inv_gamma_dt); }
-            } else {
-              auto _tp = m_prof.timer(prof_cat::lu_factor);
-              if constexpr (is_sparse) {
-                m_lu.refactorize_W_gamma_only(n, inv_gamma_dt);
-              } else {
-                m_lu.refactorize_W_from_cache(n, inv_gamma_dt);
-              }
-            }
-            m_lu.set_jacobian_valid();
-            m_lu.set_lu_valid(m_gamma);
-            callSetup = false;
-            jcur = need_new_jacobian;
-            m_gammap = m_gamma;
-            m_gamrat = 1.0;
-            m_crate = 1.0;
-            m_nstlp = m_nst;
-          }
-          // No else: when callSetup is false, CVODE reuses the stale W
-          // factorized at gammap.  The Newton residual uses the CURRENT
-          // gamma, so convergence is unaffected as long as gamrat is
-          // within DGMAX (which triggers callSetup above).  This avoids
-          // expensive refactorizations on every step.
+    if (need_new_jacobian) {
+      { auto _tp = m_prof.timer(prof_cat::jac_eval);
+        m_lu.call_jacobian(jacobi_func, m_zn[0].m_v, t_new_s); }
+      ++m_n_jevals;
+      m_lu.cache_jacobian(n);
+      { auto _tp = m_prof.timer(prof_cat::lu_factor);
+        m_lu.factorize_W(n, inv_gamma_dt); }
+    } else {
+      auto _tp = m_prof.timer(prof_cat::lu_factor);
+      if constexpr (is_sparse) {
+        m_lu.refactorize_W_gamma_only(n, inv_gamma_dt);
+      } else {
+        m_lu.refactorize_W_from_cache(n, inv_gamma_dt);
+      }
+    }
+    m_lu.set_jacobian_valid();
+    m_lu.set_lu_valid(m_gamma);
+    callSetup = false;
+    jcur = need_new_jacobian;
+    m_gammap = m_gamma;
+    m_l1_at_setup = static_cast<double>(bdf_detail::scalar_value(m_l[1]));
+    m_gamrat = 1.0;
+    m_crate = 1.0;
+    m_nstlp = m_nst;
+  }
+  // No else: when callSetup is false, CVODE reuses the stale W
+  // factorized at gammap.  The Newton residual uses the CURRENT
+  // gamma, so convergence is unaffected as long as gamrat is
+  // within DGMAX (which triggers callSetup above).  This avoids
+  // expensive refactorizations on every step.
 
-          // Newton iteration (CVODE: cvNewtonIteration)
-          auto result = bdf_newton_solve(
-            m_lu,
-            deriv_func,
-            m_zn[0].m_v,
-            m_zn[1].m_v,
-            rl1,
-            m_gamma,
-            t_new_s,
-            m_tq[4],
-                m_atol, m_rtol,
-                m_max_newton_iter,
-                m_acor.m_v,
-                m_y.m_v,
-                m_tempv.m_v,
-                m_ftemp.m_v,
-                m_crate,
-                m_gamrat,
-                m_prof
-          );
+  // Newton iteration (CVODE: cvNewtonIteration)
+  auto result = bdf_newton_solve(
+    m_lu,
+    deriv_func,
+    m_zn[0].m_v,
+    m_zn[1].m_v,
+    rl1,
+    m_gamma,
+    t_new_s,
+    m_tq[4],
+        m_atol, m_rtol,
+        m_max_newton_iter,
+        m_acor.m_v,
+        m_y.m_v,
+        m_tempv.m_v,
+        m_ftemp.m_v,
+        m_crate,
+        m_gamrat,
+        m_prof
+  );
 
-          m_acnrm = result.acnrm;
-          m_n_fevals += result.n_fevals;
+  m_acnrm = result.acnrm;
+  m_n_fevals += result.n_fevals;
 
-          if (result.converged) {
-            m_newton_converged = true;
-            break;
-          }
+  if (result.converged) {
+    m_newton_converged = true;
+    break;
+  }
 
-          if (!jcur) {
-            callSetup = true;
-            nls_convfail = convfail_t::fail_bad_j;
-            ++m_n_setup_retry;
-            continue;
-          }
+  if (!jcur) {
+    callSetup = true;
+    nls_convfail = convfail_t::fail_bad_j;
+    ++m_n_setup_retry;
+    continue;
+  }
 
-          m_newton_converged = false;
-          break;
-        }
+  m_newton_converged = false;
+  break;
+}
     }
 
     // ================================================================
@@ -863,6 +872,7 @@ private:
   double m_crate, m_acnrm;
   time_type m_gamma, m_gammap;
   double m_gamrat;
+  double m_l1_at_setup = 1.0;  // l[1] at last LU setup, for diagnostic decomposition
   int m_nstlp;
   double m_etamax, m_saved_tq5;
   double m_atol = 1e-6, m_rtol = 1e-6;
