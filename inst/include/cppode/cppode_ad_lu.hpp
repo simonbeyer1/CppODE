@@ -56,11 +56,18 @@ inline void ensure_single_thread_blas() {
 #endif
 
     // 3. Environment variables as last-resort fallback
-    //    Use overwrite=1 so our setting always wins.
+#ifdef _WIN32
+    _putenv_s("MKL_NUM_THREADS",      "1");
+    _putenv_s("OPENBLAS_NUM_THREADS",  "1");
+    _putenv_s("GOTO_NUM_THREADS",      "1");
+    _putenv_s("OMP_NUM_THREADS",       "1");
+#else
+    // Use overwrite=1 so our setting always wins.
     setenv("MKL_NUM_THREADS",      "1", 1);
     setenv("OPENBLAS_NUM_THREADS",  "1", 1);
     setenv("GOTO_NUM_THREADS",      "1", 1);
     setenv("OMP_NUM_THREADS",       "1", 1);
+#endif
 
     done = true;
   }
@@ -89,7 +96,7 @@ template<class T> using inner_type_t = typename inner_type<T>::type;
 ///   scalar_type<F<F<double,N>,M>>::type  = double
 template<class T> struct scalar_type       { using type = T; };
 template<class T, unsigned int N> struct scalar_type<fadbad::F<T,N>>
-  : scalar_type<T> {};
+: scalar_type<T> {};
 template<class T> using scalar_type_t = typename scalar_type<T>::type;
 
 /// Extract the innermost scalar value from any (nested) AD type.
