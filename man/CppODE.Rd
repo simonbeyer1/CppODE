@@ -41,7 +41,7 @@ expressions that trigger termination when crossing zero. Default: \code{NULL}.}
 \item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
 
 \item{modelname}{Optional base name for the generated C++ source file
-\emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
+\emph{and} for all generated C/C++ symbols (e.g. \verb{solve_<modelname>})
 as well as the resulting shared library.
 If \code{NULL}, a random identifier is used.}
 
@@ -49,19 +49,22 @@ If \code{NULL}, a random identifier is used.}
 
 \item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
 
-\item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers; requires \code{deriv = TRUE}.}
+\item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers;
+requires \code{deriv = TRUE}.}
 
-\item{fullErr}{Logical. If \code{TRUE}, compute error estimates using full state vector including derivatives. If \code{FALSE}, use only the value components for error control.}
+\item{fullErr}{Logical. If \code{TRUE}, compute error estimates using full state vector
+including derivatives. If \code{FALSE}, use only the value components for error control.}
 
 \item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
 
 \item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
 
-\item{sparse}{Controls sparse LU factorization in the Rosenbrock4 stepper.
+\item{sparse}{Controls sparse LU factorization.
 \code{NULL} (default) auto-selects based on Jacobian sparsity.
 \code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
 
-\item{method}{Character string selecting the integration method: \code{"bdf"} (default) or \code{"rosenbrock4"}.}
+\item{method}{Character string selecting the integration method: \code{"bdf"} (default)
+or \code{"rosenbrock4"}.}
 
 \item{profile}{Logical. If \code{TRUE}, compile with profiling counters (\code{-DCPPODE_PROFILE}).}
 
@@ -71,21 +74,24 @@ setup triggers) to stderr. Verbose; intended for debugging only.}
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
-The compiled model name (character).
+The compiled model name (character string).
 The returned object carries a set of attributes that describe the compiled solver
 and its symbolic structure:\tabular{lll}{
    Attribute \tab Type \tab Description \cr
    \code{equations} \tab \code{character} \tab ODE right-hand side definitions \cr
+   \code{srcfile} \tab \code{character} \tab Path to the generated C++ source file \cr
    \code{variables} \tab \code{character} \tab Names of the dynamic state variables \cr
    \code{parameters} \tab \code{character} \tab Names of model parameters \cr
+   \code{forcings} \tab \code{character} \tab Names of forcing functions \cr
    \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
    \code{rootfunc} \tab \code{character} \tab Root function specification (if any) \cr
    \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
-   \code{jacobian} \tab \code{eqnvec} \tab Symbolic expressions for the system Jacobian \cr
-   \code{deriv} \tab \code{logical} \tab Indicates whether first-order sensitivities (dual numbers) were used \cr
-   \code{deriv2} \tab \code{logical} \tab Indicates whether nested dual numbers were used for second-order sensitivities \cr
-   \code{sparse} \tab \code{logical} \tab Whether sparse LU factorization is used in the Rosenbrock4 stepper \cr
+   \code{jacobian} \tab \code{list} \tab Jacobian: \code{f.x} (character matrix) and \code{f.time} (time derivatives) \cr
+   \code{deriv} \tab \code{logical} \tab Whether first-order sensitivities (dual numbers) are enabled \cr
+   \code{deriv2} \tab \code{logical} \tab Whether second-order sensitivities (nested dual numbers) are enabled \cr
+   \code{sparse} \tab \code{logical} \tab Whether sparse LU factorization is used \cr
    \code{dim_names} \tab \code{list} \tab Dimension names for arrays: \code{time}, \code{variable}, and \code{sens} \cr
+   \code{compileArgs} \tab \code{character} \tab Compiler flags (profile, step trace, KLU settings) \cr
 }
 }
 \description{
@@ -94,10 +100,12 @@ equations (ODEs) of the form
 
 \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 
-the Rosenbrock4 method (derived from Boost.Odeint's architecture) with dense output
-stiff method Rosenbrock4 with dense output and error control (using third order in combination).
-The solver supports \strong{time-based} and \strong{root-triggered events} and can, optionally,
-compute \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
+Two integration methods are available: \strong{BDF} (Backward Differentiation Formulas,
+variable-order up to 5, default) and \strong{Rosenbrock4} (a fourth-order L-stable method
+derived from Boost.Odeint).
+Both steppers support dense output, error control, sparse and dense LU factorization,
+\strong{time-based} and \strong{root-triggered events}, and, optionally,
+\strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
 \strong{dual number} types provided by
 \href{https://uning.dk/fadbad.html}{\strong{FADBAD++}}.
 \subsection{Sensitivity Computation}{

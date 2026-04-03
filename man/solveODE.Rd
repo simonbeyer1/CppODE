@@ -14,7 +14,7 @@ solveODE(
   forcings = NULL,
   abstol = 1e-06,
   reltol = 1e-06,
-  maxprogress = 100L,
+  maxprogress = 10L,
   maxsteps = 1000000L,
   hini = 0,
   roottol = 1e-06,
@@ -59,7 +59,7 @@ Default \code{NULL}.}
 \item{reltol}{Relative error tolerance for the integrator. Default \code{1e-6}.}
 
 \item{maxprogress}{Maximum number of integration steps without progress
-before an error is raised. Default \code{100}.}
+before an error is raised. Default \code{10}.}
 
 \item{maxsteps}{Maximum total number of integration steps. Default \code{1e6}.}
 
@@ -70,10 +70,12 @@ before an error is raised. Default \code{100}.}
 \item{maxroot}{Maximum triggers per root event. Default \code{1}.}
 }
 \value{
-A named list with components \code{time}, \code{variable}, and, when
-\code{attr(model, "deriv") == TRUE}), \code{sens1}, and additionally \code{sens2} when
-\code{attr(model, "deriv2") == TRUE}. Dimension names of \code{sens1}/\code{sens2} reflect
-only the active (non-fixed) sensitivity parameters.
+A named list with components \code{time}, \code{variable}, \code{diagnostics},
+and, when \code{attr(model, "deriv") == TRUE}, \code{sens1}, and additionally
+\code{sens2} when \code{attr(model, "deriv2") == TRUE}. Dimension names of
+\code{sens1}/\code{sens2} reflect only the active (non-fixed) sensitivity
+parameters. The \code{diagnostics} element is a list with solver statistics
+(see \code{\link[=diagnostics]{diagnostics()}}).
 }
 \description{
 Numerically integrates a compiled ODE model created by \code{\link[=CppODE]{CppODE()}} over a

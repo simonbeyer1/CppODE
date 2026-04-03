@@ -6,10 +6,12 @@
 #'
 #' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' the Rosenbrock4 method (derived from Boost.Odeint's architecture) with dense output
-#' stiff method Rosenbrock4 with dense output and error control (using third order in combination).
-#' The solver supports **time-based** and **root-triggered events** and can, optionally,
-#' compute **first- and second-order sensitivities** by evaluating the *same system* with
+#' Two integration methods are available: **BDF** (Backward Differentiation Formulas,
+#' variable-order up to 5, default) and **Rosenbrock4** (a fourth-order L-stable method
+#' derived from Boost.Odeint).
+#' Both steppers support dense output, error control, sparse and dense LU factorization,
+#' **time-based** and **root-triggered events**, and, optionally,
+#' **first- and second-order sensitivities** by evaluating the *same system* with
 #' **dual number** types provided by
 #' [**FADBAD++**](https://uning.dk/fadbad.html).
 #'
@@ -95,42 +97,48 @@
 #' @param fixed Character vector of fixed initial conditions or parameters (excluded from sensitivities).
 #' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
 #' @param modelname Optional base name for the generated C++ source file
-#'   \emph{and} for all generated C/C++ symbols (e.g. \code{solve_<modelname>})
+#'   *and* for all generated C/C++ symbols (e.g. `solve_<modelname>`)
 #'   as well as the resulting shared library.
-#'   If \code{NULL}, a random identifier is used.
+#'   If `NULL`, a random identifier is used.
 #' @param outdir Directory where generated C++ source files are written. Defaults to `tempdir()`.
 #' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
-#' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers; requires `deriv = TRUE`.
-#' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector including derivatives. If `FALSE`, use only the value components for error control.
+#' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers;
+#'   requires `deriv = TRUE`.
+#' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector
+#'   including derivatives. If `FALSE`, use only the value components for error control.
 #' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
 #' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
-#' @param sparse Controls sparse LU factorization in the Rosenbrock4 stepper.
+#' @param sparse Controls sparse LU factorization.
 #'   `NULL` (default) auto-selects based on Jacobian sparsity.
 #'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
-#' @param method Character string selecting the integration method: `"bdf"` (default) or `"rosenbrock4"`.
+#' @param method Character string selecting the integration method: `"bdf"` (default)
+#'   or `"rosenbrock4"`.
 #' @param profile Logical. If `TRUE`, compile with profiling counters (`-DCPPODE_PROFILE`).
 #' @param stepTrace Logical. If `TRUE`, emit per-step diagnostics (order, step size, gamrat,
 #'   setup triggers) to stderr. Verbose; intended for debugging only.
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
 #' @return
-#' The compiled model name (character).
+#' The compiled model name (character string).
 #' The returned object carries a set of attributes that describe the compiled solver
 #' and its symbolic structure:
 #'
 #' | Attribute | Type | Description |
 #' |:--|:--|:--|
 #' | `equations` | `character` | ODE right-hand side definitions |
+#' | `srcfile` | `character` | Path to the generated C++ source file |
 #' | `variables` | `character` | Names of the dynamic state variables |
 #' | `parameters` | `character` | Names of model parameters |
+#' | `forcings` | `character` | Names of forcing functions |
 #' | `events` | `data.frame` | Table of event specifications (if any) |
 #' | `rootfunc` | `character` | Root function specification (if any) |
 #' | `fixed` | `character` | Names of fixed initial conditions or parameters |
-#' | `jacobian` | `eqnvec` | Symbolic expressions for the system Jacobian |
-#' | `deriv` | `logical` | Indicates whether first-order sensitivities (dual numbers) were used |
-#' | `deriv2` | `logical` | Indicates whether nested dual numbers were used for second-order sensitivities |
-#' | `sparse` | `logical` | Whether sparse LU factorization is used in the Rosenbrock4 stepper |
+#' | `jacobian` | `list` | Jacobian: `f.x` (character matrix) and `f.time` (time derivatives) |
+#' | `deriv` | `logical` | Whether first-order sensitivities (dual numbers) are enabled |
+#' | `deriv2` | `logical` | Whether second-order sensitivities (nested dual numbers) are enabled |
+#' | `sparse` | `logical` | Whether sparse LU factorization is used |
 #' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
+#' | `compileArgs` | `character` | Compiler flags (profile, step trace, KLU settings) |
 #'
 #' @example inst/examples/example_ODE.R
 #' @importFrom stats setNames
@@ -263,102 +271,10 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # functor signature won't match the stepper's matrix type.
   use_sparse <- isTRUE(codegen_result$use_sparse)
 
-  # Display sparsity pattern when sparse LU is selected (always shown)
-  # Small matrices (n <= 12): discrete grid with one char per entry (exact)
-  # Larger matrices (n > 12): Braille encoding (compact, scaled)
   if (use_sparse) {
     stats <- codegen_result$sparsity_stats
-    n <- stats$n
-    jpat <- stats$jac_pattern
-
     message(sprintf("Sparse Jacobian detected (%dx%d, %d nnz, %.3f%% sparse)",
-                    n, n, stats$jac_nnz, stats$jac_zeros_pct))
-
-    # Build nonzero set for fast lookup
-    ij <- matrix(as.integer(unlist(jpat)), ncol = 2L, byrow = TRUE)
-    nz_set <- paste0(ij[, 1L], ",", ij[, 2L])
-
-    if (n <= 12L) {
-      # --- Discrete display: one character per matrix entry ---
-      pattern_lines <- character(n)
-      for (i in seq_len(n)) {
-        chars <- character(n)
-        for (j in seq_len(n)) {
-          key <- paste0(i - 1L, ",", j - 1L)
-          chars[j] <- if (key %in% nz_set) "\u25a0" else "\u00b7"
-        }
-        pattern_lines[i] <- paste0(chars, collapse = " ")
-      }
-
-      # Add matrix brackets
-      if (n == 1L) {
-        pattern_lines[1L] <- paste0("[ ", pattern_lines[1L], " ]")
-      } else {
-        pattern_lines[1L] <- paste0("\u23a1 ", pattern_lines[1L], " \u23a4")
-        if (n > 2L) {
-          for (k in 2:(n - 1L))
-            pattern_lines[k] <- paste0("\u23a2 ", pattern_lines[k], " \u23a5")
-        }
-        pattern_lines[n] <- paste0("\u23a3 ", pattern_lines[n], " \u23a6")
-      }
-      for (line in pattern_lines) message("    ", line)
-
-    } else {
-      # --- Braille display: scaled into a compact dot grid ---
-      # Each braille char encodes 4 dot rows x 2 dot columns.
-      # n_brow scales with n (3..10 braille rows), giving ~2 dots per entry.
-      # n_bcol = 2 * n_brow to compensate the 4:2 aspect ratio → square dots.
-      n_brow <- as.integer(max(3L, min(10L, ceiling(n / 2))))
-      n_bcol <- n_brow * 2L
-      nr <- n_brow * 4L
-      nc <- n_bcol * 2L
-
-      # Scale matrix entries into the dot grid
-      mat_display <- matrix(FALSE, nrow = nr, ncol = nc)
-      block_r <- nr / n
-      block_c <- nc / n
-      for (k in seq_len(nrow(ij))) {
-        r_start <- as.integer(ij[k, 1L] * block_r)
-        r_end   <- max(as.integer((ij[k, 1L] + 1L) * block_r), r_start + 1L)
-        c_start <- as.integer(ij[k, 2L] * block_c)
-        c_end   <- max(as.integer((ij[k, 2L] + 1L) * block_c), c_start + 1L)
-        rows_fill <- seq.int(r_start + 1L, min(r_end, nr))
-        cols_fill <- seq.int(c_start + 1L, min(c_end, nc))
-        mat_display[rows_fill, cols_fill] <- TRUE
-      }
-
-      braille_base <- 0x2800L
-      bit_map <- c(1L, 2L, 4L, 64L, 8L, 16L, 32L, 128L)
-
-      braille_lines <- character(n_brow)
-      for (br in seq_len(n_brow)) {
-        rows <- (br - 1L) * 4L + 1:4
-        codes <- integer(n_bcol)
-        for (dr in 0:3) {
-          for (dc in 0:1) {
-            r <- rows[dr + 1L]
-            col_seq <- seq.int(dc + 1L, nc, by = 2L)
-            hit <- mat_display[r, col_seq]
-            codes[hit] <- bitwOr(codes[hit], bit_map[dr + 1L + dc * 4L])
-          }
-        }
-        braille_lines[br] <- paste0(vapply(codes, function(c) intToUtf8(braille_base + c), character(1L)), collapse = "")
-      }
-
-      # Add matrix brackets
-      nb <- length(braille_lines)
-      if (nb == 1L) {
-        braille_lines[1L] <- paste0("[", braille_lines[1L], "]")
-      } else {
-        braille_lines[1L]  <- paste0("\u23a1", braille_lines[1L],  "\u23a4")
-        if (nb > 2L) {
-          for (k in 2:(nb - 1L))
-            braille_lines[k] <- paste0("\u23a2", braille_lines[k], "\u23a5")
-        }
-        braille_lines[nb] <- paste0("\u23a3", braille_lines[nb], "\u23a6")
-      }
-      for (line in braille_lines) message("    ", line)
-    }
+                    stats$n, stats$n, stats$jac_nnz, stats$jac_zeros_pct))
   }
 
   # --- Generate event code if needed ---
@@ -1213,31 +1129,37 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     )
   }
 
-  if (compile) {
-    profile_args <- if (isTRUE(profile)) "-DCPPODE_PROFILE" else ""
-    if (isTRUE(stepTrace)) profile_args <- paste0(profile_args, " -DCPPODE_STEP_TRACE")
+  # --- Build compile arguments ---
+  compile_args <- character(0)
+  if (isTRUE(profile))   compile_args <- c(compile_args, "-DCPPODE_PROFILE")
+  if (isTRUE(stepTrace)) compile_args <- c(compile_args, "-DCPPODE_STEP_TRACE")
 
-    # KLU auto-tuning: pass codegen-determined settings as compile-time defines
-    klu_settings <- codegen_result$klu_settings
-    if (!is.null(klu_settings)) {
-      klu_btf <- if (isTRUE(klu_settings$use_btf)) 1L else 0L
-      klu_ord <- as.integer(klu_settings$ordering)
-      profile_args <- paste0(profile_args,
-                             sprintf(" -DCPPODE_KLU_BTF=%d -DCPPODE_KLU_ORDERING=%d",
-                                     klu_btf, klu_ord))
-      if (verbose) {
-        message(sprintf("  KLU settings (codegen): BTF=%s, ordering=%s (nblocks=%d, cv=%.2f)",
-                        if (klu_btf) "on" else "off",
-                        klu_settings$ordering_name,
-                        as.integer(klu_settings$nblocks),
-                        klu_settings$cv_row_degree))
-      }
+  # KLU auto-tuning: pass codegen-determined settings as compile-time defines
+  klu_settings <- codegen_result$klu_settings
+  if (!is.null(klu_settings)) {
+    klu_btf <- if (isTRUE(klu_settings$use_btf)) 1L else 0L
+    klu_ord <- as.integer(klu_settings$ordering)
+    compile_args <- c(compile_args,
+                      sprintf("-DCPPODE_KLU_BTF=%d", klu_btf),
+                      sprintf("-DCPPODE_KLU_ORDERING=%d", klu_ord))
+    if (verbose) {
+      message(sprintf("  KLU settings (codegen): BTF=%s, ordering=%s (nblocks=%d, cv=%.2f)",
+                      if (klu_btf) "on" else "off",
+                      klu_settings$ordering_name,
+                      as.integer(klu_settings$nblocks),
+                      klu_settings$cv_row_degree))
     }
+  }
 
-    compile(modelname, args = profile_args, verbose = verbose)
+  attr(modelname, "compileArgs") <- paste(compile_args, collapse = " ")
+
+  if (compile) {
+    compile(modelname, verbose = verbose)
   }
   return(modelname)
 }
+
+
 #' Solver Interface for Ordinary Differential Equation Models
 #'
 #' @description
@@ -1289,26 +1211,27 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 #' @param abstol Absolute error tolerance for the integrator. Default `1e-6`.
 #' @param reltol Relative error tolerance for the integrator. Default `1e-6`.
 #' @param maxprogress Maximum number of integration steps without progress
-#'   before an error is raised. Default `100`.
+#'   before an error is raised. Default `10`.
 #' @param maxsteps Maximum total number of integration steps. Default `1e6`.
 #' @param hini Initial step size; `0` (default) triggers automatic estimation.
 #' @param roottol Tolerance for root-finding in root-triggered events. Default `1e-6`.
 #' @param maxroot Maximum triggers per root event. Default `1`.
 #'
-#' @return A named list with components `time`, `variable`, and, when
-#'   `attr(model, "deriv") == TRUE`), `sens1`, and additionally `sens2` when
-#'   `attr(model, "deriv2") == TRUE`. Dimension names of `sens1`/`sens2` reflect
-#'   only the active (non-fixed) sensitivity parameters.
+#' @return A named list with components `time`, `variable`, `diagnostics`,
+#'   and, when `attr(model, "deriv") == TRUE`, `sens1`, and additionally
+#'   `sens2` when `attr(model, "deriv2") == TRUE`. Dimension names of
+#'   `sens1`/`sens2` reflect only the active (non-fixed) sensitivity
+#'   parameters. The `diagnostics` element is a list with solver statistics
+#'   (see [diagnostics()]).
 #'
 #' @seealso [CppODE()] for model specification and compilation.
 #'
 #' @export
 solveODE <- function(model, times, parms,
                      sens1ini = NULL, sens2ini = NULL,
-                     fixed = NULL,
-                     forcings = NULL,
+                     fixed = NULL, forcings = NULL,
                      abstol = 1e-6, reltol = 1e-6,
-                     maxprogress = 100L, maxsteps = 1e6L,
+                     maxprogress = 10L, maxsteps = 1e6L,
                      hini = 0, roottol = 1e-6, maxroot = 1L) {
 
   ## --- Unpack model attributes ---
@@ -1484,11 +1407,12 @@ solveODE <- function(model, times, parms,
 
   result
 }
+
+
 #' Print Solver Diagnostics
 #'
 #' @description
-#' Prints a summary of solver diagnostics from a solved ODE model, similar to
-#' the diagnostic output of deSolve's lsodes solver.
+#' Prints a summary of solver diagnostics.
 #'
 #' @param result A list returned by [solveODE()], containing a `diagnostics` element.
 #'
@@ -1538,6 +1462,8 @@ diagnostics.default <- function(result) {
 
   invisible(diag)
 }
+
+
 #' Generate Algebraic Model Functions with Optional C++ Backend and Derivatives
 #'
 #' @description

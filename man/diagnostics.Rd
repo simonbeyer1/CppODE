@@ -13,8 +13,7 @@ diagnostics(result)
 Invisibly returns the diagnostics list.
 }
 \description{
-Prints a summary of solver diagnostics from a solved ODE model, similar to
-the diagnostic output of deSolve's lsodes solver.
+Prints a summary of solver diagnostics.
 }
 \examples{
 \dontrun{
