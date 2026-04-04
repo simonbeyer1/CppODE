@@ -290,6 +290,7 @@ public:
   int n_rejected() const { return m_n_rejected; }
   int n_fevals()   const { return m_stepper.n_fevals(); }
   int n_jevals()   const { return m_stepper.n_jevals(); }
+  int n_setups()   const { return m_stepper.n_setups(); }
   static constexpr int current_method_order() { return static_cast<int>(stepper_type::stepper_order); }
   void reset_counters() { m_n_accepted = 0; m_n_rejected = 0; m_stepper.reset_counters(); }
 

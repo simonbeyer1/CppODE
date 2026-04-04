@@ -19,7 +19,7 @@ CppODE(
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
-  method = c("bdf", "rosenbrock4"),
+  method = c("bdf", "rb4"),
   profile = FALSE,
   stepTrace = FALSE,
   verbose = FALSE
@@ -63,8 +63,8 @@ including derivatives. If \code{FALSE}, use only the value components for error 
 \code{NULL} (default) auto-selects based on Jacobian sparsity.
 \code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
 
-\item{method}{Character string selecting the integration method: \code{"bdf"} (default)
-or \code{"rosenbrock4"}.}
+\item{method}{Character string selecting the integration method: \code{"bdf"} (default),
+\code{"rb4"}, or \code{"rosenbrock4"} (alias for \code{"rb4"}).}
 
 \item{profile}{Logical. If \code{TRUE}, compile with profiling counters (\code{-DCPPODE_PROFILE}).}
 

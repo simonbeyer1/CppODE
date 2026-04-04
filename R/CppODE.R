@@ -111,8 +111,8 @@
 #' @param sparse Controls sparse LU factorization.
 #'   `NULL` (default) auto-selects based on Jacobian sparsity.
 #'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
-#' @param method Character string selecting the integration method: `"bdf"` (default)
-#'   or `"rosenbrock4"`.
+#' @param method Character string selecting the integration method: `"bdf"` (default),
+#'   `"rb4"`, or `"rosenbrock4"` (alias for `"rb4"`).
 #' @param profile Logical. If `TRUE`, compile with profiling counters (`-DCPPODE_PROFILE`).
 #' @param stepTrace Logical. If `TRUE`, emit per-step diagnostics (order, step size, gamrat,
 #'   setup triggers) to stderr. Verbose; intended for debugging only.
@@ -148,7 +148,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
-                   sparse = NULL, method = c("bdf", "rosenbrock4"),
+                   sparse = NULL, method = c("bdf", "rb4"),
                    profile = FALSE, stepTrace = FALSE, verbose = FALSE) {
 
   # --- Validate arguments ---
@@ -157,6 +157,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     deriv <- TRUE
   }
   method <- match.arg(method)
+  if (method == "rb4") method <- "rosenbrock4"
 
   # --- Clean up ODE definitions ---
   rhs <- unclass(rhs)
