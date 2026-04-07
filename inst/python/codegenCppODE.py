@@ -513,7 +513,7 @@ def generate_ode_cpp(
     elif sparse is False:
         use_sparse = False
     else:
-        use_sparse = (n_states >= 4) and (jac_zeros_pct > 50.0)
+        use_sparse = (jac_nnz / n_states) < 10
 
     sparsity_stats = {
         'n': n_states,
