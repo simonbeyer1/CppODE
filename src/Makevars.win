@@ -12,7 +12,7 @@
 SS_INC    = ../inst/include/suitesparse
 SS_PREFIX = $(SS_INC)/cppode_ss_prefix.h
 
-PKG_CFLAGS = -DNPRINT -include $(SS_PREFIX) -I$(SS_INC) -Wno-unused-but-set-variable
+PKG_CFLAGS = -DNPRINT -include $(SS_PREFIX) -I$(SS_INC)
 
 SS_OBJ = \
   suitesparse/SuiteSparse_config.o \
