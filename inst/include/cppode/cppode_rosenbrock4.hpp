@@ -1,5 +1,5 @@
 /*
- Rosenbrock4 stepper — dense and sparse LU, Eigen-free.
+ Rosenbrock4 stepper
 
  The stepper architecture is derived from Boost.Odeint's rosenbrock4
  by Karsten Ahnert, Mario Mulansky, and Christoph Koke (2011–2013),
@@ -155,7 +155,7 @@ public:
   rosenbrock4( void )
     : m_lu() ,
       m_resizer() , m_x_err_resizer() ,
-      m_dxdt() , m_dxdtnew() ,
+      m_dxdt() ,
       m_g1() , m_g2() , m_g3() , m_g4() , m_g5() ,
       m_cont3() , m_cont4() , m_xtmp() , m_x_err() ,
       m_coef() ,
@@ -236,9 +236,8 @@ public:
     vec_copy(m_xtmp.m_v, x);
     vec_axpy(m_xtmp.m_v, m_coef.a21, m_g1.m_v);
     { auto _tp = m_prof.timer(prof_cat::f_eval);
-      deriv_func(m_xtmp.m_v, m_dxdtnew.m_v, value_type(t_s + m_coef.c2 * dt_s)); }
+      deriv_func(m_xtmp.m_v, m_g2.m_v, value_type(t_s + m_coef.c2 * dt_s)); }
     ++m_n_fevals;
-    vec_copy(m_g2.m_v, m_dxdtnew.m_v);
     vec_axpy(m_g2.m_v, dt_s * m_coef.d2, m_lu.dfdt_mut());
     vec_axpy(m_g2.m_v, m_coef.c21 / dt_s, m_g1.m_v);
     { auto _tp = m_prof.timer(prof_cat::lu_solve);
@@ -249,9 +248,8 @@ public:
     vec_axpy(m_xtmp.m_v, m_coef.a31, m_g1.m_v);
     vec_axpy(m_xtmp.m_v, m_coef.a32, m_g2.m_v);
     { auto _tp = m_prof.timer(prof_cat::f_eval);
-      deriv_func(m_xtmp.m_v, m_dxdtnew.m_v, value_type(t_s + m_coef.c3 * dt_s)); }
+      deriv_func(m_xtmp.m_v, m_g3.m_v, value_type(t_s + m_coef.c3 * dt_s)); }
     ++m_n_fevals;
-    vec_copy(m_g3.m_v, m_dxdtnew.m_v);
     vec_axpy(m_g3.m_v, dt_s * m_coef.d3, m_lu.dfdt_mut());
     vec_axpy(m_g3.m_v, m_coef.c31 / dt_s, m_g1.m_v);
     vec_axpy(m_g3.m_v, m_coef.c32 / dt_s, m_g2.m_v);
@@ -264,9 +262,8 @@ public:
     vec_axpy(m_xtmp.m_v, m_coef.a42, m_g2.m_v);
     vec_axpy(m_xtmp.m_v, m_coef.a43, m_g3.m_v);
     { auto _tp = m_prof.timer(prof_cat::f_eval);
-      deriv_func(m_xtmp.m_v, m_dxdtnew.m_v, value_type(t_s + m_coef.c4 * dt_s)); }
+      deriv_func(m_xtmp.m_v, m_g4.m_v, value_type(t_s + m_coef.c4 * dt_s)); }
     ++m_n_fevals;
-    vec_copy(m_g4.m_v, m_dxdtnew.m_v);
     vec_axpy(m_g4.m_v, dt_s * m_coef.d4, m_lu.dfdt_mut());
     vec_axpy(m_g4.m_v, m_coef.c41 / dt_s, m_g1.m_v);
     vec_axpy(m_g4.m_v, m_coef.c42 / dt_s, m_g2.m_v);
@@ -281,9 +278,8 @@ public:
     vec_axpy(m_xtmp.m_v, m_coef.a53, m_g3.m_v);
     vec_axpy(m_xtmp.m_v, m_coef.a54, m_g4.m_v);
     { auto _tp = m_prof.timer(prof_cat::f_eval);
-      deriv_func(m_xtmp.m_v, m_dxdtnew.m_v, value_type(t_s + dt_s)); }
+      deriv_func(m_xtmp.m_v, m_g5.m_v, value_type(t_s + dt_s)); }
     ++m_n_fevals;
-    vec_copy(m_g5.m_v, m_dxdtnew.m_v);
     vec_axpy(m_g5.m_v, m_coef.c51 / dt_s, m_g1.m_v);
     vec_axpy(m_g5.m_v, m_coef.c52 / dt_s, m_g2.m_v);
     vec_axpy(m_g5.m_v, m_coef.c53 / dt_s, m_g3.m_v);
@@ -294,9 +290,8 @@ public:
     // --- Error estimate (stage 6) ---
     vec_axpy(m_xtmp.m_v, value_type(1), m_g5.m_v);
     { auto _tp = m_prof.timer(prof_cat::f_eval);
-      deriv_func(m_xtmp.m_v, m_dxdtnew.m_v, value_type(t_s + dt_s)); }
+      deriv_func(m_xtmp.m_v, xerr, value_type(t_s + dt_s)); }
     ++m_n_fevals;
-    vec_copy(xerr, m_dxdtnew.m_v);
     vec_axpy(xerr, m_coef.c61 / dt_s, m_g1.m_v);
     vec_axpy(xerr, m_coef.c62 / dt_s, m_g2.m_v);
     vec_axpy(xerr, m_coef.c63 / dt_s, m_g3.m_v);
@@ -401,7 +396,6 @@ protected:
   {
     bool resized = false;
     resized |= adjust_size_by_resizeability(m_dxdt,    x);
-    resized |= adjust_size_by_resizeability(m_dxdtnew, x);
     resized |= adjust_size_by_resizeability(m_xtmp,    x);
     resized |= adjust_size_by_resizeability(m_g1,      x);
     resized |= adjust_size_by_resizeability(m_g2,      x);
@@ -426,7 +420,7 @@ private:
   resizer_type m_resizer;
   resizer_type m_x_err_resizer;
 
-  wrapped_deriv_type   m_dxdt, m_dxdtnew;
+  wrapped_deriv_type   m_dxdt;
   wrapped_state_type   m_g1, m_g2, m_g3, m_g4, m_g5;
   wrapped_state_type   m_cont3, m_cont4;
   wrapped_state_type   m_xtmp;

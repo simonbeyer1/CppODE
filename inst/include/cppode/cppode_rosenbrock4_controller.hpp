@@ -208,7 +208,7 @@ public:
     m_xnew_resizer.adjust_size(x, [this](const state_type& s){ return this->resize_m_xnew(s); });
     controlled_step_result res = try_step(sys, x, t, m_xnew.m_v, dt);
     if (res == success) {
-      x = m_xnew.m_v;
+      std::swap(x, m_xnew.m_v);
     }
     return res;
   }

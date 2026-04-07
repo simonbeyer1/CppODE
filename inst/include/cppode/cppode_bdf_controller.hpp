@@ -98,7 +98,7 @@ public:
     controlled_step_result result = try_step(system, x, t, m_xnew.m_v, dt);
 
     if (result == success) {
-      x = m_xnew.m_v;
+      std::swap(x, m_xnew.m_v);
     }
     return result;
   }

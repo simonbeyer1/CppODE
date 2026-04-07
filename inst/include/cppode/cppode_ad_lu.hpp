@@ -365,23 +365,65 @@ public:
     m_n = n;
     const int nn = n * n;
 
-    // --- Store full AD matrix for IFT derivative propagation ---
-    // First call: full deep copy.  Subsequent: only overwrite data vector.
-    if (m_W_stored.rows() != n) {
-      m_W_stored = W;
-    } else {
-      std::copy(W.data.begin(), W.data.end(), m_W_stored.data.begin());
-    }
-
     // --- Extract scalar values into persistent m_W_val ---
     // First call: allocate.  Subsequent: only update values.
     if (m_W_val.rows() != n)
       m_W_val.resize(n, n);
     for (int k = 0; k < nn; ++k)
-      m_W_val.data[k] = const_cast<F&>(m_W_stored.data[k]).x();
+      m_W_val.data[k] = const_cast<F&>(W.data[k]).x();
+
+    if constexpr (!is_ad<Inner>::value) {
+      // ============================================================
+      //  Inner = double: pre-extract dW_block for BLAS-2 IFT
+      //
+      //  The IFT matvec needs the derivative components of W as a
+      //  (n*n_derivs) × n column-major double block.  W doesn't
+      //  change between factorize() and solve(), so we extract ONCE
+      //  here instead of on every solve() call.
+      //
+      //  m_W_stored is NOT needed — all derivative information lives
+      //  in m_dW_block.  This saves an n×n F<double,N> deep copy.
+      // ============================================================
+
+      // Determine n_derivs
+      unsigned nd;
+      if constexpr (N > 0) {
+        nd = N;
+      } else {
+        nd = max_deriv_size(W);
+      }
+      m_n_derivs_cached = nd;
+
+      if (nd > 0) {
+        int m = n * static_cast<int>(nd);
+        m_dW_block.resize(static_cast<size_t>(m) * n);
+
+        // AoS→SoA deinterleave: extract all derivative components
+        for (int col = 0; col < n; ++col) {
+          double* col_dst = m_dW_block.data() + static_cast<size_t>(col) * m;
+          for (int row = 0; row < n; ++row) {
+            auto& w = const_cast<F&>(W(row, col));
+            unsigned wsz = w.size();
+            for (unsigned j = 0; j < nd; ++j)
+              col_dst[j * n + row] = (j < wsz) ?
+                static_cast<double>(w.d(j)) : 0.0;
+          }
+        }
+      }
+
+    } else {
+      // ============================================================
+      //  Inner = F<...> (nested AD): store full AD matrix for the
+      //  generic element-wise IFT path.
+      // ============================================================
+      if (m_W_stored.rows() != n) {
+        m_W_stored = W;
+      } else {
+        std::copy(W.data.begin(), W.data.end(), m_W_stored.data.begin());
+      }
+    }
 
     // Recursive: inner solver factorizes the scalar matrix.
-    // For Inner=double, this calls the base-case factorize (or factorize_move).
     m_inner.factorize(m_W_val);
   }
 
@@ -396,13 +438,23 @@ public:
     m_inner.solve(m_b_val);
 
     // 2. Determine derivative directions
-    //    When N > 0, it is the compile-time upper bound — skip the scan.
     unsigned n_derivs;
-    if constexpr (N > 0) {
-      n_derivs = N;
+    if constexpr (!is_ad<Inner>::value) {
+      // Inner = double: n_derivs was determined at factorize time.
+      // For RHS-only derivatives (W has none), check b too.
+      if constexpr (N > 0) {
+        n_derivs = N;
+      } else {
+        n_derivs = std::max(m_n_derivs_cached, max_deriv_size(b));
+      }
     } else {
-      n_derivs = max_deriv_size(b);
-      n_derivs = std::max(n_derivs, max_deriv_size(m_W_stored));
+      // Inner = F<...>: need to scan both b and W_stored
+      if constexpr (N > 0) {
+        n_derivs = N;
+      } else {
+        n_derivs = max_deriv_size(b);
+        n_derivs = std::max(n_derivs, max_deriv_size(m_W_stored));
+      }
     }
     if (n_derivs == 0) {
       for (int i = 0; i < n; ++i)
@@ -411,7 +463,6 @@ public:
     }
 
     // 3. Bulk-extract ALL derivative RHS into column-major n × n_derivs
-    //    Reuse persistent buffer (resize is no-op after first call)
     m_rhs_all.resize(static_cast<size_t>(n) * n_derivs);
     for (int i = 0; i < n; ++i) {
       auto& bi = const_cast<F&>(b[i]);
@@ -421,13 +472,9 @@ public:
     }
 
     // 4. IFT matvec: rhs_all -= dW · b_val
-    //    Dispatches to dgemv (BLAS-2) when Inner = double, or
-    //    generic element-wise loop for nested AD types.
     ift_matvec(n, n_derivs);
 
     // 5. Batched solve: solve ALL n_derivs RHS in one call
-    //    For Inner = double: single dgetrs with nrhs = n_derivs (BLAS-3!)
-    //    For Inner = F<...>: recursive batched solve
     m_inner.solve_batch(m_rhs_all, static_cast<int>(n_derivs));
 
     // 6. Bulk-inject: write values and derivatives in one pass
@@ -435,7 +482,6 @@ public:
   }
 
   /// Batched solve for nrhs RHS vectors stored column-major.
-  /// Reuses persistent column buffer to avoid per-call allocation.
   void solve_batch(std::vector<F>& B_flat, int nrhs) const
   {
     const int n = m_n;
@@ -461,55 +507,36 @@ private:
   // ================================================================
   //  IFT matvec: rhs_all -= dW · b_val
   //
-  //  The IFT derivative correction for ALL n_derivs directions:
-  //    rhs_j -= dW_j · b_val   for j = 0, ..., n_derivs-1
+  //  Inner = double:
+  //    m_dW_block was pre-extracted in factorize().  Only the dgemv
+  //    call remains — no per-solve extraction overhead.
   //
-  //  Reformulated as a single dgemv:
-  //    rhs_vec -= dW_block · b_val
-  //
-  //  where dW_block is (n*n_derivs) × n, column-major, with
-  //    dW_block[j*n + row, col] = W_stored(row, col).d(j)
-  //
-  //  This replaces the element-wise triple loop with a vectorized
-  //  BLAS-2 operation.  The extraction (AoS→SoA deinterleave) runs
-  //  once; the dgemv multiply-accumulate is fully SIMD-vectorized.
+  //  Inner = F<...> (nested AD):
+  //    Single pass over m_W_stored (element-wise loop).
   // ================================================================
 
   void ift_matvec(int n, unsigned n_derivs) const
   {
     if constexpr (!is_ad<Inner>::value) {
       // =============================================================
-      //  BLAS-2 path: dgemv (Inner = double)
+      //  BLAS-2 path: dgemv only (extraction done in factorize)
       //
-      //  Build dW_block: (m × n) column-major where m = n * n_derivs.
-      //  Column col of dW_block contains all derivative slices of
-      //  column col of W_stored, stacked as:
-      //    [d0_row0..d0_rowN-1, d1_row0..d1_rowN-1, ...]
+      //  m_dW_block is (m × n) column-major, m = n * n_derivs_cached.
+      //  If n_derivs > n_derivs_cached (RHS has more derivs than W),
+      //  the extra derivative directions have dW = 0, so no correction
+      //  is needed for them — dgemv covers [0, n_derivs_cached) and
+      //  the remaining rhs_all entries stay untouched.
       // =============================================================
 
-      int m = n * static_cast<int>(n_derivs);
-      m_dW_block.resize(static_cast<size_t>(m) * n);
+      unsigned nd_W = m_n_derivs_cached;
+      if (nd_W == 0) return;  // W has no derivatives → no IFT correction
 
-      // Extraction: deinterleave AoS (F objects) → SoA (flat doubles)
-      for (int col = 0; col < n; ++col) {
-        double* col_dst = m_dW_block.data() + static_cast<size_t>(col) * m;
-        for (int row = 0; row < n; ++row) {
-          auto& w = const_cast<F&>(m_W_stored(row, col));
-          unsigned wsz = w.size();
-          // Write derivatives for this entry into the column:
-          // positions j*n + row for j = 0..n_derivs-1
-          for (unsigned j = 0; j < n_derivs; ++j)
-            col_dst[j * n + row] = (j < wsz) ?
-          static_cast<double>(w.d(j)) : 0.0;
-        }
-      }
-
-      // dgemv: rhs_all = 1.0 * rhs_all + (-1.0) * dW_block · b_val
+      int m = n * static_cast<int>(nd_W);
       double alpha = -1.0, beta = 1.0;
       int inc = 1;
       char trans = 'N';
       F77_CALL(dgemv)(&trans, &m, &n, &alpha,
-               m_dW_block.data(), &m,
+               const_cast<double*>(m_dW_block.data()), &m,
                const_cast<double*>(m_b_val.data()), &inc,
                &beta, m_rhs_all.data(), &inc  FCONE);
 
@@ -536,16 +563,20 @@ private:
   }
 
   int m_n = 0;
-  dense_matrix<F>     m_W_stored;      // Full AD matrix (for IFT derivatives)
+  dense_matrix<F>     m_W_stored;      // Full AD matrix (nested AD path only)
   dense_matrix<Inner> m_W_val;         // Persistent scalar extraction buffer
   dense_lu_solver<Inner> m_inner;
 
+  // Pre-extracted derivative block for BLAS-2 IFT (Inner = double only).
+  // Built once in factorize(), reused across all solve() calls.
+  // Layout: (n*n_derivs_cached) × n, column-major.
+  std::vector<double> m_dW_block;
+  unsigned m_n_derivs_cached = 0;     // n_derivs at last factorize
+
   // Persistent solve buffers — avoid per-call heap allocations.
-  // Mutable because solve() is logically const (same results, no state change).
   mutable std::vector<Inner>  m_b_val;     // n scalars: extracted value part
   mutable std::vector<Inner>  m_rhs_all;   // n × n_derivs: derivative RHS
   mutable std::vector<F>      m_col_buf;   // n entries: column buffer for solve_batch
-  mutable std::vector<double> m_dW_block;  // (n*n_derivs) × n: derivative matrix (dgemv path only)
 };
 
 } // namespace ad_lu

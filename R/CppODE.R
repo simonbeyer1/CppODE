@@ -669,6 +669,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                "  // storage for results",
                sprintf("  std::vector<%s> result_times;", numType),
                sprintf("  std::vector<%s> y;", numType),
+               "  result_times.reserve(times_dbl.size());",
+               sprintf("  y.reserve(times_dbl.size() * %d);", n_variables),
                "",
                "  // --- Event containers ---",
                sprintf("  std::vector<FixedEvent<cppode::vector_t<%s>, %s>> fixed_events;", numType, numType),
