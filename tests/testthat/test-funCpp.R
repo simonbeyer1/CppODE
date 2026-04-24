@@ -3,7 +3,7 @@
 skip_on_cran()
 skip_on_ci()
 
-# ── Basic funCpp output structure ─────────────────────────────────────────────
+# -- Basic funCpp output structure ---------------------------------------------
 
 test_that("funCpp returns correct output", {
   trafo <- c(
@@ -22,7 +22,7 @@ test_that("funCpp returns correct output", {
   expect_equal(unname(res[1, "y2"]), 2.5, tolerance = 1e-10)
 })
 
-# ── Jacobian correctness ─────────────────────────────────────────────────────
+# -- Jacobian correctness -----------------------------------------------------
 
 test_that("funCpp Jacobian matches analytical derivatives", {
   trafo <- c(
@@ -53,7 +53,7 @@ test_that("funCpp Jacobian matches analytical derivatives", {
   expect_equal(j["y2", "x"], 0.5, tolerance = 1e-10)
 })
 
-# ── Hessian structure ─────────────────────────────────────────────────────────
+# -- Hessian structure ---------------------------------------------------------
 
 test_that("funCpp Hessian has correct dimensions and is symmetric", {
   trafo <- c(y = "a * b * x^2")
@@ -82,7 +82,7 @@ test_that("funCpp Hessian has correct dimensions and is symmetric", {
   expect_equal(hess["b", "x"], 16, tolerance = 1e-8)
 })
 
-# ── Fixed parameters in funCpp ────────────────────────────────────────────────
+# -- Fixed parameters in funCpp ------------------------------------------------
 
 test_that("funCpp fixed parameters are excluded from derivatives", {
   trafo <- c(y = "a * b + c")

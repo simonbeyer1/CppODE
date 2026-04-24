@@ -591,7 +591,7 @@ def _render_source(
     # sens rhs and event saltation lambdas can apply the chain rule.
     if has_reparam:
         reparam_ud_members = (
-            "  std::vector<double> Phi_prime;         // (NEQ + n_params) * NTHETA, column-major\n"
+            "  std::vector<double> Phi_prime;         // (NEQ + n_params) * Ns_active, column-major (Ns_active <= NTHETA)\n"
         )
     else:
         reparam_ud_members = ""
@@ -866,18 +866,14 @@ static std::vector<RootEvent> build_root_events(const double* params,
     yS = N_VCloneVectorArray(Ns_active, y);
     Ns_alloc = Ns_active;
     if (!yS) {{ cleanup(); Rf_error("N_VCloneVectorArray failed"); }}
-    // Under reparametrization sens1ini carries the full Phi'(theta) of shape
-    // [NEQ + n_params, NTHETA] (column-major); copy to UserData for the
-    // sens RHS callback and event-saltation chain rule.
+    // Under reparametrization sens1ini carries Phi'(theta) of shape
+    // [NEQ + n_params, Ns_active] (column-major, Ns_active = M <= NTHETA);
+    // copy to UserData for the sens RHS callback and event-saltation chain rule.
     const int phi_rows_rt = {phi_rows};
     const int expected_len = phi_rows_rt * Ns_active;
-    if (Rf_isNull(sens1iniSEXP)) {{
-      cleanup();
-      Rf_error("sens1ini is required when the model is compiled with ntheta");
-    }}
     if (Rf_length(sens1iniSEXP) != expected_len) {{
       cleanup();
-      Rf_error("sens1ini length %d != expected %d (phi_rows * ntheta)",
+      Rf_error("sens1ini length %d != expected %d (phi_rows * Ns_active)",
                Rf_length(sens1iniSEXP), expected_len);
     }}
     ud.Phi_prime.assign(REAL(sens1iniSEXP), REAL(sens1iniSEXP) + expected_len);
@@ -938,7 +934,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
       double* v = N_VGetArrayPointer(yS[iS]);
       for (int i = 0; i < NEQ; ++i) out_s.push_back(v[i]);
     }"""
-        sens_get_block = """    {
+        sens_get_block = """    if (Ns_active > 0) {
       int flag_gs = CVodeGetSens(cvode_mem, &tret, yS);
       if (flag_gs < 0) {
         return_code = flag_gs;
@@ -950,7 +946,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
       double* v = N_VGetArrayPointer(yS[iS]);
       for (int i = 0; i < NEQ; ++i) out_s.push_back(v[i]);
     }"""
-        sens_fevals_block = """  {
+        sens_fevals_block = """  if (Ns_active > 0) {
     long nfeS = 0;
     CVodeGetSensNumRhsEvals(cvode_mem, &nfeS);
     n_fe += nfeS;
@@ -986,7 +982,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
                 "  auto event_roots = build_root_events(ud.params.data(), ud.F);\n"
             )
         if deriv:
-            event_sens_reinit = ("      if (CVodeSensReInit(cvode_mem, CV_STAGGERED, yS) < 0) "
+            event_sens_reinit = ("      if (Ns_active > 0 && CVodeSensReInit(cvode_mem, CV_STAGGERED, yS) < 0) "
                                  "{ cleanup(); Rf_error(\"CVodeSensReInit failed\"); }\n")
     else:
         event_builder_block = ""
@@ -1801,7 +1797,7 @@ namespace {{
 constexpr int NEQ    = {n_states};
 constexpr int NPARMS = {n_global};           // n_states + n_params (flat layout)
 constexpr int NSENS_COMPILE = {n_sens_compile};
-constexpr int NTHETA = {ntheta};             // theta dim (== NSENS_COMPILE unless reparam)
+constexpr int NTHETA = {ntheta};             // compile-time upper bound on theta dim under reparam
 constexpr bool HAS_REPARAM = {has_reparam_cpp};
 
 static const int kSensToGlobal[{n_sens_arr}]  = {{ {s2g_str} }};
@@ -1955,7 +1951,7 @@ extern "C" SEXP solve_{modelname}(
 
 {forcing_init_block}
   // Runtime-fixed → build active_to_compile mapping (non-reparam only).
-  // Under reparam, `fixed` is rejected and Ns = NTHETA directly.
+  // Under reparam, `fixed` is rejected and Ns = ncol(sens1ini) at runtime.
   std::vector<int> active_to_compile;
   if (deriv) {{
     if (HAS_REPARAM && !Rf_isNull(fixedSEXP) && Rf_length(fixedSEXP) > 0) {{
@@ -1974,10 +1970,24 @@ extern "C" SEXP solve_{modelname}(
       if (!fixed_mask[i]) active_to_compile.push_back(i);
     ud.active_to_compile = active_to_compile;
   }}
-  const int Ns_active = deriv
-                         ? (HAS_REPARAM ? NTHETA
-                                        : static_cast<int>(active_to_compile.size()))
-                         : 0;
+  // Under reparam, NTHETA is the compile-time upper bound. The runtime active
+  // theta count M is read from ncol(sens1ini) and may be <= NTHETA. M=0
+  // (degenerate: no active theta this call) skips sensitivity integration
+  // via the `if (Ns_active > 0)` gate inside sens_init_block.
+  int Ns_active_tmp = 0;
+  if (deriv) {{
+    if (HAS_REPARAM) {{
+      if (Rf_isNull(sens1iniSEXP))
+        Rf_error("sens1ini is required when the model is compiled with an explicit ntheta");
+      Ns_active_tmp = static_cast<int>(Rf_ncols(sens1iniSEXP));
+      if (Ns_active_tmp > NTHETA)
+        Rf_error("sens1ini has %d columns but the model's compile-time ntheta upper bound is %d",
+                 Ns_active_tmp, NTHETA);
+    }} else {{
+      Ns_active_tmp = static_cast<int>(active_to_compile.size());
+    }}
+  }}
+  const int Ns_active = Ns_active_tmp;
 
   // --- times ---
   std::vector<double> times(REAL(timesSEXP), REAL(timesSEXP) + n_times_in);

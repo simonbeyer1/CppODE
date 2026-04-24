@@ -7,7 +7,7 @@
 #' ## Sensitivity initial values, `fixed`, and reparametrization
 #'
 #' `sens1ini` and `sens2ini` describe how the *full* initial-condition and
-#' parameter vector depends on the sensitivity-column basis — i.e., they are
+#' parameter vector depends on the sensitivity-column basis -- i.e., they are
 #' the Jacobian \eqn{\Phi'(\theta)} and Hessian \eqn{\Phi''(\theta)} of the
 #' reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted:
 #'
@@ -86,7 +86,7 @@
 #'       step-size sequence without interfering with order changes
 #'       and resets its history on order changes, failures, and
 #'       events.}
-#'     \item{`"full"`}{Söderlind's H211b second-order digital filter
+#'     \item{`"full"`}{Soederlind's H211b second-order digital filter
 #'       replaces the I-controller at the current order. The
 #'       order-decrease and order-increase candidates are lifted onto
 #'       the same safety-only scale as the H211b proposal so that
@@ -96,13 +96,13 @@
 #'   For Rosenbrock4 the value is silently forced to `"full"` because
 #'   Rosenbrock4 always uses its built-in Gustafsson PI controller and
 #'   has no toggle for it. Note that "PID" is a slight misnomer for
-#'   all of these — H211b is a second-order digital filter and the
+#'   all of these -- H211b is a second-order digital filter and the
 #'   Gustafsson form is a PI controller, neither is a classical
-#'   PID — but the name follows common usage in the adaptive-stepping
-#'   literature. References: Söderlind (2003) "Digital Filters in
-#'   Adaptive Time-Stepping", ACM TOMS 29(1); Söderlind & Wang (2006)
+#'   PID -- but the name follows common usage in the adaptive-stepping
+#'   literature. References: Soederlind (2003) "Digital Filters in
+#'   Adaptive Time-Stepping", ACM TOMS 29(1); Soederlind & Wang (2006)
 #'   "Adaptive Time-Stepping and Computational Stability"; Gustafsson,
-#'   Lundh & Söderlind (1988) "A PI stepsize control for the numerical
+#'   Lundh & Soederlind (1988) "A PI stepsize control for the numerical
 #'   solution of ordinary differential equations", BIT 28.
 #' @param onFailure How to react when the solver returns `return_code != 0`
 #'   (step limit hit, no progress, etc.). One of `"warn"` (default, historical
@@ -192,7 +192,20 @@ solveODE <- function(model, times, parms,
   n_params  <- length(parameters)
   n_phi_rows <- n_states + n_params
   n_active  <- length(active_sens)
-  n_theta_active <- if (has_reparam) as.integer(ntheta) else n_active
+  ## Under reparam, `ntheta` (model attr) is the compile-time upper bound on
+  ## the AD width. `n_theta_active` is the per-call count read from
+  ## ncol(sens1ini) and must satisfy 0 <= n_theta_active <= n_theta_max.
+  n_theta_max <- if (has_reparam) as.integer(ntheta) else n_active
+  n_theta_active <- if (has_reparam) {
+    if (is.null(sens1ini))
+      stop("'sens1ini' is required when the model was compiled with an explicit ntheta")
+    if (is.matrix(sens1ini) || (is.array(sens1ini) && length(dim(sens1ini)) == 2L)) {
+      as.integer(ncol(sens1ini))
+    } else {
+      stop("'sens1ini' must be a matrix under reparametrization ",
+           "(need a 'dim' attribute to infer the active theta count)")
+    }
+  } else n_active
 
   ## Identity-on-active-params padding for legacy shape under non-reparam.
   build_param_identity <- function(col_names) {
@@ -265,22 +278,27 @@ solveODE <- function(model, times, parms,
   }
 
   ## Column names: theta names under reparam come from user via colnames(sens1ini).
-  ## If user didn't provide colnames, we fall back to the auto-generated names in
-  ## attr(model, "dim_names")$sens.
+  ## If user didn't provide colnames, fall back to the first n_theta_active of
+  ## the auto-generated names in attr(model, "dim_names")$sens (length n_theta_max).
   sens_col_names <- if (has_reparam) {
-    if (!is.null(sens1ini) && !is.null(colnames(sens1ini))) colnames(sens1ini) else all_sens
+    if (!is.null(sens1ini) && !is.null(colnames(sens1ini))) colnames(sens1ini)
+    else all_sens[seq_len(n_theta_active)]
   } else {
     active_sens
   }
   if (has_reparam && length(sens_col_names) != n_theta_active)
-    stop(sprintf("sens1ini column count (%d) does not match model ntheta (%d)",
+    stop(sprintf("colnames(sens1ini) length (%d) does not match ncol(sens1ini) (%d)",
                  length(sens_col_names), n_theta_active))
+  if (has_reparam && n_theta_active > n_theta_max)
+    stop(sprintf("sens1ini column count (%d) exceeds model ntheta upper bound (%d)",
+                 n_theta_active, n_theta_max))
 
-  sens1ini <- if (!is.null(sens1ini))
-    coerce_full_2d(sens1ini, n_theta_active, sens_col_names, "sens1ini")
-
-  if (has_reparam && is.null(sens1ini))
-    stop("'sens1ini' is required when the model was compiled with an explicit ntheta")
+  sens1ini <- if (!is.null(sens1ini)) {
+    flat <- coerce_full_2d(sens1ini, n_theta_active, sens_col_names, "sens1ini")
+    ## Preserve 2-D shape for C++ Rf_ncols() -- distinguishes [phi_rows, M] from a flat vector.
+    dim(flat) <- c(n_phi_rows, n_theta_active)
+    flat
+  }
 
   if (!is.null(sens2ini)) {
     if (!is.numeric(sens2ini)) stop("'sens2ini' must be numeric")
@@ -389,9 +407,9 @@ solveODE <- function(model, times, parms,
   if (!is.numeric(hini)    || hini    <  0) stop("'hini' must be non-negative")
   if (!is.numeric(roottol) || roottol <= 0) stop("'roottol' must be positive")
   ## usePID: character with three modes (NDF/BDF only)
-  ##   "none"         — classical CVODE I-controller (default)
-  ##   "intermediate" — classical I-controller + log-space LP filter on m_eta
-  ##   "full"         — Söderlind H211b replaces the I-controller
+  ##   "none"         -- classical CVODE I-controller (default)
+  ##   "intermediate" -- classical I-controller + log-space LP filter on m_eta
+  ##   "full"         -- Soederlind H211b replaces the I-controller
   ## For Rosenbrock4 the value is forced to "full" because RB4 always
   ## uses its built-in Gustafsson PI controller.
   usePID <- match.arg(usePID)

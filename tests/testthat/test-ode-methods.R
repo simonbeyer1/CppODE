@@ -3,7 +3,7 @@
 skip_on_cran()
 skip_on_ci()
 
-# ── Shared setup ──────────────────────────────────────────────────────────────
+# -- Shared setup --------------------------------------------------------------
 
 eqns_decay <- c(A = "-k1 * A", B = "k1 * A - k2 * B")
 times <- seq(0, 50, length.out = 200)
@@ -14,7 +14,7 @@ exact_B <- function(t, A0, k1, k2) A0 * k1 / (k2 - k1) * (exp(-k1 * t) - exp(-k2
 
 methods_all <- c("bdf", "adams", "msoda", "rb4", "tsit5")
 
-# ── Basic solver output structure ─────────────────────────────────���───────────
+# -- Basic solver output structure --------------------------------------------
 
 test_that("solveODE returns correct structure for all methods", {
   for (m in methods_all) {
@@ -29,7 +29,7 @@ test_that("solveODE returns correct structure for all methods", {
   }
 })
 
-# ── Accuracy against analytical solution ──────────────────────────────────────
+# -- Accuracy against analytical solution --------------------------------------
 
 test_that("all methods match analytical solution (decay system)", {
   for (m in methods_all) {
@@ -48,7 +48,7 @@ test_that("all methods match analytical solution (decay system)", {
   }
 })
 
-# ── First-order sensitivities via AD vs finite differences ────────────────────
+# -- First-order sensitivities via AD vs finite differences --------------------
 
 test_that("first-order sensitivities are correct for all methods", {
   eps <- 1e-5
@@ -78,7 +78,7 @@ test_that("first-order sensitivities are correct for all methods", {
   }
 })
 
-# ── Second-order sensitivities ────────────────────────────────────────────────
+# -- Second-order sensitivities ------------------------------------------------
 
 test_that("second-order sensitivities are finite for stiff methods", {
   stiff_methods <- c("bdf", "rb4")
@@ -93,7 +93,7 @@ test_that("second-order sensitivities are finite for stiff methods", {
   }
 })
 
-# ── Time-triggered events ─────────────────────────────────────────────────────
+# -- Time-triggered events -----------------------------------------------------
 
 test_that("time-triggered dose event works", {
   eqns <- c(A = "-k1 * A")
@@ -110,7 +110,7 @@ test_that("time-triggered dose event works", {
   expect_gt(res$variable[idx_after, "A"], res$variable[idx_before, "A"])
 })
 
-# ── Root-triggered events ─────────────────────────────────────────────────────
+# -- Root-triggered events -----------------------------------------------------
 
 test_that("root-triggered event fires correctly", {
   eqns <- c(x = "-k * x")
@@ -122,14 +122,14 @@ test_that("root-triggered event fires correctly", {
   mod <- CppODE(eqns, events = evt, modelname = "event_root")
   res <- solveODE(mod, seq(0, 100, length.out = 500), pars_root)
 
-  # x decays below xc, then gets dose added → should see multiple oscillations
+  # x decays below xc, then gets dose added -> should see multiple oscillations
   # Check that x goes back up after crossing xc at least once
   x_vals <- res$variable[, "x"]
   crossings <- sum(diff(x_vals > 0.5) != 0)
   expect_gt(crossings, 0, label = "root event triggers at least once")
 })
 
-# ── Diagnostics ───────────────────────────────────────────────────────────────
+# -- Diagnostics ---------------------------------------------------------------
 
 test_that("diagnostics() returns solver statistics", {
   mod <- CppODE(eqns_decay, modelname = "diag_test")
@@ -142,7 +142,7 @@ test_that("diagnostics() returns solver statistics", {
   expect_equal(d$return_code, 0)  # success
 })
 
-# ── Fixed parameters ──────────────────────────────────────────────────────────
+# -- Fixed parameters ----------------------------------------------------------
 
 test_that("fixed parameters are excluded from sensitivities", {
   mod <- CppODE(eqns_decay, deriv = TRUE, fixed = "k2",

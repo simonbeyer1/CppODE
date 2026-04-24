@@ -4,11 +4,11 @@
 skip_on_cran()
 skip_on_ci()
 
-# ── Shared setup ──────────────────────────────────────────────────────────────
+# -- Shared setup --------------------------------------------------------------
 # System with known analytical steady state:
-#   R' = k_act - k_deact * R   →  R_ss = k_act / k_deact
-#   A' = -k1*A*R + k2*pA       →  conservation: A + pA = const
-#   pA'=  k1*A*R - k2*pA       →  pA_ss = k1*R_ss / (k2 + k1*R_ss) * (A0+pA0)
+#   R' = k_act - k_deact * R   ->  R_ss = k_act / k_deact
+#   A' = -k1*A*R + k2*pA       ->  conservation: A + pA = const
+#   pA'=  k1*A*R - k2*pA       ->  pA_ss = k1*R_ss / (k2 + k1*R_ss) * (A0+pA0)
 
 rhs <- c(
   R  = "k_act - k_deact * R",
@@ -28,7 +28,7 @@ ss_A  <- total - ss_pA
 stiff_methods   <- c("bdf", "rb4")
 all_methods     <- c("bdf", "adams", "msoda", "rb4", "tsit5")
 
-# ── Basic equilibrate: reaches correct steady state ───────────────────────────
+# -- Basic equilibrate: reaches correct steady state ---------------------------
 
 test_that("equilibrate finds the analytical steady state", {
   for (m in all_methods) {
@@ -46,7 +46,7 @@ test_that("equilibrate finds the analytical steady state", {
   }
 })
 
-# ── Equilibrate terminates early ──────────────────────────────────────────────
+# -- Equilibrate terminates early ----------------------------------------------
 
 test_that("equilibrate stops integration before final time", {
   for (m in all_methods) {
@@ -63,7 +63,7 @@ test_that("equilibrate stops integration before final time", {
   }
 })
 
-# ── Equilibrate with sensitivities ────────────────────────────────────────────
+# -- Equilibrate with sensitivities --------------------------------------------
 
 test_that("equilibrate works with first-order sensitivities", {
   for (m in stiff_methods) {
@@ -82,14 +82,14 @@ test_that("equilibrate works with first-order sensitivities", {
   }
 })
 
-# ── Warm start is faster than cold start ──────────────────────────────────────
+# -- Warm start is faster than cold start --------------------------------------
 
 test_that("warm start converges in fewer steps than cold start", {
   for (m in stiff_methods) {
     mod <- CppODE(rhs, rootfunc = "equilibrate", method = m,
                   deriv = TRUE, modelname = paste0("eq_warm_", m))
 
-    # Cold start → equilibrium
+    # Cold start -> equilibrium
     res1 <- solveODE(mod, times, pars, roottol = 1e-05)
     yini    <- res1$variable[nrow(res1$variable), ]
     sensini <- res1$sens1[length(res1$time), , ]
@@ -115,7 +115,7 @@ test_that("warm start converges in fewer steps than cold start", {
   }
 })
 
-# ── Warm start reaches correct steady state ───────────────────────────────────
+# -- Warm start reaches correct steady state -----------------------------------
 
 test_that("warm start converges to correct new steady state", {
   mod <- CppODE(rhs, rootfunc = "equilibrate", deriv = TRUE,
@@ -144,7 +144,7 @@ test_that("warm start converges to correct new steady state", {
   expect_equal(unname(y_final["A"]), ss_A2, tolerance = 1e-4)
 })
 
-# ── Tight tolerance equilibrate ───────────────────────────────────────────────
+# -- Tight tolerance equilibrate -----------------------------------------------
 
 test_that("equilibrate respects tight roottol", {
   mod <- CppODE(rhs, rootfunc = "equilibrate", modelname = "eq_tight")
@@ -157,7 +157,7 @@ test_that("equilibrate respects tight roottol", {
             label = "tight tol needs more integration time")
 })
 
-# ── Already at steady state: immediate termination (no sensitivities) ─────────
+# -- Already at steady state: immediate termination (no sensitivities) ---------
 
 test_that("equilibrate terminates immediately when starting at SS (deriv=FALSE)", {
   mod <- CppODE(rhs, rootfunc = "equilibrate", deriv = FALSE,
@@ -176,7 +176,7 @@ test_that("equilibrate terminates immediately when starting at SS (deriv=FALSE)"
   expect_lt(d$accepted, 5, label = "immediate SS detection")
 })
 
-# ── At SS with sensitivities: needs to equilibrate sens ───────────────────────
+# -- At SS with sensitivities: needs to equilibrate sens -----------------------
 
 test_that("equilibrate at SS with deriv=TRUE still needs sensitivity equilibration", {
   mod <- CppODE(rhs, rootfunc = "equilibrate", deriv = TRUE,
@@ -189,7 +189,7 @@ test_that("equilibrate at SS with deriv=TRUE still needs sensitivity equilibrati
 
   res <- solveODE(mod, times, pars_ss, roottol = 1e-04)
 
-  # States are at SS but sensitivities start at 0 → need integration
+  # States are at SS but sensitivities start at 0 -> need integration
   d <- diagnostics(res)
   expect_gt(d$accepted, 5, label = "sens equilibration takes steps")
 

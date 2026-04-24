@@ -90,7 +90,7 @@ forward-mode sensitivities use CVODES' \code{CVodeSensInit1} with an
 \strong{analytic} sensitivity RHS:
 \deqn{\dot S_k = J(x,p)\,S_k + \partial f / \partial p_k}
 (with the \code{df/dp} term present only for sens slots that correspond to
-parameters — initial-condition sens slots contribute only through
+parameters -- initial-condition sens slots contribute only through
 \code{J * S_k}).  This matches the work CppODE does via forward-mode AD.
 \subsection{Scope}{
 
@@ -101,15 +101,15 @@ The CVODE backend currently supports:
 \item Dense or KLU-sparse linear solver (auto-selected or forced via \code{sparse}).
 \item \code{fixed} at both compile and run time, with the same semantics as
 \code{\link[=CppODE]{CppODE()}}.
-\item \code{forcings} — PCHIP-interpolated time-dependent inputs.  Forcings do
+\item \code{forcings} -- PCHIP-interpolated time-dependent inputs.  Forcings do
 not contribute to sensitivities (they are data, not parameters).
-\item \code{rootfunc} — integration termination via \code{CVodeRootInit}.
-\item \code{events} — time- and root-triggered.  Time events apply via
+\item \code{rootfunc} -- integration termination via \code{CVodeRootInit}.
+\item \code{events} -- time- and root-triggered.  Time events apply via
 \code{CVodeReInit}; root events via \code{CVodeRootInit} + \code{CVodeGetRootInfo}
 dispatch on \code{CV_ROOT_RETURN}.  Sensitivities are corrected through
 the full first-order saltation: time events use the explicit
-\verb{∂t_e/∂p_k} you supply in the event expression, root events use the
-IFT-derived \verb{dt_root/dp_k = −(∂r/∂p_k + Σ ∂r/∂x_i · S_i[k]) / ġ}.
+\code{dt_e/dp_k} you supply in the event expression, root events use the
+IFT-derived \verb{dt_root/dp_k = -(dr/dp_k + Sigma dr/dx_i * S_i[k]) / gdot}.
 }
 
 The following features of \code{\link[=CppODE]{CppODE()}} are \strong{not} available via the CVODE
@@ -127,7 +127,7 @@ the row schema mirrors CppODE's multistepper trace.  The buffer is
 marshalled into the \verb{$trace} element of the result list returned to R
 and \code{\link[=solveODE]{solveODE()}} exposes it as a \code{data.frame} (optionally writing a
 CSV when \code{traceFile} is supplied).  \strong{Not supported together with
-\code{events} or \code{rootfunc}} — in those cases the trace macro is silently
+\code{events} or \code{rootfunc}} -- in those cases the trace macro is silently
 a no-op and the solver falls back to the standard \code{CV_NORMAL} loop.
 }
 }

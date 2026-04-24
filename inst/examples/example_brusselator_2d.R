@@ -12,7 +12,7 @@ library(tidyr)
 library(patchwork)
 
 # ============================================================================
-# 2D Brusselator (Method of Lines) — Turing pattern formation
+# 2D Brusselator (Method of Lines) -- Turing pattern formation
 #
 # u_t = A + u^2*v - (B+1)*u + Du * laplacian(u)
 # v_t = B*u - u^2*v         + Dv * laplacian(v)

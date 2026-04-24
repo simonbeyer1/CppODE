@@ -14,7 +14,7 @@ rhs <- c(
   pA = "k1*A*R-k2*pA"
 )
 
-# Equilibrate - stoppt wenn alle Ableitungen (inkl. Sensitivitäten) < roottol
+# Equilibrate - stoppt wenn alle Ableitungen (inkl. Sensitivitaeten) < roottol
 model <- CppODE(
   rhs = rhs,
   rootfunc = "equilibrate",
@@ -41,14 +41,14 @@ if (!is.null(res$sens1)) {
   dims <- attr(model, "dim_names")
 
   ## ---------- sens1 ----------
-  # sens1 is [n_out, n_states, n_sens] → flatten to [n_out, n_states*n_sens]
+  # sens1 is [n_out, n_states, n_sens] -> flatten to [n_out, n_states*n_sens]
   sens1_matrix <- matrix(res$sens1,
                          nrow = n_out,
                          ncol = n_states * n_sens)
 
   sens1_colnames <-
-    as.vector(outer(paste0("∂", dims$variable),
-                    paste0("∂", dims$sens),
+    as.vector(outer(paste0("d", dims$variable),
+                    paste0("d", dims$sens),
                     paste, sep = "/"))
   colnames(sens1_matrix) <- sens1_colnames
 
@@ -78,13 +78,13 @@ if (!is.null(res$sens1)) {
         i <- ind_ij[k, 1]
         j <- ind_ij[k, 2]
 
-        # sens2 is [n_out, n_states, n_sens, n_sens] → take time-series for (s, i, j)
+        # sens2 is [n_out, n_states, n_sens, n_sens] -> take time-series for (s, i, j)
         sens2_matrix[, col_idx] <- res$sens2[, s, i, j]
 
         sens2_colnames[col_idx] <-
-          paste0("∂²", dims$variable[s],
-                 "/∂", dims$sens[i],
-                 "∂", dims$sens[j])
+          paste0("d^2", dims$variable[s],
+                 "/d", dims$sens[i],
+                 "d", dims$sens[j])
 
         col_idx <- col_idx + 1
       }
@@ -132,14 +132,14 @@ if (!is.null(res2$sens1)) {
   dims <- attr(model, "dim_names")
 
   ## ---------- sens1 ----------
-  # sens1 is [n_out, n_states, n_sens] → flatten to [n_out, n_states*n_sens]
+  # sens1 is [n_out, n_states, n_sens] -> flatten to [n_out, n_states*n_sens]
   sens1_matrix <- matrix(res2$sens1,
                          nrow = n_out,
                          ncol = n_states * n_sens)
 
   sens1_colnames <-
-    as.vector(outer(paste0("∂", dims$variable),
-                    paste0("∂", dims$sens),
+    as.vector(outer(paste0("d", dims$variable),
+                    paste0("d", dims$sens),
                     paste, sep = "/"))
   colnames(sens1_matrix) <- sens1_colnames
 
@@ -172,9 +172,9 @@ if (!is.null(res2$sens1)) {
         sens2_matrix[, col_idx] <- res2$sens2[, s, i, j]
 
         sens2_colnames[col_idx] <-
-          paste0("∂²", dims$variable[s],
-                 "/∂", dims$sens[i],
-                 "∂", dims$sens[j])
+          paste0("d^2", dims$variable[s],
+                 "/d", dims$sens[i],
+                 "d", dims$sens[j])
 
         col_idx <- col_idx + 1
       }

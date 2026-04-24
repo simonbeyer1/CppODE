@@ -1,15 +1,15 @@
 #!/usr/bin/env Rscript
 # ============================================================================
-# Benchmark: Dense vs Sparse LU threshold — Microbenchmark edition
+# Benchmark: Dense vs Sparse LU threshold -- Microbenchmark edition
 #
 # Tests all combinations of:
 #   method:  bdf, rb4
 #   sparse:  TRUE, FALSE
 #   type:    double (deriv=FALSE), Fdouble (deriv=TRUE)
 #
-# System: Brusselator 2D on N×N grid with variable coupling reach
-#   u_ij' = A + u²v - (B+1)u + α * Σ_{neighbors} (u_nb - u_ij)
-#   v_ij' = Bu - u²v           + α * Σ_{neighbors} (v_nb - v_ij)
+# System: Brusselator 2D on NxN grid with variable coupling reach
+#   u_ij' = A + u^2v - (B+1)u + alpha * Sigma_{neighbors} (u_nb - u_ij)
+#   v_ij' = Bu - u^2v           + alpha * Sigma_{neighbors} (v_nb - v_ij)
 #
 #   reach=1: 4 direct neighbors (5-point stencil, very sparse)
 #   reach=2: 24 neighbors (Chebyshev ball radius 2)
@@ -163,7 +163,7 @@ make_brusselator2d <- function(N, reach = 1L) {
         }
       }
 
-      # Diffusion: coeff * (Σ u_nb - n_nb * u_k)
+      # Diffusion: coeff * (Sigma u_nb - n_nb * u_k)
       if (n_nb > 0) {
         lap_u <- sprintf("%g*(%s - %d*%s)", coeff,
                          paste(u_terms, collapse = " + "), n_nb, u_k)
@@ -368,7 +368,7 @@ if (requireNamespace("ggplot2", quietly = TRUE)) {
     labs(
       title = "Dense vs Sparse LU: Runtime Scaling",
       subtitle = sprintf("Brusselator 2D with variable reach, t=[0,%g], %d reps", TEND, N_REPS),
-      x = "System dimension (2N²)",
+      x = "System dimension (2N^2)",
       y = "Median runtime (ms)",
       colour = "LU solver",
       shape  = "Sparsity"
@@ -451,7 +451,7 @@ if (requireNamespace("ggplot2", quietly = TRUE)) {
     scale_x_log10() +
     labs(
       title = "LU Setups (Factorizations) vs System Size",
-      x = "System dimension (2N²)",
+      x = "System dimension (2N^2)",
       y = "Number of LU setups",
       colour = "LU solver",
       shape  = "Sparsity"

@@ -1,5 +1,5 @@
 ## =================================================================
-## Benchmark: cascade signaling network — stiff solvers
+## Benchmark: cascade signaling network -- stiff solvers
 ##            CppODE (bdf, rb4) vs CVODE (bdf)
 ## =================================================================
 rm(list = ls(all.names = TRUE))

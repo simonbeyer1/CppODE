@@ -49,8 +49,8 @@ reshape_results <- function(res, method_name) {
   # States + first-order sensitivities
   dt <- matrix(sens, nrow = dim(sens)[1],
                dimnames = list(NULL,
-                               paste0("∂", rep(dimnames(sens)[[2]], times = n_s),
-                                      "/∂", rep(dimnames(sens)[[3]], each = n_v)))) %>%
+                               paste0("d", rep(dimnames(sens)[[2]], times = n_s),
+                                      "/d", rep(dimnames(sens)[[3]], each = n_v)))) %>%
     cbind(time = res$time, vars, .) %>%
     as.data.table() %>%
     melt(id.vars = 1L)

@@ -35,7 +35,7 @@ model_time <- CppODE(
 pars_time <- c(x = 1, k = 1, v = 0.75, te = 3)
 res_time  <- solveODE(model_time, seq(0, 10, length.out = 300), pars_time)
 
-cat("Time event — state at t just before/after te = 3:\n")
+cat("Time event -- state at t just before/after te = 3:\n")
 i_before <- max(which(res_time$time <  3))
 i_after  <- min(which(res_time$time >= 3))
 print(data.frame(
@@ -69,7 +69,7 @@ model_root <- CppODE(
 pars_root <- c(x = 1, k = 1, v = 1, xc = 0.25)
 res_root  <- solveODE(model_root, seq(0, 10, length.out = 300), pars_root, maxroot = 3)
 
-cat("\nRoot event — sensitivity of x to v is piecewise but continuous\n")
+cat("\nRoot event -- sensitivity of x to v is piecewise but continuous\n")
 cat("through each event (saltation-matrix correction applied):\n")
 print(summary(res_root$sens1[, "x", "v"]))
 

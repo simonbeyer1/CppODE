@@ -74,11 +74,11 @@ labelled as theta slots instead of model-parameter names. Requires
 
 \item{method}{Character string selecting the integration method. One of:
 \itemize{
-\item \code{"bdf"} \emph{(default)} — BDF/NDF, max order 5, stiff (see \code{useNDF})
-\item \code{"adams"} — Adams-Moulton PECE, max order 12, \strong{non-stiff only}
-\item \code{"msoda"} — BDF/NDF + Adams with LSODA-style auto-switching, max order 12
-\item \code{"rb4"} (or \code{"rosenbrock4"}) — Rosenbrock4, fourth-order L-stable single-step
-\item \code{"tsit5"} — Tsitouras 5(4) explicit RK with FSAL, \strong{non-stiff only}
+\item \code{"bdf"} \emph{(default)} -- BDF/NDF, max order 5, stiff (see \code{useNDF})
+\item \code{"adams"} -- Adams-Moulton PECE, max order 12, \strong{non-stiff only}
+\item \code{"msoda"} -- BDF/NDF + Adams with LSODA-style auto-switching, max order 12
+\item \code{"rb4"} (or \code{"rosenbrock4"}) -- Rosenbrock4, fourth-order L-stable single-step
+\item \code{"tsit5"} -- Tsitouras 5(4) explicit RK with FSAL, \strong{non-stiff only}
 }
 
 Use \code{"bdf"} for problems known to be stiff throughout, \code{"adams"} or \code{"tsit5"}
@@ -136,11 +136,11 @@ equations (ODEs) of the form
 Four integration methods are available, all sharing a common Nordsieck-based
 multistep machinery (the \code{multistepper} template) plus Rosenbrock4:\tabular{lllll}{
    Method \tab Family \tab Max order \tab Stiff? \tab Auto-switching \cr
-   \code{"bdf"} \emph{(default)} \tab BDF/NDF \tab 5 \tab Stiff \tab — \cr
-   \code{"adams"} \tab Adams-Moulton (PECE) \tab 12 \tab Non-stiff \tab — \cr
+   \code{"bdf"} \emph{(default)} \tab BDF/NDF \tab 5 \tab Stiff \tab -- \cr
+   \code{"adams"} \tab Adams-Moulton (PECE) \tab 12 \tab Non-stiff \tab -- \cr
    \code{"msoda"} \tab BDF/NDF + Adams with LSODA-style switching \tab 12 \tab Both \tab yes \cr
-   \code{"rb4"} \tab Rosenbrock4 (L-stable, single-step) \tab 4 \tab Stiff \tab — \cr
-   \code{"tsit5"} \tab Tsitouras 5(4) (explicit RK, FSAL) \tab 5 \tab Non-stiff \tab — \cr
+   \code{"rb4"} \tab Rosenbrock4 (L-stable, single-step) \tab 4 \tab Stiff \tab -- \cr
+   \code{"tsit5"} \tab Tsitouras 5(4) (explicit RK, FSAL) \tab 5 \tab Non-stiff \tab -- \cr
 }
 
 
@@ -153,7 +153,7 @@ Reichelt, SIAM J. Sci. Comput. 18(1), 1997, Table 1) which is typically
 (Predict-Evaluate-Correct-Evaluate) iteration. It is explicit in the sense
 that no Newton iteration / linear solve is required, which makes it
 significantly cheaper per step on \strong{non-stiff} problems. On stiff problems
-it will fail or stall — use BDF or MSODA instead.
+it will fail or stall -- use BDF or MSODA instead.
 
 \strong{MSODA} (Multistep Solver for ODEs with Automatic method switching) starts
 in Adams mode and dynamically switches to BDF/NDF when stiffness is detected,
@@ -161,7 +161,7 @@ and back to Adams when the problem becomes non-stiff again. The detection
 logic is a faithful port of the LSODA switching heuristic (Petzold 1983),
 driven by the dominant eigenvalue estimate \code{pdest} from the PECE iteration
 rate and the matrix 1-norm \verb{pnorm = ||J||_1} from the cached Jacobian. Use
-MSODA when the problem has phases of differing stiffness — for example, slow
+MSODA when the problem has phases of differing stiffness -- for example, slow
 drift followed by a fast transient. The \code{useNDF} flag controls whether the
 stiff side uses NDF or classical BDF coefficients.
 
@@ -174,7 +174,7 @@ the Jacobian is cheap relative to the right-hand side.
 an embedded 4th-order error estimator and FSAL (First Same As Last) property.
 It requires only function evaluations (no Jacobian or linear algebra) and is
 the method of choice for \strong{non-stiff} problems where function evaluations are
-expensive. On stiff problems it will fail or stall — use BDF or Rb4 instead.
+expensive. On stiff problems it will fail or stall -- use BDF or Rb4 instead.
 
 All steppers support dense output, error control, sparse and dense LU factorization,
 \strong{time-based} and \strong{root-triggered events}, and, optionally,

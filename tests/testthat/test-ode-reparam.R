@@ -3,11 +3,11 @@
 skip_on_cran()
 skip_on_ci()
 
-# ── Simple scalar log-transform ───────────────────────────────────────────────
+# -- Simple scalar log-transform -----------------------------------------------
 
 test_that("log-transform reparam matches analytical dx/dtheta", {
   # Model: dx/dt = -k*x, x(0) = x0. p = (x0, k).
-  # Reparametrize: theta = (x0, log(k)) → Phi(theta) = (theta_x0, exp(theta_lk))
+  # Reparametrize: theta = (x0, log(k)) -> Phi(theta) = (theta_x0, exp(theta_lk))
   # Phi_prime = [[1, 0], [0, k]]
   mod <- CppODE(c(x = "-k*x"), modelname = "rep_log", deriv = TRUE, ntheta = 2L)
 
@@ -29,7 +29,7 @@ test_that("log-transform reparam matches analytical dx/dtheta", {
   expect_equal(as.numeric(res$sens1[, 1, 2]), expected_lk, tolerance = 1e-8)
 })
 
-# ── Parity: direct integration vs post-hoc S * Phi' ──────────────────────────
+# -- Parity: direct integration vs post-hoc S * Phi' --------------------------
 
 test_that("reparam sens equals post-hoc S * Phi' (two-state model)", {
   rhs <- c(A = "-k1*A + k2*B",
@@ -71,7 +71,7 @@ test_that("reparam sens equals post-hoc S * Phi' (two-state model)", {
                tolerance = 1e-8)
 })
 
-# ── Rank-reduced reparam (n_theta < n_p) ────────────────────────────────────
+# -- Rank-reduced reparam (n_theta < n_p) ------------------------------------
 
 test_that("rank-reduced reparam integrates over smaller theta space", {
   # Model: dx/dt = -k*x
@@ -100,7 +100,7 @@ test_that("rank-reduced reparam integrates over smaller theta space", {
   expect_equal(as.numeric(res$sens1[, 1, 1]), expected, tolerance = 1e-8)
 })
 
-# ── Guard rails ──────────────────────────────────────────────────────────────
+# -- Guard rails --------------------------------------------------------------
 
 test_that("reparam requires sens1ini at solveODE() time", {
   mod <- CppODE(c(x = "-k*x"), modelname = "rep_missing_sens", deriv = TRUE, ntheta = 2L)
@@ -122,7 +122,7 @@ test_that("ntheta with deriv=FALSE is rejected at compile time", {
                "deriv = TRUE")
 })
 
-# ── Phase 2: Second-order sensitivities under reparam ───────────────────────
+# -- Phase 2: Second-order sensitivities under reparam -----------------------
 
 test_that("deriv2 + log-reparam matches analytical d^2x/dtheta^2", {
   # p = Phi(theta) = (theta_x0, exp(theta_lk))
@@ -157,7 +157,7 @@ test_that("deriv2 + log-reparam matches analytical d^2x/dtheta^2", {
                tolerance = 1e-8)
 })
 
-# ── CVODE backend parity ────────────────────────────────────────────────────
+# -- CVODE backend parity ----------------------------------------------------
 
 test_that("CVODE reparam matches Native reparam (no events)", {
   skip_if_not(isTRUE(cvodeConfig$available), "CVODE backend not available")
@@ -295,5 +295,177 @@ test_that("sens2 chain-rule parity: direct vs post-hoc composition", {
 
   expect_equal(as.numeric(res_th$sens2), as.numeric(H_expected),
                tolerance = 1e-7)
+})
+
+# -- ntheta as compile-time upper bound: M <= ntheta per call ----------------
+
+test_that("native: M < ntheta integrates the supplied theta subset", {
+  # Compile with ntheta = 3 but call with only M = 2 active thetas.
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_M_lt_ntheta",
+                deriv = TRUE, ntheta = 3L)
+  pars <- c(x = 1.0, k = 0.5); k <- 0.5; x0 <- 1.0
+  tvec <- seq(0, 2, by = 0.5)
+
+  # M = 2: theta = (theta_x0, theta_lk).
+  Phi_M2 <- matrix(c(1, 0, 0, k), nrow = 2, ncol = 2, byrow = TRUE,
+                   dimnames = list(c("x", "k"), c("theta_x0", "theta_lk")))
+  res_M2 <- solveODE(mod, tvec, pars, sens1ini = Phi_M2,
+                     abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(res_M2$sens1), c(length(tvec), 1L, 2L))
+  expect_equal(dimnames(res_M2$sens1)$sens, c("theta_x0", "theta_lk"))
+
+  # Analytical dx/dtheta for the log-reparam (same as existing test 1).
+  expect_equal(as.numeric(res_M2$sens1[, 1, 1]), exp(-k * tvec), tolerance = 1e-8)
+  expect_equal(as.numeric(res_M2$sens1[, 1, 2]),
+               -k * tvec * x0 * exp(-k * tvec), tolerance = 1e-8)
+
+  # Cross-check: calling the same model with a zero-padded M=3 sens1ini
+  # yields identical first 2 columns and zero third column.
+  Phi_M3 <- cbind(Phi_M2, unused = c(0, 0))
+  res_M3 <- solveODE(mod, tvec, pars, sens1ini = Phi_M3,
+                     abstol = 1e-10, reltol = 1e-10)
+  expect_equal(dim(res_M3$sens1), c(length(tvec), 1L, 3L))
+  expect_equal(as.numeric(res_M3$sens1[, , 1:2, drop = FALSE]),
+               as.numeric(res_M2$sens1), tolerance = 1e-8)
+  expect_equal(as.numeric(res_M3$sens1[, , 3]),
+               rep(0, length(tvec)), tolerance = 1e-12)
+})
+
+test_that("native deriv2: M < ntheta integrates partial Phi''", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_M_lt_ntheta_d2",
+                deriv = TRUE, deriv2 = TRUE, ntheta = 3L)
+  pars <- c(x = 1.0, k = 0.5); k <- 0.5; x0 <- 1.0
+  tvec <- c(0, 0.5, 1, 1.5, 2)
+
+  # M = 2, full [n_phi_rows, M, M] cube.
+  Phi_M2 <- matrix(c(1, 0, 0, k), nrow = 2, ncol = 2, byrow = TRUE,
+                   dimnames = list(c("x", "k"), c("theta_x0", "theta_lk")))
+  Phi_pp_M2 <- array(0, dim = c(2, 2, 2))
+  Phi_pp_M2[2, 2, 2] <- k  # d^2 k / d theta_lk^2 = k
+
+  res <- solveODE(mod, tvec, pars, sens1ini = Phi_M2, sens2ini = Phi_pp_M2,
+                  abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(res$sens1), c(length(tvec), 1L, 2L))
+  expect_equal(dim(res$sens2), c(length(tvec), 1L, 2L, 2L))
+
+  # Same analytic Hessian as the existing ntheta=2 test.
+  expect_equal(as.numeric(res$sens2[, 1, 1, 1]),
+               rep(0, length(tvec)), tolerance = 1e-8)
+  expect_equal(as.numeric(res$sens2[, 1, 1, 2]),
+               -k * tvec * exp(-k * tvec), tolerance = 1e-8)
+  expect_equal(as.numeric(res$sens2[, 1, 2, 2]),
+               x0 * exp(-k * tvec) * k * tvec * (k * tvec - 1),
+               tolerance = 1e-8)
+})
+
+test_that("CVODE: M < ntheta matches native reparam", {
+  skip_if_not(isTRUE(cvodeConfig$available), "CVODE backend not available")
+
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+  pars <- c(A = 1.0, B = 0.0, k1 = 0.3, k2 = 0.1)
+  tvec <- seq(0, 5, length.out = 11)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  k1 <- pars["k1"]; k2 <- pars["k2"]
+  # Rows: (A, B, k1, k2). Columns (M=2): (log_k1, log_k2).
+  Phi_M2 <- matrix(c(0, 0,
+                     0, 0,
+                     k1, 0,
+                     0, k2),
+                   nrow = 4, ncol = 2, byrow = TRUE,
+                   dimnames = list(c("A", "B", "k1", "k2"),
+                                   c("log_k1", "log_k2")))
+
+  mod_nat <- CppODE(rhs, modelname = "rep_M_lt_nat", deriv = TRUE, ntheta = 4L)
+  mod_cv  <- CVODE(rhs,  modelname = "rep_M_lt_cv",  deriv = TRUE, ntheta = 4L)
+
+  res_n <- solveODE(mod_nat, tvec, pars, sens1ini = Phi_M2,
+                    abstol = tight$abstol, reltol = tight$reltol)
+  res_c <- solveODE(mod_cv,  tvec, pars, sens1ini = Phi_M2,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  expect_equal(dim(res_n$sens1), c(length(tvec), 2L, 2L))
+  expect_equal(dim(res_c$sens1), c(length(tvec), 2L, 2L))
+  expect_equal(as.numeric(res_n$sens1), as.numeric(res_c$sens1),
+               tolerance = 1e-6)
+})
+
+test_that("same model supports per-call varying M (condition heterogeneity)", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_varying_M",
+                deriv = TRUE, ntheta = 3L)
+  pars <- c(x = 1.0, k = 0.5); k <- 0.5; x0 <- 1.0
+  tvec <- seq(0, 2, by = 0.5)
+
+  # Call 1: M=1, just theta_lk.
+  Phi1 <- matrix(c(0, k), nrow = 2, ncol = 1,
+                 dimnames = list(c("x", "k"), "theta_lk"))
+  r1 <- solveODE(mod, tvec, pars, sens1ini = Phi1,
+                 abstol = 1e-10, reltol = 1e-10)
+
+  # Call 2: M=2, theta_x0 + theta_lk.
+  Phi2 <- matrix(c(1, 0, 0, k), nrow = 2, ncol = 2, byrow = TRUE,
+                 dimnames = list(c("x", "k"), c("theta_x0", "theta_lk")))
+  r2 <- solveODE(mod, tvec, pars, sens1ini = Phi2,
+                 abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(r1$sens1), c(length(tvec), 1L, 1L))
+  expect_equal(dim(r2$sens1), c(length(tvec), 1L, 2L))
+  expect_equal(dimnames(r1$sens1)$sens, "theta_lk")
+  expect_equal(dimnames(r2$sens1)$sens, c("theta_x0", "theta_lk"))
+
+  # theta_lk column agrees across calls.
+  expect_equal(as.numeric(r1$sens1[, 1, 1]),
+               as.numeric(r2$sens1[, 1, 2]),
+               tolerance = 1e-10)
+})
+
+test_that("M = 0 fast-path: empty sens slot, state integration intact", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_M_zero",
+                deriv = TRUE, ntheta = 2L)
+  pars <- c(x = 1.0, k = 0.5)
+  tvec <- seq(0, 2, by = 0.5)
+
+  Phi0 <- matrix(0, nrow = 2, ncol = 0,
+                 dimnames = list(c("x", "k"), character(0)))
+  r <- solveODE(mod, tvec, pars, sens1ini = Phi0,
+                abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(r$sens1), c(length(tvec), 1L, 0L))
+  expect_equal(as.numeric(r$variable[, 1]),
+               exp(-0.5 * tvec), tolerance = 1e-8)
+})
+
+test_that("CVODE: M = 0 fast-path skips sensitivity integration", {
+  skip_if_not(isTRUE(cvodeConfig$available), "CVODE backend not available")
+
+  mod <- CVODE(c(x = "-k*x"), modelname = "rep_M_zero_cv",
+               deriv = TRUE, ntheta = 2L)
+  pars <- c(x = 1.0, k = 0.5)
+  tvec <- seq(0, 2, by = 0.5)
+
+  Phi0 <- matrix(0, nrow = 2, ncol = 0,
+                 dimnames = list(c("x", "k"), character(0)))
+  r <- solveODE(mod, tvec, pars, sens1ini = Phi0,
+                abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(r$sens1), c(length(tvec), 1L, 0L))
+  expect_equal(as.numeric(r$variable[, 1]),
+               exp(-0.5 * tvec), tolerance = 1e-8)
+})
+
+test_that("M > ntheta is rejected with a clear error", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_M_over",
+                deriv = TRUE, ntheta = 2L)
+  pars <- c(x = 1.0, k = 0.5)
+  Phi_over <- matrix(0, nrow = 2, ncol = 3,
+                     dimnames = list(c("x", "k"), c("a", "b", "c")))
+  expect_error(
+    solveODE(mod, c(0, 1), pars, sens1ini = Phi_over,
+             abstol = 1e-10, reltol = 1e-10),
+    "exceeds model ntheta upper bound"
+  )
 })
 

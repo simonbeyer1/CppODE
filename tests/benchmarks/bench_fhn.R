@@ -28,7 +28,7 @@ library(tidyr)
 library(patchwork)
 
 # ============================================================================
-# Benchmark: FitzHugh-Nagumo Chain — Dense vs Sparse × BDF vs RB4
+# Benchmark: FitzHugh-Nagumo Chain -- Dense vs Sparse x BDF vs RB4
 #
 #   v_i' = v_i - v_i^3/3 - w_i + I_ext_i
 #          + D_i * sum_{j in neighbors(i)} (v_j - v_i)
@@ -431,7 +431,7 @@ df_wide <- df_ok %>%
 
 
 # -------------------------------------------------------------------------
-#  Plot 1: Heatmap — dense/sparse ratio by n_states × sparsity
+#  Plot 1: Heatmap -- dense/sparse ratio by n_states x sparsity
 # -------------------------------------------------------------------------
 
 heat_data <- df_wide %>%

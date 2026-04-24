@@ -11,11 +11,11 @@
 #'
 #' | Method | Family | Max order | Stiff? | Auto-switching |
 #' |:--|:--|:--|:--|:--|
-#' | `"bdf"` *(default)* | BDF/NDF | 5  | Stiff | — |
-#' | `"adams"`  | Adams-Moulton (PECE)                | 12 | Non-stiff | — |
+#' | `"bdf"` *(default)* | BDF/NDF | 5  | Stiff | -- |
+#' | `"adams"`  | Adams-Moulton (PECE)                | 12 | Non-stiff | -- |
 #' | `"msoda"`  | BDF/NDF + Adams with LSODA-style switching | 12 | Both | yes |
-#' | `"rb4"`    | Rosenbrock4 (L-stable, single-step) | 4  | Stiff | — |
-#' | `"tsit5"`  | Tsitouras 5(4) (explicit RK, FSAL)  | 5  | Non-stiff | — |
+#' | `"rb4"`    | Rosenbrock4 (L-stable, single-step) | 4  | Stiff | -- |
+#' | `"tsit5"`  | Tsitouras 5(4) (explicit RK, FSAL)  | 5  | Non-stiff | -- |
 #'
 #' **BDF** is a variable-order (1..5) Nordsieck multistep method. By default
 #' (`useNDF = TRUE`) it uses Shampine's NDF kappa modification (Shampine &
@@ -26,7 +26,7 @@
 #' (Predict-Evaluate-Correct-Evaluate) iteration. It is explicit in the sense
 #' that no Newton iteration / linear solve is required, which makes it
 #' significantly cheaper per step on **non-stiff** problems. On stiff problems
-#' it will fail or stall — use BDF or MSODA instead.
+#' it will fail or stall -- use BDF or MSODA instead.
 #'
 #' **MSODA** (Multistep Solver for ODEs with Automatic method switching) starts
 #' in Adams mode and dynamically switches to BDF/NDF when stiffness is detected,
@@ -34,7 +34,7 @@
 #' logic is a faithful port of the LSODA switching heuristic (Petzold 1983),
 #' driven by the dominant eigenvalue estimate `pdest` from the PECE iteration
 #' rate and the matrix 1-norm `pnorm = ||J||_1` from the cached Jacobian. Use
-#' MSODA when the problem has phases of differing stiffness — for example, slow
+#' MSODA when the problem has phases of differing stiffness -- for example, slow
 #' drift followed by a fast transient. The `useNDF` flag controls whether the
 #' stiff side uses NDF or classical BDF coefficients.
 #'
@@ -47,7 +47,7 @@
 #' an embedded 4th-order error estimator and FSAL (First Same As Last) property.
 #' It requires only function evaluations (no Jacobian or linear algebra) and is
 #' the method of choice for **non-stiff** problems where function evaluations are
-#' expensive. On stiff problems it will fail or stall — use BDF or Rb4 instead.
+#' expensive. On stiff problems it will fail or stall -- use BDF or Rb4 instead.
 #'
 #' All steppers support dense output, error control, sparse and dense LU factorization,
 #' **time-based** and **root-triggered events**, and, optionally,
@@ -162,11 +162,11 @@
 #'   `NULL` (default) auto-selects based on Jacobian sparsity.
 #'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
 #' @param method Character string selecting the integration method. One of:
-#'   * `"bdf"` *(default)* — BDF/NDF, max order 5, stiff (see `useNDF`)
-#'   * `"adams"` — Adams-Moulton PECE, max order 12, **non-stiff only**
-#'   * `"msoda"` — BDF/NDF + Adams with LSODA-style auto-switching, max order 12
-#'   * `"rb4"` (or `"rosenbrock4"`) — Rosenbrock4, fourth-order L-stable single-step
-#'   * `"tsit5"` — Tsitouras 5(4) explicit RK with FSAL, **non-stiff only**
+#'   * `"bdf"` *(default)* -- BDF/NDF, max order 5, stiff (see `useNDF`)
+#'   * `"adams"` -- Adams-Moulton PECE, max order 12, **non-stiff only**
+#'   * `"msoda"` -- BDF/NDF + Adams with LSODA-style auto-switching, max order 12
+#'   * `"rb4"` (or `"rosenbrock4"`) -- Rosenbrock4, fourth-order L-stable single-step
+#'   * `"tsit5"` -- Tsitouras 5(4) explicit RK with FSAL, **non-stiff only**
 #'
 #'   Use `"bdf"` for problems known to be stiff throughout, `"adams"` or `"tsit5"`
 #'   for problems known to be non-stiff, and `"msoda"` when stiffness varies in
@@ -536,8 +536,17 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       sprintf("  const int n_params_all = %d;", n_params),
       sprintf("  const int n_phi_rows   = %d;  // n_states + n_params (full Phi' row count)", n_variables + n_params),
       sprintf("  const int n_sens_total = %d;  // compile-time total (excl. compile-time fixed)", n_total_sens),
-      sprintf("  const int n_theta      = %d;  // compile-time theta dim (== n_sens_total unless reparam)", ntheta_resolved),
+      sprintf("  const int n_theta_max  = %d;  // compile-time upper bound on theta dim under reparam", ntheta_resolved),
       sprintf("  const bool has_reparam = %s;", if (has_reparam) "true" else "false"),
+      "  if (has_reparam && !has_sens1ini)",
+      "    Rf_error(\"sens1ini is required when the model was compiled with an explicit ntheta\");",
+      "  // n_theta: active theta dim per call. Under reparam we read it at runtime from",
+      "  // ncol(sens1ini), which may be <= n_theta_max. In non-reparam mode it equals",
+      "  // n_sens_total (classical dx/dp sens).",
+      "  const int n_theta = has_reparam ? static_cast<int>(Rf_ncols(sens1iniSEXP)) : n_sens_total;",
+      "  if (has_reparam && n_theta > n_theta_max)",
+      "    Rf_error(\"sens1ini has %d columns but the model's compile-time ntheta upper bound is %d\",",
+      "             n_theta, n_theta_max);",
       "  // n_sens: active sens dimension. In non-reparam mode this is n_sens_total minus",
       "  // runtime-fixed parameters. Under reparametrization n_sens == n_theta (runtime",
       "  // 'fixed' is not supported there).",
@@ -601,9 +610,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "  // [n_phi_rows, n_sens] and [n_phi_rows, n_sens, n_sens] respectively.",
       "  if (has_sens1ini && Rf_length(sens1iniSEXP) != n_phi_rows * n_sens)",
       "    Rf_error(\"sens1ini has wrong length: expected n_phi_rows * n_sens = %d * %d = %d, got %d\",",
-      "             n_phi_rows, n_sens, n_phi_rows * n_sens, Rf_length(sens1iniSEXP));",
-      "  if (has_reparam && !has_sens1ini)",
-      "    Rf_error(\"sens1ini is required when the model is compiled with ntheta != n_total_sens\");"
+      "             n_phi_rows, n_sens, n_phi_rows * n_sens, Rf_length(sens1iniSEXP));"
     )
 
     if (deriv2) {
@@ -649,9 +656,11 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      if (ai >= 0) {",
       "        // First-order sensitivities (inner layer): seed from Phi' or identity",
       "        if (has_sens1ini) {",
-      "          x[i].x().diff(0);  // allocate n_sens components",
-      "          for (int av = 0; av < n_sens; ++av)",
-      "            x[i].x().d(av) = sens1ini[IDX1(i, av)];",
+      "          if (n_sens > 0) {  // M=0 under reparam: leave F default (no propagation)",
+      "            x[i].x().diff(0);  // allocate n_sens components",
+      "            for (int av = 0; av < n_sens; ++av)",
+      "              x[i].x().d(av) = sens1ini[IDX1(i, av)];",
+      "          }",
       "        } else {",
       "          x[i].x().diff(ai);  // identity: d(ai) = 1",
       "        }",
@@ -660,12 +669,14 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "        // m_depend=true). We therefore call diff(0) ONCE per layer to arm",
       "        // m_depend, then use .d() (non-destructive accessor) to write values.",
       "        if (has_sens2ini) {",
-      "          x[i].diff(0);  // arm outer m_depend",
-      "          for (int av1 = 0; av1 < n_sens; ++av1) {",
-      "            x[i].d(av1).diff(0);  // arm inner m_depend of m_diff[av1]",
-      "            x[i].d(av1).x() = sens1ini[IDX1(i, av1)];  // first-order value",
-      "            for (int av2 = 0; av2 < n_sens; ++av2)",
-      "              x[i].d(av1).d(av2) = sens2ini[IDX2(i, av1, av2)];",
+      "          if (n_sens > 0) {",
+      "            x[i].diff(0);  // arm outer m_depend",
+      "            for (int av1 = 0; av1 < n_sens; ++av1) {",
+      "              x[i].d(av1).diff(0);  // arm inner m_depend of m_diff[av1]",
+      "              x[i].d(av1).x() = sens1ini[IDX1(i, av1)];  // first-order value",
+      "              for (int av2 = 0; av2 < n_sens; ++av2)",
+      "                x[i].d(av1).d(av2) = sens2ini[IDX2(i, av1, av2)];",
+      "            }",
       "          }",
       "        } else {",
       "          x[i].diff(ai);  // identity/allocate outer (inner m_depend stays false)",
@@ -682,10 +693,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index (-1 if any-fixed)",
       "      if (ai >= 0) {",
       "        if (has_sens1ini) {",
-      "          // Seed from Phi'(theta): row i of sens1ini",
-      "          x[i].diff(0);  // allocate n_sens components",
-      "          for (int av = 0; av < n_sens; ++av)",
-      "            x[i].d(av) = sens1ini[IDX1(i, av)];",
+      "          if (n_sens > 0) {  // M=0 under reparam: leave F default",
+      "            // Seed from Phi'(theta): row i of sens1ini",
+      "            x[i].diff(0);  // allocate n_sens components",
+      "            for (int av = 0; av < n_sens; ++av)",
+      "              x[i].d(av) = sens1ini[IDX1(i, av)];",
+      "          }",
       "        } else {",
       "          x[i].diff(ai);  // identity: d(ai) = 1",
       "        }",
@@ -729,20 +742,24 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      if (ai >= 0) {",
       "        // First-order (inner layer): seed from Phi' or identity fallback",
       "        if (has_sens1ini) {",
-      "          full_params[param_index].x().diff(0);  // allocate n_sens components",
-      "          for (int av = 0; av < n_sens; ++av)",
-      "            full_params[param_index].x().d(av) = sens1ini[IDX1(global_idx, av)];",
+      "          if (n_sens > 0) {  // M=0 under reparam: leave F default",
+      "            full_params[param_index].x().diff(0);  // allocate n_sens components",
+      "            for (int av = 0; av < n_sens; ++av)",
+      "              full_params[param_index].x().d(av) = sens1ini[IDX1(global_idx, av)];",
+      "          }",
       "        } else {",
       "          full_params[param_index].x().diff(ai);  // identity: dp_i/dp_j = delta_ij",
       "        }",
       "        // Second-order (outer layer): see note in state-seed block.",
       "        if (has_sens2ini) {",
-      "          full_params[param_index].diff(0);  // arm outer m_depend",
-      "          for (int av1 = 0; av1 < n_sens; ++av1) {",
-      "            full_params[param_index].d(av1).diff(0);  // arm inner m_depend",
-      "            full_params[param_index].d(av1).x() = sens1ini[IDX1(global_idx, av1)];",
-      "            for (int av2 = 0; av2 < n_sens; ++av2)",
-      "              full_params[param_index].d(av1).d(av2) = sens2ini[IDX2(global_idx, av1, av2)];",
+      "          if (n_sens > 0) {",
+      "            full_params[param_index].diff(0);  // arm outer m_depend",
+      "            for (int av1 = 0; av1 < n_sens; ++av1) {",
+      "              full_params[param_index].d(av1).diff(0);  // arm inner m_depend",
+      "              full_params[param_index].d(av1).x() = sens1ini[IDX1(global_idx, av1)];",
+      "              for (int av2 = 0; av2 < n_sens; ++av2)",
+      "                full_params[param_index].d(av1).d(av2) = sens2ini[IDX2(global_idx, av1, av2)];",
+      "            }",
       "          }",
       "        } else {",
       "          full_params[param_index].diff(ai);  // identity/allocate outer",
@@ -760,10 +777,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
       "      if (ai >= 0) {",
       "        if (has_sens1ini) {",
-      "          // Seed from Phi'(theta): row n_states + i of sens1ini",
-      "          full_params[param_index].diff(0);  // allocate n_sens components",
-      "          for (int av = 0; av < n_sens; ++av)",
-      "            full_params[param_index].d(av) = sens1ini[IDX1(global_idx, av)];",
+      "          if (n_sens > 0) {  // M=0 under reparam: leave F default",
+      "            // Seed from Phi'(theta): row n_states + i of sens1ini",
+      "            full_params[param_index].diff(0);  // allocate n_sens components",
+      "            for (int av = 0; av < n_sens; ++av)",
+      "              full_params[param_index].d(av) = sens1ini[IDX1(global_idx, av)];",
+      "          }",
       "        } else {",
       "          // Identity fallback: dp_i/dp_j = delta_{ij}",
       "          full_params[param_index].diff(ai);",
@@ -839,7 +858,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   resizer_tag   <- "cppode::initially_resizer"
 
   # Generate the C++ stepper type for value type V and LU pattern J.
-  # Only meaningful for is_multistep(method) — callers on the rb4 path
+  # Only meaningful for is_multistep(method) -- callers on the rb4 path
   # never invoke this helper.
   make_stepper_type <- function(V, J) {
     method_enum <- switch(method,
@@ -855,7 +874,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # The multistepper_* stepper type strings are only meaningful for the
   # multistep methods.  For Rosenbrock4 the make_stepper_type() helper
   # would error out on the unknown method name, so we instantiate them
-  # lazily — only for is_multistep(method).
+  # lazily -- only for is_multistep(method).
   ms_double <- ms_AD <- ms_AD2 <- NULL
   if (use_sparse) {
     rb4_double <- "rosenbrock4<double, sparse_lu_tag>"
@@ -876,14 +895,14 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       ms_AD2    <- make_stepper_type("AD2",    "cppode::dense_lu_tag")
     }
   }
-  # Tsit5 stepper types (no Jacobian pattern — explicit method)
+  # Tsit5 stepper types (no Jacobian pattern -- explicit method)
   tsit5_double <- "cppode::tsit5<double>"
   tsit5_AD     <- "cppode::tsit5<AD>"
   tsit5_AD2    <- "cppode::tsit5<AD2>"
 
   if (is_multistep(method)) {
     # ---- Multistep stepper (bdf / adams / msoda) ----
-    # All multistep methods reuse cppode::multistepper_controller — the
+    # All multistep methods reuse cppode::multistepper_controller -- the
     # controller is templated on the stepper type and works uniformly
     # with any multistepper instantiation.  The pid_mode integer is
     # parsed from R as 0 (none), 1 (intermediate), or 2 (full); the C++
@@ -979,15 +998,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   #
   # Multistep methods (bdf/adams/msoda) use cppode_hin, a faithful port of
   # CVODES's cvHin algorithm.  Single-step methods (rb4, tsit5) use the
-  # unified estimate_initial_dt with a method-specific ÿ closure: analytic
-  # (J·f + dfdt) for rb4, FD for tsit5.  order=1 is the right regime for
-  # all of these — BDF/NDF/Adams/msoda start at q=1 by design, and for
+  # unified estimate_initial_dt with a method-specific ydd closure: analytic
+  # (J*f + dfdt) for rb4, FD for tsit5.  order=1 is the right regime for
+  # all of these -- BDF/NDF/Adams/msoda start at q=1 by design, and for
   # single-step methods the HNW formula with higher p would overestimate h
   # on stiff problems.
   method_order <- 1L
 
   if (is_multistep(method)) {
-    # cppode_hin — needs only `sys`; no compute_ydd closure, no order param.
+    # cppode_hin -- needs only `sys`; no compute_ydd closure, no order param.
     estimate_dt_block <- c(
       sprintf("  // --- Determine initial dt (%s, CVODES cvHin port) ---", method),
       sprintf("  %s dt;", numType),
@@ -1008,7 +1027,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       )
     } else if (use_sparse) {
       compute_ydd_lines <- c(
-        "  // --- compute_ydd (analytic: dfdt + sparse J·f) ---",
+        "  // --- compute_ydd (analytic: dfdt + sparse J*f) ---",
         "  auto compute_ydd = [&](const auto& x_, auto t_, const auto& f_,",
         "                          double /*h_trial*/, auto& ydd_) {",
         sprintf("    cppode::csc_matrix<%s> J_init;", numType),
@@ -1020,7 +1039,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       )
     } else {
       compute_ydd_lines <- c(
-        "  // --- compute_ydd (analytic: dfdt + dense J·f) ---",
+        "  // --- compute_ydd (analytic: dfdt + dense J*f) ---",
         "  auto compute_ydd = [&](const auto& x_, auto t_, const auto& f_,",
         "                          double /*h_trial*/, auto& ydd_) {",
         sprintf("    cppode::dense_matrix<%s> J_init(x_.size(), x_.size());", numType),
@@ -1093,7 +1112,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                "    solver_message = e.what();",
                "  } catch (const std::exception& e) {",
                "    // Anything else that derives from std::exception (bad_alloc,",
-               "    // overflow_error from a wild RHS, ...) — classify as unclassified",
+               "    // overflow_error from a wild RHS, ...) -- classify as unclassified",
                "    // but still return partial results rather than aborting R.",
                "    checker.set_return_code(cppode::RC_UNRECOGNIZED_ERR);",
                "    solver_message = e.what();",
@@ -1449,7 +1468,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "sparse")        <- use_sparse
   attr(modelname, "method")        <- method
   attr(modelname, "useNDF")        <- useNDF
-  # Dimension names — under reparametrization the sens columns are theta slots
+  # Dimension names -- under reparametrization the sens columns are theta slots
   # with auto-generated names (user can override via colnames(sens1ini)).
   if (deriv) {
     sens_col_names <- if (has_reparam) sprintf("theta%d", seq_len(ntheta_resolved))

@@ -98,7 +98,7 @@ with default \eqn{\alpha = 0.4}. The filter smooths the
 step-size sequence without interfering with order changes
 and resets its history on order changes, failures, and
 events.}
-\item{\code{"full"}}{Söderlind's H211b second-order digital filter
+\item{\code{"full"}}{Soederlind's H211b second-order digital filter
 replaces the I-controller at the current order. The
 order-decrease and order-increase candidates are lifted onto
 the same safety-only scale as the H211b proposal so that
@@ -108,13 +108,13 @@ a default safety factor of 0.8.}
 For Rosenbrock4 the value is silently forced to \code{"full"} because
 Rosenbrock4 always uses its built-in Gustafsson PI controller and
 has no toggle for it. Note that "PID" is a slight misnomer for
-all of these — H211b is a second-order digital filter and the
+all of these -- H211b is a second-order digital filter and the
 Gustafsson form is a PI controller, neither is a classical
-PID — but the name follows common usage in the adaptive-stepping
-literature. References: Söderlind (2003) "Digital Filters in
-Adaptive Time-Stepping", ACM TOMS 29(1); Söderlind & Wang (2006)
+PID -- but the name follows common usage in the adaptive-stepping
+literature. References: Soederlind (2003) "Digital Filters in
+Adaptive Time-Stepping", ACM TOMS 29(1); Soederlind & Wang (2006)
 "Adaptive Time-Stepping and Computational Stability"; Gustafsson,
-Lundh & Söderlind (1988) "A PI stepsize control for the numerical
+Lundh & Soederlind (1988) "A PI stepsize control for the numerical
 solution of ordinary differential equations", BIT 28.}
 
 \item{onFailure}{How to react when the solver returns \code{return_code != 0}
@@ -150,7 +150,7 @@ specified time span.
 \subsection{Sensitivity initial values, \code{fixed}, and reparametrization}{
 
 \code{sens1ini} and \code{sens2ini} describe how the \emph{full} initial-condition and
-parameter vector depends on the sensitivity-column basis — i.e., they are
+parameter vector depends on the sensitivity-column basis -- i.e., they are
 the Jacobian \eqn{\Phi'(\theta)} and Hessian \eqn{\Phi''(\theta)} of the
 reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted:
 \itemize{

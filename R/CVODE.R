@@ -18,7 +18,7 @@
 #' **analytic** sensitivity RHS:
 #' \deqn{\dot S_k = J(x,p)\,S_k + \partial f / \partial p_k}
 #' (with the `df/dp` term present only for sens slots that correspond to
-#' parameters — initial-condition sens slots contribute only through
+#' parameters -- initial-condition sens slots contribute only through
 #' `J * S_k`).  This matches the work CppODE does via forward-mode AD.
 #'
 #' ## Scope
@@ -29,15 +29,15 @@
 #' * Dense or KLU-sparse linear solver (auto-selected or forced via `sparse`).
 #' * `fixed` at both compile and run time, with the same semantics as
 #'   [CppODE()].
-#' * `forcings` — PCHIP-interpolated time-dependent inputs.  Forcings do
+#' * `forcings` -- PCHIP-interpolated time-dependent inputs.  Forcings do
 #'   not contribute to sensitivities (they are data, not parameters).
-#' * `rootfunc` — integration termination via `CVodeRootInit`.
-#' * `events` — time- and root-triggered.  Time events apply via
+#' * `rootfunc` -- integration termination via `CVodeRootInit`.
+#' * `events` -- time- and root-triggered.  Time events apply via
 #'   `CVodeReInit`; root events via `CVodeRootInit` + `CVodeGetRootInfo`
 #'   dispatch on `CV_ROOT_RETURN`.  Sensitivities are corrected through
 #'   the full first-order saltation: time events use the explicit
-#'   `∂t_e/∂p_k` you supply in the event expression, root events use the
-#'   IFT-derived `dt_root/dp_k = −(∂r/∂p_k + Σ ∂r/∂x_i · S_i[k]) / ġ`.
+#'   `dt_e/dp_k` you supply in the event expression, root events use the
+#'   IFT-derived `dt_root/dp_k = -(dr/dp_k + Sigma dr/dx_i * S_i[k]) / gdot`.
 #'
 #' The following features of [CppODE()] are **not** available via the CVODE
 #' backend: second-order sensitivities, `profile`, and the
@@ -53,7 +53,7 @@
 #' marshalled into the `$trace` element of the result list returned to R
 #' and [solveODE()] exposes it as a `data.frame` (optionally writing a
 #' CSV when `traceFile` is supplied).  **Not supported together with
-#' `events` or `rootfunc`** — in those cases the trace macro is silently
+#' `events` or `rootfunc`** -- in those cases the trace macro is silently
 #' a no-op and the solver falls back to the standard `CV_NORMAL` loop.
 #'
 #' @inheritParams CppODE
@@ -171,7 +171,7 @@ CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = 
       "    macOS (brew)  : brew install suite-sparse",
       call. = FALSE)
   }
-  # Auto-selected sparse without KLU → force dense.
+  # Auto-selected sparse without KLU -> force dense.
   sparse_for_codegen <- sparse
   if (is.null(sparse) && !isTRUE(cvodeConfig$klu_available)) {
     sparse_for_codegen <- FALSE

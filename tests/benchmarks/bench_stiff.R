@@ -1,5 +1,5 @@
 ## =================================================================
-## Benchmark: stiff solvers — CppODE (bdf, rb4, msoda) vs deSolve
+## Benchmark: stiff solvers -- CppODE (bdf, rb4, msoda) vs deSolve
 ## =================================================================
 rm(list = ls(all.names = TRUE))
 
@@ -26,7 +26,7 @@ print_header <- function(title) {
 desolve_diag <- function(res) {
   ## Extract solver diagnostics from deSolve result attributes.
   ## istate layout (lsoda/lsode/vode): [2]=steps, [3]=fevals
-  ## rk methods (ode45, rk4, …) don't populate istate reliably.
+  ## rk methods (ode45, rk4, ...) don't populate istate reliably.
   ist <- attr(res, "istate")
   if (is.null(ist)) return(NULL)
   steps <- ist[2]; fevals <- ist[3]
@@ -232,7 +232,7 @@ if (file.exists(cvode_bin)) {
                  min = NA, max = NA),
             cvode_diag, cvode_mass)
 } else {
-  cat(sprintf("  %-22s  (binary not found at %s — skip)\n", "CVODE BDF (C++)", cvode_bin))
+  cat(sprintf("  %-22s  (binary not found at %s -- skip)\n", "CVODE BDF (C++)", cvode_bin))
 }
 
 cat("\nDone.\n")

@@ -16,7 +16,7 @@ model <- CppODE(rhs)
 
 parms <- c(
   O   = 0.0001,   # ppm
-  O2  = 210000,   # ppm (≈ 21 %)
+  O2  = 210000,   # ppm (~= 21 %)
   O3  = 5,        # ppm
   NO  = 0.02,     # ppm
   NO2 = 0.01,     # ppm
@@ -46,8 +46,8 @@ sens1_matrix <- matrix(res$sens1,
                        ncol = n_states * n_sens)
 
 sens1_colnames <-
-  as.vector(outer(paste0("∂", dims$variable),
-                  paste0("∂", dims$sens),
+  as.vector(outer(paste0("d", dims$variable),
+                  paste0("d", dims$sens),
                   paste, sep = "/"))
 colnames(sens1_matrix) <- sens1_colnames
 

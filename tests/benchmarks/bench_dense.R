@@ -274,7 +274,7 @@ lorenz_N_values <- if (n_cores > 1) {
   c(2, 5, 10, 20, 50, 100, 200)
 }
 
-# Density values — the key parameter for LOW sparsity
+# Density values -- the key parameter for LOW sparsity
 density_values <- c(0.1, 0.3, 0.5, 0.7, 0.9)
 
 # Stiffness
@@ -523,7 +523,7 @@ cat("Results saved to benchmark_dense_results.csv\n")
 
 
 # ==========================================================================
-#  Visualization — pseudolog scale to avoid NaN warnings
+#  Visualization -- pseudolog scale to avoid NaN warnings
 # ==========================================================================
 
 # Pseudolog: handles values near zero and negative without NaN
@@ -569,7 +569,7 @@ df_wide <- df_ok %>%
 
 
 # -------------------------------------------------------------------------
-#  Plot 1: Heatmap — ratio by n_states × density (not sparsity!)
+#  Plot 1: Heatmap -- ratio by n_states x density (not sparsity!)
 # -------------------------------------------------------------------------
 
 heat_data <- df_wide %>%

@@ -12,7 +12,7 @@ library(tidyr)
 library(patchwork)
 
 # ============================================================================
-# Coupled Van der Pol Oscillators — configurable coupling reach
+# Coupled Van der Pol Oscillators -- configurable coupling reach
 #
 #   dx_i/dt = v_i
 #   dv_i/dt = mu_i*(1 - x_i^2)*v_i - omega_i^2*x_i
@@ -145,7 +145,7 @@ t_compile_code_sens <- system.time({
 })
 cat(sprintf("  cOde compile (with sens): %.1f s\n", t_compile_code_sens["elapsed"]))
 
-# CppODE: NO sensitivities — baselines
+# CppODE: NO sensitivities -- baselines
 cat("  Compiling CppODE sparse model (deriv = FALSE)...\n")
 t_compile_nosens_sparse <- system.time({
   funcpp_nosens_sparse <- CppODE(rhs, outdir = getwd(), method = "bdf",
@@ -222,7 +222,7 @@ times <- seq(0, 10, length.out = 300)
 
 
 # ============================================================================
-# Benchmark 0: No sensitivities — pure ODE solve (baseline)
+# Benchmark 0: No sensitivities -- pure ODE solve (baseline)
 # ============================================================================
 
 cat("\n\n========== BASELINE (no sensitivities) ==========\n\n")
@@ -368,7 +368,7 @@ if (length(df_plots) > 0) {
   all_x1 <- bind_rows(df_plots)
   p1 <- ggplot(all_x1, aes(x = time, y = x1, color = solver, linetype = solver)) +
     geom_line(alpha = 0.8, linewidth = 0.6) +
-    labs(title = "x1(t) — state trajectory", y = "x1", x = "time") +
+    labs(title = "x1(t) -- state trajectory", y = "x1", x = "time") +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom", legend.title = element_blank())
 } else {
@@ -424,7 +424,7 @@ if (length(df_sens) > 0) {
   all_sens <- bind_rows(df_sens)
   p2 <- ggplot(all_sens, aes(x = time, y = sens, color = solver, linetype = solver)) +
     geom_line(alpha = 0.8, linewidth = 0.6) +
-    labs(title = expression(dx[1]/dmu[1] ~ "— sensitivity"),
+    labs(title = expression(dx[1]/dmu[1] ~ "-- sensitivity"),
          y = expression(dx[1]/dmu[1]), x = "time") +
     theme_minimal(base_size = 11) +
     theme(legend.position = "bottom", legend.title = element_blank())

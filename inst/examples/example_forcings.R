@@ -9,7 +9,7 @@ library(dplyr)
 library(tidyr)
 library(data.table)
 
-# ── ODE systems ──────────────────────────────────────────────
+# -- ODE systems ----------------------------------------------
 eqns <- c(
   x = "v",
   v = "-omega0*x - 2*gamma * v"
@@ -35,7 +35,7 @@ params <- c(x = 1, v = 0, omega0 = 1, gamma = 0.1)
 res <- solveODE(homodel, times, params)
 res_forc <- solveODE(homodel_forc, times, params, forcings = forcs)
 
-# ── Helper: extract states, sens1, sens2 into long data.table ──
+# -- Helper: extract states, sens1, sens2 into long data.table --
 extract_long <- function(res, system_label) {
 
   # Layouts: variable [n_out, n_vars]; sens1 [n_out, n_vars, n_sens];
@@ -44,12 +44,12 @@ extract_long <- function(res, system_label) {
   pars   <- dimnames(res$sens1)[[3]]  # e.g. c("x", "v", "omega0", "gamma")
   nt     <- length(res$time)
 
-  # — States —
+  # -- States --
   vars_wide <- as.data.table(cbind(time = res$time, res$variable))
   dt_states <- melt(vars_wide, id.vars = "time", variable.name = "name", value.name = "value")
   dt_states[, type := "state"]
 
-  # — First-order sensitivities: sens1[time, state, par] —
+  # -- First-order sensitivities: sens1[time, state, par] --
   sens <- res$sens1
   dt_sens1 <- rbindlist(lapply(seq_len(nt), function(i) {
     mat <- sens[i, , ]  # [state x par]
@@ -61,7 +61,7 @@ extract_long <- function(res, system_label) {
   }))
   dt_sens1[, type := "sens1"]
 
-  # — Second-order sensitivities: sens2[time, state, par, par] —
+  # -- Second-order sensitivities: sens2[time, state, par, par] --
   sens2 <- res$sens2
   np <- length(pars)
   # Lower-triangular indices (including diagonal)
@@ -79,18 +79,18 @@ extract_long <- function(res, system_label) {
   }))
   dt_sens2[, type := "sens2"]
 
-  # — Combine —
+  # -- Combine --
   dt <- rbindlist(list(dt_states, dt_sens1, dt_sens2))
   dt[, system := system_label]
   dt
 }
 
-# ── Build combined long table ────────────────────────────────
+# -- Build combined long table --------------------------------
 out_hom  <- extract_long(res,      "free")
 out_forc <- extract_long(res_forc, "forced")
 out <- rbind(out_hom, out_forc)
 
-# ── Plot ─────────────────────────────────────────────────────
+# -- Plot -----------------------------------------------------
 
 # Separate plots per type for readability
 for (tp in c("state", "sens1", "sens2")) {
@@ -103,6 +103,6 @@ for (tp in c("state", "sens1", "sens2")) {
   print(p)
 }
 
-# ── Timing ───────────────────────────────────────────────────
+# -- Timing ---------------------------------------------------
 system.time({solveODE(homodel, times, params)})
 system.time({solveODE(homodel_forc, times, params, forcings = forcs)})
