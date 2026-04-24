@@ -260,7 +260,11 @@ Both `CppODE()` and `CVODE()` share the same front-end. Swapping the
 constructor gives a second, independently compiled solver with sparse
 KLU linear algebra — and the two agree to integration tolerance.
 
-```{r cvode}
+```{r cvode-available, include=FALSE}
+have_cvode <- isTRUE(CppODE:::cvodeConfig$available)
+```
+
+```{r cvode, eval=have_cvode}
 model_cv <- CVODE(
   rhs,
   events    = events,
@@ -284,6 +288,17 @@ max_sens_diff  <- max(abs(res$sens1[keep_cpp, , ]  - res_cv$sens1[keep_cv, , ]))
 
 cat(sprintf("  L-infinity difference (states)       : %.3e\n", max_state_diff))
 cat(sprintf("  L-infinity difference (sensitivities): %.3e\n", max_sens_diff))
+```
+
+```{r cvode-skip, eval=!have_cvode, echo=FALSE, results='asis'}
+cat(
+  "> **Note:** the CVODE cross-check was skipped because the CVODE ",
+  "backend is disabled in this installation — SUNDIALS (>= 6.0) was ",
+  "not found on the build host. Install `libsundials-dev` ",
+  "(Debian/Ubuntu), `sundials-devel` (Fedora), or `brew install sundials` ",
+  "(macOS) and re-install CppODE to enable it.\n",
+  sep = ""
+)
 ```
 
 ## Summary
