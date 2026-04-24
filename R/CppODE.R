@@ -6,10 +6,50 @@
 #'
 #' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 #'
-#' Two integration methods are available: **BDF** (Backward Differentiation Formulas,
-#' variable-order up to 5, default) and **Rosenbrock4** (a fourth-order L-stable method
-#' derived from Boost.Odeint).
-#' Both steppers support dense output, error control, sparse and dense LU factorization,
+#' Four integration methods are available, all sharing a common Nordsieck-based
+#' multistep machinery (the `multistepper` template) plus Rosenbrock4:
+#'
+#' | Method | Family | Max order | Stiff? | Auto-switching |
+#' |:--|:--|:--|:--|:--|
+#' | `"bdf"` *(default)* | BDF/NDF | 5  | Stiff | — |
+#' | `"adams"`  | Adams-Moulton (PECE)                | 12 | Non-stiff | — |
+#' | `"msoda"`  | BDF/NDF + Adams with LSODA-style switching | 12 | Both | yes |
+#' | `"rb4"`    | Rosenbrock4 (L-stable, single-step) | 4  | Stiff | — |
+#' | `"tsit5"`  | Tsitouras 5(4) (explicit RK, FSAL)  | 5  | Non-stiff | — |
+#'
+#' **BDF** is a variable-order (1..5) Nordsieck multistep method. By default
+#' (`useNDF = TRUE`) it uses Shampine's NDF kappa modification (Shampine &
+#' Reichelt, SIAM J. Sci. Comput. 18(1), 1997, Table 1) which is typically
+#' ~10% faster than classical BDF. Set `useNDF = FALSE` for classical BDF.
+#'
+#' **Adams** is a variable-order (1..12) Adams-Moulton method with PECE
+#' (Predict-Evaluate-Correct-Evaluate) iteration. It is explicit in the sense
+#' that no Newton iteration / linear solve is required, which makes it
+#' significantly cheaper per step on **non-stiff** problems. On stiff problems
+#' it will fail or stall — use BDF or MSODA instead.
+#'
+#' **MSODA** (Multistep Solver for ODEs with Automatic method switching) starts
+#' in Adams mode and dynamically switches to BDF/NDF when stiffness is detected,
+#' and back to Adams when the problem becomes non-stiff again. The detection
+#' logic is a faithful port of the LSODA switching heuristic (Petzold 1983),
+#' driven by the dominant eigenvalue estimate `pdest` from the PECE iteration
+#' rate and the matrix 1-norm `pnorm = ||J||_1` from the cached Jacobian. Use
+#' MSODA when the problem has phases of differing stiffness — for example, slow
+#' drift followed by a fast transient. The `useNDF` flag controls whether the
+#' stiff side uses NDF or classical BDF coefficients.
+#'
+#' **Rosenbrock4** is a fourth-order L-stable single-step method derived from
+#' Boost.Odeint. It uses one Jacobian evaluation and one LU factorization per
+#' step but no Newton iteration, which can be advantageous for problems where
+#' the Jacobian is cheap relative to the right-hand side.
+#'
+#' **Tsit5** (Tsitouras 2011) is a 5th-order explicit Runge-Kutta method with
+#' an embedded 4th-order error estimator and FSAL (First Same As Last) property.
+#' It requires only function evaluations (no Jacobian or linear algebra) and is
+#' the method of choice for **non-stiff** problems where function evaluations are
+#' expensive. On stiff problems it will fail or stall — use BDF or Rb4 instead.
+#'
+#' All steppers support dense output, error control, sparse and dense LU factorization,
 #' **time-based** and **root-triggered events**, and, optionally,
 #' **first- and second-order sensitivities** by evaluating the *same system* with
 #' **dual number** types provided by
@@ -70,19 +110,21 @@
 #'
 #' The generated solver function (accessible via `.Call`) returns a named list:
 #'
+#' All output arrays are **time-first**: the leading dimension indexes time.
+#'
 #' - `deriv = FALSE`, `deriv2 = FALSE`
 #'   Returns `list(time, variable)`
 #'   - `time`: numeric vector of length \eqn{n_t}
-#'   - `variable`: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_x,n_t)}, containing \eqn{x_i(t_j)}
+#'   - `variable`: numeric matrix of shape \eqn{(n_t,n_x)}, containing \eqn{x_i(t_j)}
 #'
 #' - `deriv = TRUE`, `deriv2 = FALSE`
 #'   Returns `list(time, variable, sens1)`
-#'   - `sens1`: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_x,n_s,n_t)}, containing
+#'   - `sens1`: numeric array of shape \eqn{(n_t,n_x,n_s)}, containing
 #'     \eqn{\partial x_i(t_k)/\partial p_j}
 #'
 #' - `deriv = TRUE`, `deriv2 = TRUE`
 #'   Returns `list(time, variable, sens1, sens2)`
-#'   - `sens2`: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_x,n_s,n_s,n_t)},
+#'   - `sens2`: numeric array of shape \eqn{(n_t,n_x,n_s,n_s)},
 #'     containing \eqn{\partial^2 x_i(t_k)/\partial p_j\,\partial p_k}
 #'
 #' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
@@ -104,18 +146,47 @@
 #' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
 #' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers;
 #'   requires `deriv = TRUE`.
-#' @param fullErr Logical. If `TRUE`, compute error estimates using full state vector
-#'   including derivatives. If `FALSE`, use only the value components for error control.
+#' @param ntheta Optional integer giving the compile-time theta dimension for
+#'   parameter reparametrization \eqn{p = \Phi(\theta)}. When `NULL` (default),
+#'   the AD width equals the number of non-fixed (state + parameter) slots and
+#'   `sens1ini` is interpreted in legacy `[n_states, n_active]` shape (or
+#'   omitted for identity seeding). When set to an explicit integer, the AD
+#'   width is fixed to `ntheta`, `sens1ini` must be supplied at `solveODE()`
+#'   time as the full Jacobian \eqn{\Phi'(\theta)} of shape
+#'   `[n_states + n_params, ntheta]`, and sensitivity output columns are
+#'   labelled as theta slots instead of model-parameter names. Requires
+#'   `deriv = TRUE` and is incompatible with runtime `fixed`.
 #' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
 #' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
 #' @param sparse Controls sparse LU factorization.
 #'   `NULL` (default) auto-selects based on Jacobian sparsity.
 #'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
-#' @param method Character string selecting the integration method: `"bdf"` (default),
-#'   `"rb4"`, or `"rosenbrock4"` (alias for `"rb4"`).
+#' @param method Character string selecting the integration method. One of:
+#'   * `"bdf"` *(default)* — BDF/NDF, max order 5, stiff (see `useNDF`)
+#'   * `"adams"` — Adams-Moulton PECE, max order 12, **non-stiff only**
+#'   * `"msoda"` — BDF/NDF + Adams with LSODA-style auto-switching, max order 12
+#'   * `"rb4"` (or `"rosenbrock4"`) — Rosenbrock4, fourth-order L-stable single-step
+#'   * `"tsit5"` — Tsitouras 5(4) explicit RK with FSAL, **non-stiff only**
+#'
+#'   Use `"bdf"` for problems known to be stiff throughout, `"adams"` or `"tsit5"`
+#'   for problems known to be non-stiff, and `"msoda"` when stiffness varies in
+#'   time. `"rb4"` is a good alternative to BDF when the Jacobian is cheap and
+#'   Newton iteration overhead matters. `"tsit5"` is the fastest option for
+#'   non-stiff problems where function evaluations dominate.
+#' @param useNDF Logical. If `TRUE` (default), the stiff-side corrector uses
+#'   Klopfenstein-Shampine NDF kappa coefficients. If `FALSE`, classical BDF.
+#'   Applies to methods `"bdf"` and `"msoda"`; silently ignored for `"adams"`
+#'   and `"rb4"`.
 #' @param profile Logical. If `TRUE`, compile with profiling counters (`-DCPPODE_PROFILE`).
-#' @param stepTrace Logical. If `TRUE`, emit per-step diagnostics (order, step size, gamrat,
-#'   setup triggers) to stderr. Verbose; intended for debugging only.
+#' @param stepTrace Logical. If `TRUE`, compile the solver with
+#'   `-DCPPODE_STEP_TRACE`, which makes the multistepper and the one-step
+#'   controller append one row per step attempt (order, step size, gamrat,
+#'   setup triggers, error-test norms, cumulative counters) into an in-memory
+#'   buffer. The buffer is returned to R as the `$trace` element of the
+#'   result from [solveODE()], which attaches it as a `data.frame` and
+#'   optionally writes it to a user-supplied CSV path (`traceFile` argument).
+#'   Intended for debugging and apples-to-apples comparisons against the
+#'   CVODE step trace.
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
 #' @return
@@ -146,9 +217,12 @@
 #' @export
 CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
-                   deriv = TRUE, deriv2 = FALSE, fullErr = TRUE,
+                   deriv = TRUE, deriv2 = FALSE,
+                   ntheta = NULL,
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
-                   sparse = NULL, method = c("bdf", "rb4"),
+                   sparse = NULL,
+                   method = c("bdf", "adams", "msoda", "rb4", "tsit5"),
+                   useNDF = TRUE,
                    profile = FALSE, stepTrace = FALSE, verbose = FALSE) {
 
   # --- Validate arguments ---
@@ -158,6 +232,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   }
   method <- match.arg(method)
   if (method == "rb4") method <- "rosenbrock4"
+  # All multistep methods ("bdf", "adams", "msoda") are instantiations
+  # of the cppode::multistepper class template, selected at compile time
+  # via the multistep_method enum.  The single-step methods (rb4, tsit5)
+  # use onestep_controller / onestep_dense_output.
+  # The internal helper is_multistep() centralises the dispatch.
+  is_multistep <- function(m) m %in% c("bdf", "adams", "msoda")
+  is_explicit  <- function(m) m %in% c("tsit5")
 
   # --- Clean up ODE definitions ---
   rhs <- unclass(rhs)
@@ -231,6 +312,24 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   n_sens_params <- length(sens_params)
   n_total_sens <- n_sens_initials + n_sens_params
 
+  # --- Resolve ntheta (compile-time theta dimension) ---
+  # Default (ntheta = NULL): identity Phi, backward-compatible. AD width N =
+  # n_total_sens, sens columns labelled with model-parameter names, legacy
+  # sens1ini shape accepted.
+  # Explicit ntheta enables reparametrization p = Phi(theta). AD width N =
+  # ntheta, sens1ini is required at solveODE() time with full shape
+  # [n_states + n_params, n_theta], output columns labelled as theta slots.
+  has_reparam <- !is.null(ntheta)
+  if (has_reparam) {
+    if (!is.numeric(ntheta) || length(ntheta) != 1L || ntheta < 0)
+      stop("'ntheta' must be a single non-negative integer")
+    if (!deriv)
+      stop("'ntheta' is only meaningful when deriv = TRUE")
+    ntheta_resolved <- as.integer(ntheta)
+  } else {
+    ntheta_resolved <- as.integer(n_total_sens)
+  }
+
   # --- Generate unique model name ---
   if (is.null(modelname)) {
     modelname <- paste(c("x", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
@@ -257,7 +356,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     fixed_states = fixed_initials,
     fixed_params = fixed_params,
     forcings_list = forcings,
-    sparse = sparse
+    sparse = sparse,
+    skip_jacobian = is_explicit(method)
   )
 
   ode_code <- codegen_result$ode_code
@@ -329,16 +429,19 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   )
 
   # --- Using declarations ---
+  # AD width N is bound to ntheta_resolved (= n_total_sens in the default
+  # non-reparam case). Under reparametrization p = Phi(theta) the AD sees
+  # n_theta dual components per variable.
   if (deriv2) {
     usings <- c(
       "using namespace cppode;",
-      sprintf("using AD = fadbad::F<double, %d>;", n_total_sens),
-      sprintf("using AD2 = fadbad::F<fadbad::F<double, %d>, %d>;", n_total_sens, n_total_sens)
+      sprintf("using AD = fadbad::F<double, %d>;", ntheta_resolved),
+      sprintf("using AD2 = fadbad::F<fadbad::F<double, %d>, %d>;", ntheta_resolved, ntheta_resolved)
     )
   } else if (deriv) {
     usings <- c(
       "using namespace cppode;",
-      sprintf("using AD = fadbad::F<double, %d>;", n_total_sens)
+      sprintf("using AD = fadbad::F<double, %d>;", ntheta_resolved)
     )
   } else {
     usings <- c(
@@ -367,7 +470,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # --- Solver function (externC) ---
   externC <- c(
     sprintf(
-      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP fixedSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP) {',
+      'extern "C" SEXP solve_%s(SEXP timesSEXP, SEXP paramsSEXP, SEXP sens1iniSEXP, SEXP sens2iniSEXP, SEXP fixedSEXP, SEXP abstolSEXP, SEXP reltolSEXP, SEXP maxprogressSEXP, SEXP maxstepsSEXP, SEXP hiniSEXP, SEXP root_tolSEXP, SEXP maxrootSEXP, SEXP forcingTimesSEXP, SEXP forcingValuesSEXP, SEXP pidModeSEXP) {',
       modelname
     ),
     "try {",
@@ -430,9 +533,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(
       externC,
       sprintf("  const int n_states     = %d;", n_variables),
+      sprintf("  const int n_params_all = %d;", n_params),
+      sprintf("  const int n_phi_rows   = %d;  // n_states + n_params (full Phi' row count)", n_variables + n_params),
       sprintf("  const int n_sens_total = %d;  // compile-time total (excl. compile-time fixed)", n_total_sens),
-      "  // n_sens: active sens dimension after removing runtime-fixed parameters",
-      "  const int n_sens = n_sens_total - n_runtime_fixed;",
+      sprintf("  const int n_theta      = %d;  // compile-time theta dim (== n_sens_total unless reparam)", ntheta_resolved),
+      sprintf("  const bool has_reparam = %s;", if (has_reparam) "true" else "false"),
+      "  // n_sens: active sens dimension. In non-reparam mode this is n_sens_total minus",
+      "  // runtime-fixed parameters. Under reparametrization n_sens == n_theta (runtime",
+      "  // 'fixed' is not supported there).",
+      "  const int n_sens = has_reparam ? n_theta : (n_sens_total - n_runtime_fixed);",
       "",
       "  // active_idx[i]: compile-time sens index i -> active index in [0, n_sens), or -1 if runtime-fixed",
       "  std::vector<int> active_idx(n_sens_total, -1);",
@@ -443,16 +552,20 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "    }",
       "  }",
       "",
-      "  auto IDX1 = [n_states](int s, int v) {",
-      "    return s + n_states * v;",
+      "  // IDX1 / IDX2 index into sens1ini / sens2ini, which are passed as the full",
+      "  // Phi'(theta) / Phi''(theta) with first dim = n_phi_rows (state rows + param rows).",
+      "  // R-side coerce auto-extends legacy [n_states, n_active] input with an identity",
+      "  // block on param rows, so C++ always sees the full shape here.",
+      "  auto IDX1 = [n_phi_rows](int g, int v) {",
+      "    return g + n_phi_rows * v;",
       "  };"
     )
 
     if (deriv2) {
       externC <- c(
         externC,
-        "  auto IDX2 = [n_states, n_sens](int s, int v1, int v2) {",
-        "    return s + n_states * (v1 + n_sens * v2);",
+        "  auto IDX2 = [n_phi_rows, n_sens](int g, int v1, int v2) {",
+        "    return g + n_phi_rows * (v1 + n_sens * v2);",
         "  };"
       )
     }
@@ -480,18 +593,27 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       sprintf("  static const int global_to_sens_arr[%d] = {%s};", n_global, global_to_sens_literal),
       sprintf("  auto global_to_sens = [](int v) -> int { return global_to_sens_arr[v]; };"),
       "",
-      "  // Validate sens1ini / sens2ini length against active dimension n_sens",
-      sprintf("  if (has_sens1ini && Rf_length(sens1iniSEXP) != %d * n_sens)", n_variables),
-      "    Rf_error(\"sens1ini has wrong length: expected n_states * n_active_sens = %d * %d = %d\",",
-      sprintf("             %d, n_sens, %d * n_sens);", n_variables, n_variables)
+      "  if (has_reparam && n_runtime_fixed > 0)",
+      "    Rf_error(\"runtime 'fixed' is not supported together with ntheta reparametrization; \"",
+      "             \"express fixedness through sens1ini (zero rows) instead\");",
+      "",
+      "  // Validate sens1ini / sens2ini length against full Phi'/Phi'' shape",
+      "  // [n_phi_rows, n_sens] and [n_phi_rows, n_sens, n_sens] respectively.",
+      "  if (has_sens1ini && Rf_length(sens1iniSEXP) != n_phi_rows * n_sens)",
+      "    Rf_error(\"sens1ini has wrong length: expected n_phi_rows * n_sens = %d * %d = %d, got %d\",",
+      "             n_phi_rows, n_sens, n_phi_rows * n_sens, Rf_length(sens1iniSEXP));",
+      "  if (has_reparam && !has_sens1ini)",
+      "    Rf_error(\"sens1ini is required when the model is compiled with ntheta != n_total_sens\");"
     )
 
     if (deriv2) {
       externC <- c(
         externC,
-        sprintf("  if (has_sens2ini && Rf_length(sens2iniSEXP) != %d * n_sens * n_sens)", n_variables),
-        "    Rf_error(\"sens2ini has wrong length: expected n_states * n_active_sens^2 = %d * %d^2\",",
-        sprintf("             %d, n_sens);", n_variables)
+        "  if (has_sens2ini && Rf_length(sens2iniSEXP) != n_phi_rows * n_sens * n_sens)",
+        "    Rf_error(\"sens2ini has wrong length: expected n_phi_rows * n_sens^2 = %d * %d^2 = %d, got %d\",",
+        "             n_phi_rows, n_sens, n_phi_rows * n_sens * n_sens, Rf_length(sens2iniSEXP));",
+        "  if (has_sens2ini && !has_sens1ini)",
+        "    Rf_error(\"sens2ini requires sens1ini (Phi'' without Phi' is inconsistent)\");"
       )
     }
 
@@ -525,31 +647,28 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int si = global_to_sens(i);  // compile-time sens index (-1 if compile-time-fixed)",
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index (-1 if any-fixed)",
       "      if (ai >= 0) {",
-      "        // First-order sensitivities (inner layer)",
+      "        // First-order sensitivities (inner layer): seed from Phi' or identity",
       "        if (has_sens1ini) {",
-      "          x[i].x().diff(0);  // Allocate n_sens (active) first-order components (static)",
-      "          for (int v1 = 0; v1 < n_sens_total; ++v1) {",
-      "            int av1 = active_idx[v1];",
-      "            if (av1 >= 0) x[i].x().d(av1) = sens1ini[IDX1(i, av1)];",
-      "          }",
+      "          x[i].x().diff(0);  // allocate n_sens components",
+      "          for (int av = 0; av < n_sens; ++av)",
+      "            x[i].x().d(av) = sens1ini[IDX1(i, av)];",
       "        } else {",
-      "          x[i].x().diff(ai);  // Identity: d(ai) = 1 (static)",
+      "          x[i].x().diff(ai);  // identity: d(ai) = 1",
       "        }",
-      "        // Second-order sensitivities (outer layer)",
+      "        // Second-order sensitivities (outer layer): seed from Phi'' or zeros.",
+      "        // FADBAD note: .diff(idx) is DESTRUCTIVE (zeros m_diff, sets [idx]=1,",
+      "        // m_depend=true). We therefore call diff(0) ONCE per layer to arm",
+      "        // m_depend, then use .d() (non-destructive accessor) to write values.",
       "        if (has_sens2ini) {",
-      "          // Custom second-order initialization",
-      "          for (int v1 = 0; v1 < n_sens_total; ++v1) {",
-      "            int av1 = active_idx[v1];",
-      "            if (av1 < 0) continue;",
-      "            x[i].diff(av1).diff(0);  // Allocate (static)",
-      "            for (int v2 = 0; v2 < n_sens_total; ++v2) {",
-      "              int av2 = active_idx[v2];",
-      "              if (av2 >= 0) x[i].diff(av1).d(av2) = sens2ini[IDX2(i, av1, av2)];",
-      "            }",
+      "          x[i].diff(0);  // arm outer m_depend",
+      "          for (int av1 = 0; av1 < n_sens; ++av1) {",
+      "            x[i].d(av1).diff(0);  // arm inner m_depend of m_diff[av1]",
+      "            x[i].d(av1).x() = sens1ini[IDX1(i, av1)];  // first-order value",
+      "            for (int av2 = 0; av2 < n_sens; ++av2)",
+      "              x[i].d(av1).d(av2) = sens2ini[IDX2(i, av1, av2)];",
       "          }",
       "        } else {",
-      "          // Default: allocate outer layer with zeros",
-      "          x[i].diff(ai);  // Allocate n_sens outer components (inner defaults to 0, static)",
+      "          x[i].diff(ai);  // identity/allocate outer (inner m_depend stays false)",
       "        }",
       "      }",
       "    }"
@@ -563,13 +682,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index (-1 if any-fixed)",
       "      if (ai >= 0) {",
       "        if (has_sens1ini) {",
-      "          x[i].diff(0);  // Allocate n_sens (= n_active) dual components (static)",
-      "          for (int v = 0; v < n_sens_total; ++v) {",
-      "            int av = active_idx[v];",
-      "            if (av >= 0) x[i].d(av) = sens1ini[IDX1(i, av)];",
-      "          }",
+      "          // Seed from Phi'(theta): row i of sens1ini",
+      "          x[i].diff(0);  // allocate n_sens components",
+      "          for (int av = 0; av < n_sens; ++av)",
+      "            x[i].d(av) = sens1ini[IDX1(i, av)];",
       "        } else {",
-      "          x[i].diff(ai);  // Identity: d(ai) = 1, only n_sens components (static)",
+      "          x[i].diff(ai);  // identity: d(ai) = 1",
       "        }",
       "      }",
       "    }"
@@ -609,10 +727,26 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int si = global_to_sens(global_idx);  // compile-time sens index",
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
       "      if (ai >= 0) {",
-      "        // First-order (inner layer): identity seeding with active index",
-      "        full_params[param_index].x().diff(ai);",
-      "        // Second-order (outer layer): allocate n_sens components (inner defaults to 0)",
-      "        full_params[param_index].diff(ai);",
+      "        // First-order (inner layer): seed from Phi' or identity fallback",
+      "        if (has_sens1ini) {",
+      "          full_params[param_index].x().diff(0);  // allocate n_sens components",
+      "          for (int av = 0; av < n_sens; ++av)",
+      "            full_params[param_index].x().d(av) = sens1ini[IDX1(global_idx, av)];",
+      "        } else {",
+      "          full_params[param_index].x().diff(ai);  // identity: dp_i/dp_j = delta_ij",
+      "        }",
+      "        // Second-order (outer layer): see note in state-seed block.",
+      "        if (has_sens2ini) {",
+      "          full_params[param_index].diff(0);  // arm outer m_depend",
+      "          for (int av1 = 0; av1 < n_sens; ++av1) {",
+      "            full_params[param_index].d(av1).diff(0);  // arm inner m_depend",
+      "            full_params[param_index].d(av1).x() = sens1ini[IDX1(global_idx, av1)];",
+      "            for (int av2 = 0; av2 < n_sens; ++av2)",
+      "              full_params[param_index].d(av1).d(av2) = sens2ini[IDX2(global_idx, av1, av2)];",
+      "          }",
+      "        } else {",
+      "          full_params[param_index].diff(ai);  // identity/allocate outer",
+      "        }",
       "      }",
       "    }"
     )
@@ -625,8 +759,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "      int si = global_to_sens(global_idx);  // compile-time sens index",
       "      int ai = (si >= 0) ? active_idx[si] : -1;  // active index",
       "      if (ai >= 0) {",
-      "        // Parameters use identity seeding: dp_i/dp_j = delta_{ij}",
-      "        full_params[param_index].diff(ai);",
+      "        if (has_sens1ini) {",
+      "          // Seed from Phi'(theta): row n_states + i of sens1ini",
+      "          full_params[param_index].diff(0);  // allocate n_sens components",
+      "          for (int av = 0; av < n_sens; ++av)",
+      "            full_params[param_index].d(av) = sens1ini[IDX1(global_idx, av)];",
+      "        } else {",
+      "          // Identity fallback: dp_i/dp_j = delta_{ij}",
+      "          full_params[param_index].diff(ai);",
+      "        }",
       "      }",
       "    }"
     )
@@ -685,94 +826,133 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # Note: rootfunc_code is inserted later, after sys is defined
 
   # --- Integration setup ---
-  # Stepper types: dense or sparse LU, Rosenbrock4 or BDF
+  # Stepper types: dense or sparse LU, Rosenbrock4 or one of the multistep
+  # methods (bdf / adams / msoda).  All multistep methods are instantiations
+  # of cppode::multistepper<Method, V, J, R>:
+  #
+  #   method == "bdf"    -> multistepper<multistep_method::bdf,    V, J, R>
+  #   method == "adams"  -> multistepper<multistep_method::adams,  V, J, R>
+  #   method == "msoda"  -> multistepper<multistep_method::msoda,  V, J, R>
+  #
+  # NDF vs BDF is controlled at runtime via set_use_ndf_kappa().
+  # Rosenbrock4 (method == "rosenbrock4") follows a separate code path.
+  resizer_tag   <- "cppode::initially_resizer"
+
+  # Generate the C++ stepper type for value type V and LU pattern J.
+  # Only meaningful for is_multistep(method) — callers on the rb4 path
+  # never invoke this helper.
+  make_stepper_type <- function(V, J) {
+    method_enum <- switch(method,
+      "bdf"   = "cppode::multistep_method::bdf",
+      "adams" = "cppode::multistep_method::adams",
+      "msoda" = "cppode::multistep_method::msoda",
+      stop(sprintf("internal: unhandled multistep method '%s'", method))
+    )
+    sprintf("cppode::multistepper<%s, %s, %s, %s>",
+            method_enum, V, J, resizer_tag)
+  }
+
+  # The multistepper_* stepper type strings are only meaningful for the
+  # multistep methods.  For Rosenbrock4 the make_stepper_type() helper
+  # would error out on the unknown method name, so we instantiate them
+  # lazily — only for is_multistep(method).
+  ms_double <- ms_AD <- ms_AD2 <- NULL
   if (use_sparse) {
     rb4_double <- "rosenbrock4<double, sparse_lu_tag>"
     rb4_AD     <- "rosenbrock4<AD, sparse_lu_tag>"
     rb4_AD2    <- "rosenbrock4<AD2, sparse_lu_tag>"
-    bdf_double <- "cppode::bdf_stepper<double, sparse_lu_tag>"
-    bdf_AD     <- "cppode::bdf_stepper<AD, sparse_lu_tag>"
-    bdf_AD2    <- "cppode::bdf_stepper<AD2, sparse_lu_tag>"
+    if (is_multistep(method)) {
+      ms_double <- make_stepper_type("double", "sparse_lu_tag")
+      ms_AD     <- make_stepper_type("AD",     "sparse_lu_tag")
+      ms_AD2    <- make_stepper_type("AD2",    "sparse_lu_tag")
+    }
   } else {
     rb4_double <- "rosenbrock4<double>"
     rb4_AD     <- "rosenbrock4<AD>"
     rb4_AD2    <- "rosenbrock4<AD2>"
-    bdf_double <- "cppode::bdf_stepper<double>"
-    bdf_AD     <- "cppode::bdf_stepper<AD>"
-    bdf_AD2    <- "cppode::bdf_stepper<AD2>"
+    if (is_multistep(method)) {
+      ms_double <- make_stepper_type("double", "cppode::dense_lu_tag")
+      ms_AD     <- make_stepper_type("AD",     "cppode::dense_lu_tag")
+      ms_AD2    <- make_stepper_type("AD2",    "cppode::dense_lu_tag")
+    }
   }
+  # Tsit5 stepper types (no Jacobian pattern — explicit method)
+  tsit5_double <- "cppode::tsit5<double>"
+  tsit5_AD     <- "cppode::tsit5<AD>"
+  tsit5_AD2    <- "cppode::tsit5<AD2>"
 
-  if (method == "bdf") {
-    # ---- BDF stepper ----
+  if (is_multistep(method)) {
+    # ---- Multistep stepper (bdf / adams / msoda) ----
+    # All multistep methods reuse cppode::multistepper_controller — the
+    # controller is templated on the stepper type and works uniformly
+    # with any multistepper instantiation.  The pid_mode integer is
+    # parsed from R as 0 (none), 1 (intermediate), or 2 (full); the C++
+    # enum cppode::multistepper_controller::pid_mode has the same values,
+    # so a static_cast is sufficient.
+    ms_type <- if (deriv2) ms_AD2 else if (deriv) ms_AD else ms_double
+    pid_setup_lines <- c(
+      "  int pid_mode_int = INTEGER(pidModeSEXP)[0];",
+      sprintf("  auto pid_mode = static_cast<cppode::multistepper_controller<%s>::pid_mode>(pid_mode_int);",
+              ms_type),
+      "  controlledStepper.set_pid_mode(pid_mode);",
+      sprintf("  controlledStepper.stepper().set_use_ndf_kappa(%s);",
+              if (useNDF) "true" else "false")
+    )
+    # Termination argument for equilibrate (empty string when not used)
+    is_equilibrate <- identical(tolower(rootfunc), "equilibrate")
+    termination_arg <- if (is_equilibrate) ", ss_termination" else ""
+
     if (useDenseOutput) {
-      if (deriv2) {
-        stepper_line <- paste(
-          sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
-                  bdf_AD2, ifelse(fullErr, "true", "false")),
-          "  auto denseStepper = cppode::bdf_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-          sep = "\n"
-        )
-      } else if (deriv) {
-        stepper_line <- paste(
-          sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
-                  bdf_AD, ifelse(fullErr, "true", "false")),
-          "  auto denseStepper = cppode::bdf_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-          sep = "\n"
-        )
-      } else {
-        stepper_line <- paste(
-          sprintf("  auto controlledStepper = cppode::bdf_controller<%s>(abstol, reltol);",
-                  bdf_double),
-          "  auto denseStepper = cppode::bdf_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-          sep = "\n"
-        )
-      }
-      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot, dt_est);"
+      stepper_line <- paste(
+        c(sprintf("  auto controlledStepper = cppode::multistepper_controller<%s>(abstol, reltol);",
+                  ms_type),
+          pid_setup_lines,
+          "  auto denseStepper = cppode::multistepper_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));"),
+        collapse = "\n"
+      )
+      integrate_line <- sprintf("  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot, dt_est%s);", termination_arg)
     } else {
-      if (deriv2) {
-        stepper_line <- sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
-                                bdf_AD2, ifelse(fullErr, "true", "false"))
-      } else if (deriv) {
-        stepper_line <- sprintf("  auto controlledStepper = cppode::bdf_controller_ad<%s, %s>(abstol, reltol);",
-                                bdf_AD, ifelse(fullErr, "true", "false"))
-      } else {
-        stepper_line <- sprintf("  auto controlledStepper = cppode::bdf_controller<%s>(abstol, reltol);",
-                                bdf_double)
-      }
-      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot, dt_est);"
+      stepper_line <- paste(
+        c(sprintf("  auto controlledStepper = cppode::multistepper_controller<%s>(abstol, reltol);",
+                  ms_type),
+          pid_setup_lines),
+        collapse = "\n"
+      )
+      integrate_line <- sprintf("  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot, dt_est%s);", termination_arg)
     }
   } else {
-    # ---- Rosenbrock4 stepper (existing) ----
-    if (useDenseOutput) {
-      if (deriv2) {
-        stepper_line <- paste(
-          sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD2),
-          "  auto denseStepper = cppode::rosenbrock4_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-          sep = "\n"
-        )
-      } else if (deriv) {
-        stepper_line <- paste(
-          sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD),
-          "  auto denseStepper = cppode::rosenbrock4_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-          sep = "\n"
-        )
-      } else {
-        stepper_line <- paste(
-          sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_double),
-          "  auto denseStepper = cppode::rosenbrock4_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-          sep = "\n"
-        )
-      }
-      integrate_line <- "  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+    # ---- Single-step stepper (rb4 or tsit5) ----
+    # Both use the generic onestep_controller with Gustafsson PI control.
+    # The pidModeSEXP value is ignored; cast to void to suppress warning.
+    pid_silencer <- "  (void) pidModeSEXP;"
+
+    # Select the stepper type string based on method and AD level.
+    if (method == "tsit5") {
+      os_type <- if (deriv2) tsit5_AD2 else if (deriv) tsit5_AD else tsit5_double
     } else {
-      if (deriv2) {
-        stepper_line <- sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD2)
-      } else if (deriv) {
-        stepper_line <- sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_AD)
-      } else {
-        stepper_line <- sprintf("  auto controlledStepper = cppode::rosenbrock4_controller<%s>(abstol, reltol);", rb4_double)
-      }
-      integrate_line <- "  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot);"
+      # rosenbrock4
+      os_type <- if (deriv2) rb4_AD2 else if (deriv) rb4_AD else rb4_double
+    }
+
+    # Termination argument for equilibrate (empty string when not used)
+    is_equilibrate <- identical(tolower(rootfunc), "equilibrate")
+    termination_arg <- if (is_equilibrate) ", cppode::detail::no_dt_estimator{}, ss_termination" else ""
+
+    if (useDenseOutput) {
+      stepper_line <- paste(
+        sprintf("  auto controlledStepper = cppode::onestep_controller<%s>(abstol, reltol);", os_type),
+        pid_silencer,
+        "  auto denseStepper = cppode::onestep_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
+        sep = "\n"
+      )
+      integrate_line <- sprintf("  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot%s);", termination_arg)
+    } else {
+      stepper_line <- paste(
+        sprintf("  auto controlledStepper = cppode::onestep_controller<%s>(abstol, reltol);", os_type),
+        pid_silencer,
+        sep = "\n"
+      )
+      integrate_line <- sprintf("  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot%s);", termination_arg)
     }
   }
 
@@ -796,43 +976,97 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   }
 
   # --- Initial step size estimation ---
-  if (method == "bdf") {
-    dt_func_dense  <- "bdf_utils::estimate_initial_dt_bdf"
-    dt_func_sparse <- "bdf_utils::estimate_initial_dt_bdf_sparse"
-  } else {
-    dt_func_dense  <- "odeint_utils::estimate_initial_dt_local"
-    dt_func_sparse <- "odeint_utils::estimate_initial_dt_local_sparse"
-  }
-  if (use_sparse) {
+  #
+  # Multistep methods (bdf/adams/msoda) use cppode_hin, a faithful port of
+  # CVODES's cvHin algorithm.  Single-step methods (rb4, tsit5) use the
+  # unified estimate_initial_dt with a method-specific ÿ closure: analytic
+  # (J·f + dfdt) for rb4, FD for tsit5.  order=1 is the right regime for
+  # all of these — BDF/NDF/Adams/msoda start at q=1 by design, and for
+  # single-step methods the HNW formula with higher p would overestimate h
+  # on stiff problems.
+  method_order <- 1L
+
+  if (is_multistep(method)) {
+    # cppode_hin — needs only `sys`; no compute_ydd closure, no order param.
     estimate_dt_block <- c(
-      sprintf("  // --- Determine dt (%s, sparse J x dxdt, O(nnz)) ---", method),
+      sprintf("  // --- Determine initial dt (%s, CVODES cvHin port) ---", method),
       sprintf("  %s dt;", numType),
       "  if (hini == 0.0) {",
-      sprintf("    dt = %s(sys, jac, x, times.front(), abstol, reltol);", dt_func_sparse),
+      sprintf("    dt = odeint_utils::cppode_hin<%s>(", numType),
+      "      sys, x, times.front(),",
+      "      odeint_utils::scalar_value(times.back()),",
+      "      abstol, reltol);",
       "  } else {",
       "    dt = hini;",
       "  }"
     )
   } else {
+    if (is_explicit(method)) {
+      compute_ydd_lines <- c(
+        sprintf("  // --- compute_ydd (FD fallback for explicit method) ---"),
+        "  auto compute_ydd = odeint_utils::make_fd_ydd(sys);"
+      )
+    } else if (use_sparse) {
+      compute_ydd_lines <- c(
+        "  // --- compute_ydd (analytic: dfdt + sparse J·f) ---",
+        "  auto compute_ydd = [&](const auto& x_, auto t_, const auto& f_,",
+        "                          double /*h_trial*/, auto& ydd_) {",
+        sprintf("    cppode::csc_matrix<%s> J_init;", numType),
+        sprintf("    std::vector<%s> dfdt_(x_.size());", numType),
+        "    jac(x_, J_init, t_, dfdt_);",
+        "    ydd_ = dfdt_;",
+        "    cppode::csc_matvec_add(J_init, f_, ydd_);",
+        "  };"
+      )
+    } else {
+      compute_ydd_lines <- c(
+        "  // --- compute_ydd (analytic: dfdt + dense J·f) ---",
+        "  auto compute_ydd = [&](const auto& x_, auto t_, const auto& f_,",
+        "                          double /*h_trial*/, auto& ydd_) {",
+        sprintf("    cppode::dense_matrix<%s> J_init(x_.size(), x_.size());", numType),
+        sprintf("    std::vector<%s> dfdt_(x_.size());", numType),
+        "    jac(x_, J_init, t_, dfdt_);",
+        "    ydd_ = dfdt_;",
+        "    for (std::size_t i = 0; i < x_.size(); ++i)",
+        "      for (std::size_t j = 0; j < x_.size(); ++j)",
+        "        ydd_[i] += J_init(i,j) * f_[j];",
+        "  };"
+      )
+    }
+
     estimate_dt_block <- c(
-      sprintf("  // --- Determine dt (%s) ---", method),
+      compute_ydd_lines,
+      sprintf("  // --- Determine initial dt (%s, order=%d) ---", method, method_order),
       sprintf("  %s dt;", numType),
       "  if (hini == 0.0) {",
-      sprintf("    dt = %s(sys, jac, x, times.front(), abstol, reltol);", dt_func_dense),
+      sprintf("    dt = odeint_utils::estimate_initial_dt<%s>(", numType),
+      "      sys, compute_ydd, x, times.front(),",
+      "      odeint_utils::scalar_value(times.back()),",
+      sprintf("      abstol, reltol, /*order=*/%d);", method_order),
       "  } else {",
       "    dt = hini;",
       "  }"
     )
   }
 
-  # --- BDF: dt re-estimator lambda for event restarts ---
+  # --- Multistep methods: dt re-estimator lambda for event restarts ---
+  #
+  # The lambda is passed to integrate_times{,_dense} as the DtEstimator and
+  # invoked by EventEngine::init_stepper_after_event whenever a multistep
+  # stepper discards its Nordsieck history at an event.  We re-estimate h0
+  # from scratch via cppode_hin, passing times.back() as the upper-bound
+  # hint so the geometric-mean seed isn't collapsed to zero on the
+  # remaining integration window.
   dt_est_block <- character(0)
-  if (method == "bdf") {
-    dt_func_event <- if (use_sparse) dt_func_sparse else dt_func_dense
+  if (is_multistep(method)) {
     dt_est_block <- c(
-      "  // --- BDF event restart: re-estimate dt from post-event state ---",
-      sprintf("  auto dt_est = [&](auto& x_ev, auto t_ev) { return %s(sys, jac, x_ev, t_ev, abstol, reltol); };",
-              dt_func_event)
+      "  // --- Multistep event restart: re-estimate dt from post-event state ---",
+      "  auto dt_est = [&](auto& x_ev, auto t_ev) {",
+      sprintf("    return odeint_utils::cppode_hin<%s>(", numType),
+      "      sys, x_ev, t_ev,",
+      "      odeint_utils::scalar_value(times.back()),",
+      "      abstol, reltol);",
+      "  };"
     )
   }
 
@@ -841,11 +1075,27 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                estimate_dt_block,
                dt_est_block,
                "",
-               "  // --- Integration (catch step-limit errors for partial results) ---",
+               "  // --- Integration (catch recoverable errors for partial results) ---",
                "  std::string solver_message;",
                "  try {",
                paste0("    ", integrate_line),
                "  } catch (const cppode::no_progress_error& e) {",
+               "    // StepChecker sets RC_TOO_MUCH_WORK / RC_CONV_FAILURE before",
+               "    // throwing, but the dense-output wrappers' failed_step_checker",
+               "    // throws the same exception type without touching StepChecker.",
+               "    // Guarantee a non-zero return code in that case.",
+               "    if (checker.return_code() == cppode::RC_SUCCESS)",
+               "      checker.set_return_code(cppode::RC_CONV_FAILURE);",
+               "    solver_message = e.what();",
+               "  } catch (const std::runtime_error& e) {",
+               "    // KLU factor/analyze failures and similar linear-solver issues.",
+               "    checker.set_return_code(cppode::RC_LSETUP_FAIL);",
+               "    solver_message = e.what();",
+               "  } catch (const std::exception& e) {",
+               "    // Anything else that derives from std::exception (bad_alloc,",
+               "    // overflow_error from a wild RHS, ...) — classify as unclassified",
+               "    // but still return partial results rather than aborting R.",
+               "    checker.set_return_code(cppode::RC_UNRECOGNIZED_ERR);",
                "    solver_message = e.what();",
                "  }",
                "",
@@ -893,67 +1143,127 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                "  SET_VECTOR_ELT(diag, 7, Rf_ScalarReal(checker.last_dt()));",
                "  SET_VECTOR_ELT(diag, 8, Rf_ScalarInteger(checker.last_order()));",
                "  SET_VECTOR_ELT(diag, 9, Rf_ScalarReal(checker.t_reached()));",
+               "",
+               "  // --- Build trace list from the step-trace buffer ---",
+               "  // Returns an empty named list when the model was built without",
+               "  // -DCPPODE_STEP_TRACE (buffer never populated) or when this solve",
+               "  // produced zero rows.  The buffer is cleared after marshalling so",
+               "  // repeated solveODE() calls start with a fresh trace.",
+               "  SEXP trace_list;",
+               "  {",
+               "    auto& tb = cppode::ndf_detail::get_trace_buffer();",
+               "    const R_xlen_t n_trace = static_cast<R_xlen_t>(tb.size());",
+               "    constexpr int n_cols = 18;",
+               "    static const char* col_names[n_cols] = {",
+               "      \"nst\",\"t\",\"h\",\"q\",\"dsm\",\"acnrm\",\"acnrm_state\",\"tq2\",",
+               "      \"gamma\",\"gamrat\",\"newton_conv\",\"mode\",\"nfe\",\"njev\",",
+               "      \"nsetups\",\"setup_reason\",\"pece_iters\",\"pece_diverged\"",
+               "    };",
+               "    trace_list = PROTECT(Rf_allocVector(VECSXP, n_cols));",
+               "    SEXP tn = PROTECT(Rf_allocVector(STRSXP, n_cols));",
+               "    for (int i = 0; i < n_cols; ++i)",
+               "      SET_STRING_ELT(tn, i, Rf_mkChar(col_names[i]));",
+               "    Rf_setAttrib(trace_list, R_NamesSymbol, tn);",
+               "    UNPROTECT(1); // tn",
+               "",
+               "    auto put_int = [&](int slot, const std::vector<int>& v) {",
+               "      SEXP s = PROTECT(Rf_allocVector(INTSXP, n_trace));",
+               "      int* p = INTEGER(s);",
+               "      for (R_xlen_t i = 0; i < n_trace; ++i) p[i] = v[i];",
+               "      SET_VECTOR_ELT(trace_list, slot, s);",
+               "      UNPROTECT(1);",
+               "    };",
+               "    auto put_dbl = [&](int slot, const std::vector<double>& v) {",
+               "      SEXP s = PROTECT(Rf_allocVector(REALSXP, n_trace));",
+               "      double* p = REAL(s);",
+               "      for (R_xlen_t i = 0; i < n_trace; ++i) p[i] = v[i];",
+               "      SET_VECTOR_ELT(trace_list, slot, s);",
+               "      UNPROTECT(1);",
+               "    };",
+               "    auto put_str = [&](int slot, const std::vector<std::string>& v) {",
+               "      SEXP s = PROTECT(Rf_allocVector(STRSXP, n_trace));",
+               "      for (R_xlen_t i = 0; i < n_trace; ++i)",
+               "        SET_STRING_ELT(s, i, Rf_mkChar(v[i].c_str()));",
+               "      SET_VECTOR_ELT(trace_list, slot, s);",
+               "      UNPROTECT(1);",
+               "    };",
+               "    put_int(0,  tb.nst);         put_dbl(1,  tb.t);",
+               "    put_dbl(2,  tb.h);           put_int(3,  tb.q);",
+               "    put_dbl(4,  tb.dsm);         put_dbl(5,  tb.acnrm);",
+               "    put_dbl(6,  tb.acnrm_state); put_dbl(7,  tb.tq2);",
+               "    put_dbl(8,  tb.gamma);       put_dbl(9,  tb.gamrat);",
+               "    put_int(10, tb.newton_conv); put_str(11, tb.mode);",
+               "    put_int(12, tb.nfe);         put_int(13, tb.njev);",
+               "    put_int(14, tb.nsetups);     put_str(15, tb.setup_reason);",
+               "    put_int(16, tb.pece_iters);  put_int(17, tb.pece_diverged);",
+               "    tb.clear();",
+               "  }",
                ""
   )
   # --- Copy back results - CONSISTENT LIST OUTPUT ---
   if (!deriv) {
-    # deriv = FALSE: list(time, variable)
+    # deriv = FALSE: list(time, variable, diagnostics, trace)
     externC <- c(externC,
-                 "  // --- Return list(time, variable, diagnostics) ---",
-                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 3));",
-                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 3));",
+                 "  // --- Return list(time, variable, diagnostics, trace) ---",
+                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
+                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
                  "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"diagnostics\"));",
+                 "  SET_STRING_ELT(names, 3, Rf_mkChar(\"trace\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, %d, n_out));", n_variables),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
                  "  double* time_out = REAL(time_vec);",
                  "  double* variable_out = REAL(variable_mat);",
                  "",
                  "  for (int i = 0; i < n_out; ++i) {",
                  "    time_out[i] = result_times[i];",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
-                 sprintf("      variable_out[s + %d * i] = y[i * %d + s];", n_variables, n_variables),
+                 sprintf("      variable_out[i + n_out * s] = y[i * %d + s];", n_variables),
                  "    }",
                  "  }",
                  "",
                  "  SET_VECTOR_ELT(ans, 0, time_vec);",
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  SET_VECTOR_ELT(ans, 2, diag);",
-                 "  UNPROTECT(6);",
+                 "  SET_VECTOR_ELT(ans, 3, trace_list);",
+                 "  UNPROTECT(7);  // trace_list, diag, diag_names, time_vec, variable_mat, ans, names",
                  "  return ans;")
 
   } else if (!deriv2) {
     # deriv = TRUE, deriv2 = FALSE: list(time, variable, sens1)
-    # Note: Output dimension is n_total_sens (compile-time) minus n_runtime_fixed
+    # Under reparam, sens1 has n_theta columns (one per theta slot).
+    # Non-reparam: n_sens_out = n_total_sens - n_runtime_fixed as before.
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1) ---",
-                 "  // Effective sens dimension excludes both compile-time and runtime fixed",
                  "  int n_sens_out = n_sens;",
                  "",
                  "  // Helper: is global index v fixed (compile-time OR runtime)?",
+                 "  // (Only used in the non-reparam output path.)",
                  "  auto is_any_fixed = [&active_idx, &global_to_sens](int v) -> bool {",
                  "    int si = global_to_sens(v);",
                  "    if (si < 0) return true;   // compile-time fixed",
                  "    return active_idx[si] < 0;  // runtime fixed",
                  "  };",
+                 "  (void)is_any_fixed;",
                  "",
-                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 4));",
-                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 4));",
+                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 5));",
+                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 5));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
                  "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"sens1\"));",
                  "  SET_STRING_ELT(names, 3, Rf_mkChar(\"diagnostics\"));",
+                 "  SET_STRING_ELT(names, 4, Rf_mkChar(\"trace\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, %d, n_out));", n_variables),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
-                 sprintf("  INTEGER(sens1_dim)[0] = %d;", n_variables),
-                 "  INTEGER(sens1_dim)[1] = n_sens_out;",
-                 "  INTEGER(sens1_dim)[2] = n_out;",
+                 "  INTEGER(sens1_dim)[0] = n_out;",
+                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
+                 "  INTEGER(sens1_dim)[2] = n_sens_out;",
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
@@ -964,13 +1274,20 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "    time_out[i] = result_times[i].x();",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                  sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                 sprintf("      variable_out[s + %d * i] = xi.x();", n_variables),
-                 "      int v_out = 0;",
-                 sprintf("      for (int v = 0; v < %d; ++v) {", n_variables + n_params),
-                 "        if (!is_any_fixed(v)) {",
-                 "          int av = active_idx[global_to_sens(v)];",
-                 sprintf("          sens1_out[s + %d * (v_out + n_sens_out * i)] = xi.d(av);", n_variables),
-                 "          v_out++;",
+                 "      variable_out[i + n_out * s] = xi.x();",
+                 "      if (has_reparam) {",
+                 "        // Columns are theta slots: dx_s/dtheta_av = xi.d(av)",
+                 "        for (int av = 0; av < n_sens_out; ++av)",
+                 sprintf("          sens1_out[i + n_out * (s + %d * av)] = xi.d(av);", n_variables),
+                 "      } else {",
+                 "        // Legacy path: columns are active (non-fixed) model-sens slots",
+                 "        int v_out = 0;",
+                 sprintf("        for (int v = 0; v < %d; ++v) {", n_variables + n_params),
+                 "          if (!is_any_fixed(v)) {",
+                 "            int av = active_idx[global_to_sens(v)];",
+                 sprintf("            sens1_out[i + n_out * (s + %d * v_out)] = xi.d(av);", n_variables),
+                 "            v_out++;",
+                 "          }",
                  "        }",
                  "      }",
                  "    }",
@@ -980,7 +1297,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  SET_VECTOR_ELT(ans, 1, variable_mat);",
                  "  SET_VECTOR_ELT(ans, 2, sens1_arr);",
                  "  SET_VECTOR_ELT(ans, 3, diag);",
-                 "  UNPROTECT(8);",
+                 "  SET_VECTOR_ELT(ans, 4, trace_list);",
+                 "  UNPROTECT(9);  // trace_list, diag, diag_names, time_vec, variable_mat, sens1_dim, sens1_arr, ans, names",
                  "  return ans;")
 
   } else {
@@ -988,37 +1306,37 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     # Note: Output dimension is n_total_sens (compile-time) minus n_runtime_fixed
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1, sens2) ---",
-                 "  // Effective sens dimension excludes both compile-time and runtime fixed",
                  "  int n_sens_out = n_sens;",
                  "",
-                 "  // Helper: is global index v fixed (compile-time OR runtime)?",
                  "  auto is_any_fixed = [&active_idx, &global_to_sens](int v) -> bool {",
                  "    int si = global_to_sens(v);",
-                 "    if (si < 0) return true;   // compile-time fixed",
-                 "    return active_idx[si] < 0;  // runtime fixed",
+                 "    if (si < 0) return true;",
+                 "    return active_idx[si] < 0;",
                  "  };",
+                 "  (void)is_any_fixed;",
                  "",
-                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 5));",
-                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 5));",
+                 "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 6));",
+                 "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 6));",
                  "  SET_STRING_ELT(names, 0, Rf_mkChar(\"time\"));",
                  "  SET_STRING_ELT(names, 1, Rf_mkChar(\"variable\"));",
                  "  SET_STRING_ELT(names, 2, Rf_mkChar(\"sens1\"));",
                  "  SET_STRING_ELT(names, 3, Rf_mkChar(\"sens2\"));",
                  "  SET_STRING_ELT(names, 4, Rf_mkChar(\"diagnostics\"));",
+                 "  SET_STRING_ELT(names, 5, Rf_mkChar(\"trace\"));",
                  "  Rf_setAttrib(ans, R_NamesSymbol, names);",
                  "",
                  "  SEXP time_vec = PROTECT(Rf_allocVector(REALSXP, n_out));",
-                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, %d, n_out));", n_variables),
+                 sprintf("  SEXP variable_mat = PROTECT(Rf_allocMatrix(REALSXP, n_out, %d));", n_variables),
                  "  SEXP sens1_dim = PROTECT(Rf_allocVector(INTSXP, 3));",
-                 sprintf("  INTEGER(sens1_dim)[0] = %d;", n_variables),
-                 "  INTEGER(sens1_dim)[1] = n_sens_out;",
-                 "  INTEGER(sens1_dim)[2] = n_out;",
+                 "  INTEGER(sens1_dim)[0] = n_out;",
+                 sprintf("  INTEGER(sens1_dim)[1] = %d;", n_variables),
+                 "  INTEGER(sens1_dim)[2] = n_sens_out;",
                  "  SEXP sens1_arr = PROTECT(Rf_allocArray(REALSXP, sens1_dim));",
                  "  SEXP sens2_dim = PROTECT(Rf_allocVector(INTSXP, 4));",
-                 sprintf("  INTEGER(sens2_dim)[0] = %d;", n_variables),
-                 "  INTEGER(sens2_dim)[1] = n_sens_out;",
+                 "  INTEGER(sens2_dim)[0] = n_out;",
+                 sprintf("  INTEGER(sens2_dim)[1] = %d;", n_variables),
                  "  INTEGER(sens2_dim)[2] = n_sens_out;",
-                 "  INTEGER(sens2_dim)[3] = n_out;",
+                 "  INTEGER(sens2_dim)[3] = n_sens_out;",
                  "  SEXP sens2_arr = PROTECT(Rf_allocArray(REALSXP, sens2_dim));",
                  "",
                  "  double* time_out = REAL(time_vec);",
@@ -1030,21 +1348,29 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "    time_out[i] = result_times[i].x().x();",
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                  sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
-                 sprintf("      variable_out[s + %d * i] = xi.x().x();", n_variables),
-                 "      int v1_out = 0;",
-                 sprintf("      for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params),
-                 "        if (!is_any_fixed(v1)) {",
-                 "          int av1 = active_idx[global_to_sens(v1)];",
-                 sprintf("          sens1_out[s + %d * (v1_out + n_sens_out * i)] = xi.d(av1).x();", n_variables),
-                 "          int v2_out = 0;",
-                 sprintf("          for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params),
-                 "            if (!is_any_fixed(v2)) {",
-                 "              int av2 = active_idx[global_to_sens(v2)];",
-                 sprintf("              sens2_out[s + %d * (v1_out + n_sens_out * (v2_out + n_sens_out * i))] = xi.d(av1).d(av2);", n_variables),
-                 "              v2_out++;",
+                 "      variable_out[i + n_out * s] = xi.x().x();",
+                 "      if (has_reparam) {",
+                 "        for (int av1 = 0; av1 < n_sens_out; ++av1) {",
+                 sprintf("          sens1_out[i + n_out * (s + %d * av1)] = xi.d(av1).x();", n_variables),
+                 "          for (int av2 = 0; av2 < n_sens_out; ++av2)",
+                 sprintf("            sens2_out[i + n_out * (s + %d * (av1 + n_sens_out * av2))] = xi.d(av1).d(av2);", n_variables),
+                 "        }",
+                 "      } else {",
+                 "        int v1_out = 0;",
+                 sprintf("        for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params),
+                 "          if (!is_any_fixed(v1)) {",
+                 "            int av1 = active_idx[global_to_sens(v1)];",
+                 sprintf("            sens1_out[i + n_out * (s + %d * v1_out)] = xi.d(av1).x();", n_variables),
+                 "            int v2_out = 0;",
+                 sprintf("            for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params),
+                 "              if (!is_any_fixed(v2)) {",
+                 "                int av2 = active_idx[global_to_sens(v2)];",
+                 sprintf("                sens2_out[i + n_out * (s + %d * (v1_out + n_sens_out * v2_out))] = xi.d(av1).d(av2);", n_variables),
+                 "                v2_out++;",
+                 "              }",
                  "            }",
+                 "            v1_out++;",
                  "          }",
-                 "          v1_out++;",
                  "        }",
                  "      }",
                  "    }",
@@ -1055,7 +1381,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  SET_VECTOR_ELT(ans, 2, sens1_arr);",
                  "  SET_VECTOR_ELT(ans, 3, sens2_arr);",
                  "  SET_VECTOR_ELT(ans, 4, diag);",
-                 "  UNPROTECT(10);",
+                 "  SET_VECTOR_ELT(ans, 5, trace_list);",
+                 "  UNPROTECT(11);  // trace_list + previous 10",
                  "  return ans;")
   }
 
@@ -1117,13 +1444,20 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
+  attr(modelname, "ntheta")        <- ntheta_resolved
+  attr(modelname, "has_reparam")   <- has_reparam
   attr(modelname, "sparse")        <- use_sparse
-  # Dimension names
+  attr(modelname, "method")        <- method
+  attr(modelname, "useNDF")        <- useNDF
+  # Dimension names — under reparametrization the sens columns are theta slots
+  # with auto-generated names (user can override via colnames(sens1ini)).
   if (deriv) {
+    sens_col_names <- if (has_reparam) sprintf("theta%d", seq_len(ntheta_resolved))
+                      else              c(sens_initials, sens_params)
     attr(modelname, "dim_names") <- list(
       time = "time",
       variable = variables,
-      sens = c(sens_initials, sens_params)
+      sens = sens_col_names
     )
   } else {
     attr(modelname, "dim_names") <- list(
@@ -1160,523 +1494,4 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     compile(modelname, verbose = verbose)
   }
   return(modelname)
-}
-
-
-#' Solver Interface for Ordinary Differential Equation Models
-#'
-#' @description
-#' Numerically integrates a compiled ODE model created by [CppODE()] over a
-#' specified time span.
-#'
-#' ## Sensitivity initial values and `fixed`
-#'
-#' `sens1ini` and `sens2ini` always refer to the **active** sensitivity
-#' parameters, i.e., `attr(model, "dim_names")$sens` minus whatever is listed
-#' in `fixed`. This means:
-#'
-#' - If `fixed = NULL` (default), the active set equals all compile-time
-#'   sensitivity names and `sens1ini` must have dimensions
-#'   `[n_states, n_active]`.
-#' - If `fixed` names some parameters, the active set shrinks accordingly and
-#'   `sens1ini`/`sens2ini` need only cover the remaining columns.
-#' - Columns in `sens1ini` are matched by name when column names are present,
-#'   or by position otherwise (position follows the order of active sens names).
-#'
-#' This design is intentional: you should not have to supply initial values for
-#' parameters whose sensitivities you do not compute.
-#'
-#' @param model A compiled ODE model object returned by [CppODE()].
-#' @param times Numeric vector of time points at which to return the solution.
-#'   Must be non-empty and contain only finite values.
-#' @param parms Named numeric vector of initial conditions and parameters.
-#'   Names must include all of `c(attr(model, "variables"), attr(model, "parameters"))`.
-#' @param sens1ini Optional numeric matrix `[n_states, n_active]` (or equivalent
-#'   flat vector) of first-order sensitivity initial values, where `n_active` is
-#'   the number of non-fixed sensitivity parameters. Row names must match model
-#'   variables; column names, if present, must match the active sensitivity names
-#'   (i.e., `setdiff(attr(model, "dim_names")$sens, fixed)`).
-#'   Default `NULL` uses identity seeding (each state is seeded with respect to
-#'   its own initial condition, each parameter with a unit seed).
-#' @param sens2ini Optional numeric array `[n_states, n_active, n_active]` (or
-#'   flat vector) of second-order sensitivity initial values. Only allowed when
-#'   `attr(model, "deriv2") == TRUE`. Default `NULL` uses zero seeding.
-#' @param fixed Optional character vector of sensitivity parameter names to treat
-#'   as fixed at runtime. These parameters will not have their dual-number
-#'   components allocated, so the integrator runs with a strictly smaller AD
-#'   state. Names must be a subset of `attr(model, "dim_names")$sens`. Unlike
-#'   compile-time `fixed` in [CppODE()], runtime fixed parameters can be changed
-#'   between calls without recompilation. Default `NULL` (all parameters active).
-#' @param forcings Optional named list of forcing function data. Each element
-#'   must be a `data.frame` (or coercible object) with columns `time` and `value`,
-#'   or a two-column matrix. Names must match `attr(model, "forcings")`.
-#'   Default `NULL`.
-#' @param abstol Absolute error tolerance for the integrator. Default `1e-6`.
-#' @param reltol Relative error tolerance for the integrator. Default `1e-6`.
-#' @param maxprogress Maximum number of integration steps without progress
-#'   before an error is raised. Default `10`.
-#' @param maxsteps Maximum total number of integration steps. Default `1e6`.
-#' @param hini Initial step size; `0` (default) triggers automatic estimation.
-#' @param roottol Tolerance for root-finding in root-triggered events. Default `1e-6`.
-#' @param maxroot Maximum triggers per root event. Default `1`.
-#'
-#' @return A named list with components `time`, `variable`, `diagnostics`,
-#'   and, when `attr(model, "deriv") == TRUE`, `sens1`, and additionally
-#'   `sens2` when `attr(model, "deriv2") == TRUE`. Dimension names of
-#'   `sens1`/`sens2` reflect only the active (non-fixed) sensitivity
-#'   parameters. The `diagnostics` element is a list with solver statistics
-#'   (see [diagnostics()]).
-#'
-#' @seealso [CppODE()] for model specification and compilation.
-#'
-#' @export
-solveODE <- function(model, times, parms,
-                     sens1ini = NULL, sens2ini = NULL,
-                     fixed = NULL, forcings = NULL,
-                     abstol = 1e-6, reltol = 1e-6,
-                     maxprogress = 10L, maxsteps = 1e6L,
-                     hini = 0, roottol = 1e-6, maxroot = 1L) {
-
-  ## --- Unpack model attributes ---
-  stopifnot(is.character(model), length(model) == 1L)
-  required_attrs <- c("variables", "parameters", "forcings", "deriv", "deriv2", "dim_names")
-  missing_attrs <- setdiff(required_attrs, names(attributes(model)))
-  if (length(missing_attrs))
-    stop("'model' is missing attributes: ", paste(missing_attrs, collapse = ", "))
-
-  variables     <- attr(model, "variables")
-  parameters    <- attr(model, "parameters")
-  forcing_names <- attr(model, "forcings")
-  deriv         <- attr(model, "deriv")
-  deriv2        <- attr(model, "deriv2")
-  all_sens      <- if (deriv) attr(model, "dim_names")$sens else character(0)
-
-  ## --- Runtime fixed: resolve early so sens1ini/sens2ini see the active set ---
-  fixed_indices <- integer(0)
-  if (!is.null(fixed)) {
-    if (!deriv) { warning("'fixed' ignored when deriv = FALSE") }
-    else {
-      if (!is.character(fixed)) stop("'fixed' must be a character vector")
-      bad <- setdiff(fixed, all_sens)
-      if (length(bad)) stop("Unknown 'fixed' names: ", paste(bad, collapse = ", "),
-                            "\nValid: ", paste(all_sens, collapse = ", "))
-      fixed_indices <- match(fixed, all_sens) - 1L  # 0-based for C++
-    }
-  }
-  active_sens <- if (deriv && length(fixed_indices))
-    all_sens[-( fixed_indices + 1L)] else all_sens
-
-  ## --- Validate and coerce sens1ini (w.r.t. active sens) ---
-  if (!is.null(sens1ini) && !deriv)
-    stop("'sens1ini' supplied but model has deriv = FALSE")
-  if (!is.null(sens2ini) && !deriv2)
-    stop("'sens2ini' supplied but model has deriv2 = FALSE")
-
-  coerce_sens_matrix <- function(x, n_s, n_a, active_nms, arg) {
-    if (!is.numeric(x)) stop("'", arg, "' must be numeric")
-    if (is.matrix(x) || (is.array(x) && length(dim(x)) == 2)) {
-      if (nrow(x) != n_s || ncol(x) != n_a)
-        stop(sprintf("'%s' must be [%d, %d] (states x active_sens)", arg, n_s, n_a))
-      if (!is.null(rownames(x)) && !setequal(rownames(x), variables))
-        stop("'", arg, "' row names must match variables")
-      if (!is.null(colnames(x))) {
-        if (!setequal(colnames(x), active_nms))
-          stop("'", arg, "' column names must match active sens: ", paste(active_nms, collapse = ", "))
-        x <- x[variables, active_nms, drop = FALSE]
-      }
-      as.double(x)
-    } else {
-      if (length(x) != n_s * n_a)
-        stop(sprintf("'%s' must have length %d (n_states * n_active_sens)", arg, n_s * n_a))
-      as.double(x)
-    }
-  }
-
-  n_states <- length(variables)
-  n_active <- length(active_sens)
-
-  sens1ini <- if (!is.null(sens1ini))
-    coerce_sens_matrix(sens1ini, n_states, n_active, active_sens, "sens1ini")
-
-  if (!is.null(sens2ini)) {
-    if (!is.numeric(sens2ini)) stop("'sens2ini' must be numeric")
-    if (is.array(sens2ini) && length(dim(sens2ini)) == 3) {
-      if (any(dim(sens2ini) != c(n_states, n_active, n_active)))
-        stop(sprintf("'sens2ini' must be [%d, %d, %d]", n_states, n_active, n_active))
-      dn <- dimnames(sens2ini)
-      if (!is.null(dn[[1]]) && !setequal(dn[[1]], variables))
-        stop("'sens2ini' dim 1 must match variables")
-      if (!is.null(dn[[2]]) && !setequal(dn[[2]], active_sens))
-        stop("'sens2ini' dim 2 must match active sens")
-      if (!is.null(dn[[3]]) && !setequal(dn[[3]], active_sens))
-        stop("'sens2ini' dim 3 must match active sens")
-      if (!is.null(dn[[1]]) && !is.null(dn[[2]]) && !is.null(dn[[3]]))
-        sens2ini <- sens2ini[variables, active_sens, active_sens, drop = FALSE]
-      sens2ini <- as.double(sens2ini)
-    } else {
-      if (length(sens2ini) != n_states * n_active^2)
-        stop(sprintf("'sens2ini' must have length %d", n_states * n_active^2))
-      sens2ini <- as.double(sens2ini)
-    }
-  }
-
-  ## --- times ---
-  if (!is.numeric(times) || !length(times) || anyNA(times) || any(!is.finite(times)))
-    stop("'times' must be a non-empty finite numeric vector")
-  times <- as.double(times)
-
-  ## --- parms ---
-  if (!is.numeric(parms) || is.null(names(parms)))
-    stop("'parms' must be a named numeric vector")
-  required_nms <- c(variables, parameters)
-  miss <- setdiff(required_nms, names(parms))
-  if (length(miss)) stop("'parms' missing: ", paste(miss, collapse = ", "))
-  parms_ordered <- as.double(parms[required_nms])
-  if (anyNA(parms_ordered) || any(!is.finite(parms_ordered)))
-    stop("'parms' must be finite")
-
-  ## --- forcings ---
-  n_forcings <- length(forcing_names)
-  if (n_forcings && is.null(forcings))
-    stop("Model requires forcings: ", paste(forcing_names, collapse = ", "))
-
-  parse_forcing <- function(nm) {
-    f <- forcings[[nm]]
-    if (is.matrix(f)) f <- data.frame(time = f[,1L], value = f[,2L])
-    else if (!is.data.frame(f)) f <- as.data.frame(f)
-    if (!all(c("time","value") %in% names(f)))
-      stop("Forcing '", nm, "' needs columns 'time' and 'value'")
-    ft <- as.double(f$time); fv <- as.double(f$value)
-    if (length(ft) < 2L) stop("Forcing '", nm, "' needs >= 2 time points")
-    if (length(ft) != length(fv)) stop("Forcing '", nm, "': length mismatch")
-    if (anyNA(ft) || any(!is.finite(ft))) stop("Forcing '", nm, "': non-finite time")
-    if (anyNA(fv) || any(!is.finite(fv))) stop("Forcing '", nm, "': non-finite value")
-    if (anyDuplicated(ft)) stop("Forcing '", nm, "': duplicate times")
-    list(times = ft, values = fv)
-  }
-
-  if (!n_forcings) {
-    forcing_times_list <- forcing_values_list <- list()
-  } else {
-    if (!is.list(forcings) || is.null(names(forcings)))
-      stop("'forcings' must be a named list")
-    miss_f <- setdiff(forcing_names, names(forcings))
-    if (length(miss_f)) stop("Missing forcings: ", paste(miss_f, collapse = ", "))
-    parsed <- lapply(forcing_names, parse_forcing)
-    forcing_times_list  <- lapply(parsed, `[[`, "times")
-    forcing_values_list <- lapply(parsed, `[[`, "values")
-  }
-
-  ## --- solver options ---
-  if (!is.numeric(abstol)  || abstol  <= 0) stop("'abstol' must be positive")
-  if (!is.numeric(reltol)  || reltol  <= 0) stop("'reltol' must be positive")
-  if (!is.numeric(hini)    || hini    <  0) stop("'hini' must be non-negative")
-  if (!is.numeric(roottol) || roottol <= 0) stop("'roottol' must be positive")
-  maxprogress <- as.integer(maxprogress); maxsteps <- as.integer(maxsteps); maxroot <- as.integer(maxroot)
-  if (maxprogress <= 0L) stop("'maxprogress' must be positive")
-  if (maxsteps    <= 0L) stop("'maxsteps' must be positive")
-  if (maxroot     <= 0L) stop("'maxroot' must be positive")
-
-  ## --- Call C++ solver ---
-  sym_name <- paste0("solve_", as.character(model))
-  SYM <- tryCatch(getNativeSymbolInfo(sym_name),
-                  error = function(e) stop("Model not loaded. Run compile() first.", call. = FALSE))
-  result <- tryCatch(
-    .Call(SYM, times, parms_ordered, sens1ini, sens2ini, fixed_indices,
-          as.double(abstol), as.double(reltol), maxprogress, maxsteps,
-          as.double(hini), as.double(roottol), maxroot,
-          forcing_times_list, forcing_values_list),
-    error = function(e) stop("ODE solver error: ", e$message, call. = FALSE))
-
-  ## --- Attach dimension names ---
-  if (!is.null(result$variable))
-    rownames(result$variable) <- variables
-  if (!is.null(result$sens1))
-    dimnames(result$sens1) <- list(variable = variables, sens = active_sens, time = NULL)
-  if (!is.null(result$sens2))
-    dimnames(result$sens2) <- list(variable = variables, sens1 = active_sens,
-                                   sens2 = active_sens, time = NULL)
-
-  ## --- Handle diagnostics ---
-  diag <- result$diagnostics
-  if (!is.null(diag) && diag$return_code != 0L) {
-    warning(
-      "Solver did not complete: ", diag$message,
-      "\n  Returning partial results up to t = ", format(diag$t_reached, digits = 6),
-      " (", length(result$time), " of ", length(times), " time points).",
-      call. = FALSE, immediate. = TRUE
-    )
-  }
-
-  result
-}
-
-
-#' Print Solver Diagnostics
-#'
-#' @description
-#' Prints a summary of solver diagnostics.
-#'
-#' @param result A list returned by [solveODE()], containing a `diagnostics` element.
-#'
-#' @return Invisibly returns the diagnostics list.
-#'
-#' @examples
-#' \dontrun{
-#' res <- solveODE(model, times, params)
-#' diagnostics(res)
-#' }
-#'
-#' @export
-diagnostics <- function(result) {
-  UseMethod("diagnostics")
-}
-
-#' @export
-diagnostics.default <- function(result) {
-  diag <- result$diagnostics
-  if (is.null(diag)) {
-    message("No solver diagnostics available.")
-    return(invisible(NULL))
-  }
-
-  rc <- diag$return_code
-  rc_text <- switch(as.character(rc),
-                    "0"  = "Integration was successful.",
-                    "1"  = "Maximum number of total steps exceeded.",
-                    "2"  = "Maximum number of steps without progress exceeded.",
-                    "-1" = "Other solver error.",
-                    paste0("Unknown return code: ", rc)
-  )
-
-  cat("--------------------  CppODE solver diagnostics  --------------------\n")
-  cat(sprintf("  Return code                  : %d\n", rc))
-  cat(sprintf("  Message                      : %s\n", rc_text))
-  cat("---------------------------------------------------------------------\n")
-  cat(sprintf("  Accepted steps               : %d\n", diag$accepted))
-  cat(sprintf("  Rejected steps               : %d\n", diag$rejected))
-  cat(sprintf("  Function evaluations         : %d\n", diag$fevals))
-  cat(sprintf("  Jacobian evaluations         : %d\n", diag$jevals))
-  cat(sprintf("  LU factorizations            : %d\n", diag$setups))
-  cat(sprintf("  Last step size (successful)  : %g\n", diag$last_dt))
-  cat(sprintf("  Last method order            : %d\n", diag$last_order))
-  cat(sprintf("  Time reached                 : %g\n", diag$t_reached))
-  cat("---------------------------------------------------------------------\n")
-
-  invisible(diag)
-}
-
-
-#' Generate Algebraic Model Functions with Optional C++ Backend and Derivatives
-#'
-#' @description
-#' Generates functions for evaluating a system of algebraic expressions and,
-#' optionally, their Jacobian and Hessian matrices. Model evaluation can be
-#' performed either via generated and compiled C++ code for improved performance
-#' or via a pure R fallback.
-#'
-#' @param eqns Named character vector or list of algebraic expressions.
-#'   Names define the output variables. If unnamed, default names
-#'   \code{f1}, \code{f2}, \ldots are assigned.
-#' @param variables Character vector of variable names supplied per observation.
-#'   Defaults to all symbols found in \code{eqns} not listed in \code{parameters}.
-#' @param parameters Character vector of parameter names (constant across observations).
-#' @param fixed Optional character vector of symbols to treat as fixed
-#'   (excluded from derivative computation).
-#' @param modelname Optional base name for generated C++ symbols and files.
-#' @param outdir Directory for generated C++ source files. Defaults to \code{tempdir()}.
-#' @param compile Logical; if \code{TRUE}, compile and load generated C++ code.
-#' @param verbose Logical; if \code{TRUE}, print progress messages.
-#' @param convenient Logical; if \code{TRUE}, return wrappers accepting named arguments.
-#' @param deriv Logical; if \code{TRUE}, enable Jacobian computation.
-#' @param deriv2 Logical; if \code{TRUE}, enable Hessian computation (implies \code{deriv}).
-#'
-#' @return
-#' A list with components \code{func}, \code{jac}, and \code{hess},
-#' carrying the following attributes:
-#' \code{equations} (original expressions),
-#' \code{variables} (variables),
-#' \code{parameters} (parameters),
-#' \code{fixed} (fixed symbols),
-#' \code{modelname} (C++ identifier),
-#' \code{srcfile} (source file),
-#' \code{jacobian.symb}, \code{hessian.symb} (symbolic derivatives).
-#'
-#' @details
-#' The function generates C++ code for efficient evaluation of algebraic
-#' expressions. When \code{compile = TRUE}, the code is compiled using
-#' \code{\link{compile}} and the shared library is loaded.
-#'
-#' The \code{attach.input} argument allows pass-through of additional inputs
-#' that are not part of the model equations:
-#' \itemize{
-#'   \item Unknown variables (vectors with length matching \code{n_obs}) are
-#'     appended to outputs. Their Jacobian columns are zero (no model
-#'     dependence). Their Hessian slices are zero.
-#'   \item Unknown parameters (scalar values) are appended to outputs
-#'     (broadcast across observations). Their Jacobian shows identity
-#'     (derivative of parameter w.r.t. itself is 1). Their Hessian is zero.
-#' }
-#'
-#' @seealso \code{\link{compile}} for compilation, \code{\link{derivSymb}}
-#'   for symbolic differentiation.
-#'
-#' @export
-funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parameters = NULL,
-                   fixed = NULL, modelname = NULL, outdir = tempdir(), compile = FALSE,
-                   verbose = FALSE, convenient = TRUE, deriv = TRUE, deriv2 = FALSE) {
-
-  if (deriv2 && !deriv) { warning("deriv2 requires deriv. Setting deriv = TRUE."); deriv <- TRUE }
-
-  outnames <- names(eqns) %||% paste0("f", seq_along(eqns))
-  if (!is.null(fixed)) { variables <- setdiff(variables, fixed); parameters <- union(parameters, fixed) }
-  innames <- variables; diff_params <- setdiff(parameters, fixed); diff_syms <- c(variables, diff_params)
-  if (!dir.exists(outdir)) stop("outdir does not exist: ", outdir)
-  modelname <- modelname %||% paste0("f", paste(sample(c(letters, 0:9), 8, TRUE), collapse = ""))
-
-  # --- Input validation ---
-  checkInputs <- function(vars, params, attach = FALSE) {
-    n_obs <- if (is.matrix(vars) || is.data.frame(vars)) nrow(vars)
-    else if (is.vector(vars) && !is.list(vars)) length(vars) / max(length(innames), 1L) else 1L
-    n_obs <- max(as.integer(n_obs), 1L); extra_vars <- extra_params <- NULL
-
-    if (!length(innames)) {
-      M <- matrix(0, n_obs, 0)
-      if (attach && !is.null(vars) && (is.matrix(vars) || is.data.frame(vars)) && ncol(vars) > 0) {
-        extra_vars <- as.matrix(vars); n_obs <- nrow(extra_vars)
-      }
-    } else {
-      if (is.null(vars)) stop("Variables defined but 'vars' is NULL.")
-      if (is.vector(vars) && !is.list(vars)) vars <- matrix(vars, ncol = length(innames), dimnames = list(NULL, innames))
-      colnames(vars) <- colnames(vars) %||% innames
-      miss <- setdiff(innames, colnames(vars)); if (length(miss)) stop("Missing variables: ", paste(miss, collapse = ", "))
-      M <- vars[, innames, drop = FALSE]; n_obs <- nrow(M)
-      if (attach) { ex <- setdiff(colnames(vars), innames); if (length(ex)) extra_vars <- vars[, ex, drop = FALSE] }
-    }
-
-    if (!length(parameters)) {
-      p <- numeric(0); if (attach && length(params)) extra_params <- params
-    } else {
-      if (is.null(names(params))) stop("params must be named.")
-      miss <- setdiff(parameters, names(params)); if (length(miss)) stop("Missing parameters: ", paste(miss, collapse = ", "))
-      p <- params[parameters]
-      if (attach) { ex <- setdiff(names(params), parameters); if (length(ex)) extra_params <- params[ex] }
-    }
-    list(M = t(M), p = p, n_obs = n_obs, extra_vars = extra_vars, extra_params = extra_params)
-  }
-
-  # --- Symbolic derivatives ---
-  sym_jac <- sym_hess <- NULL
-  if (deriv || deriv2) {
-    ds <- derivSymb(eqns, deriv2 = deriv2, real = TRUE, fixed = fixed, verbose = verbose)
-    sym_jac <- ds$jacobian; sym_hess <- ds$hessian
-  }
-  if (!is.null(sym_jac)) { rownames(sym_jac) <- rownames(sym_jac) %||% outnames; sym_jac <- sym_jac[, intersect(diff_syms, colnames(sym_jac)), drop = FALSE] }
-  if (!is.null(sym_hess)) for (nm in names(sym_hess)) { av <- intersect(diff_syms, rownames(sym_hess[[nm]])); sym_hess[[nm]] <- sym_hess[[nm]][av, av, drop = FALSE] }
-
-  # --- Expression parsing ---
-  fallback_ok <- TRUE
-  safeParse <- function(s) {
-    if (is.null(s) || s == "0") return(expression(0))
-    s <- gsub("Heaviside\\(([^)]+)\\)", "ifelse(\\1 >= 0, 1, 0)", s)
-    s <- gsub("exp10\\(([^)]+)\\)", "exp((\\1) * log(10))", s)
-    tryCatch(parse(text = s), error = function(e) { fallback_ok <<- FALSE; NULL })
-  }
-  parsed_exprs <- lapply(eqns, safeParse)
-  parsed_jac <- if (!is.null(sym_jac)) { m <- matrix(vector("list", length(sym_jac)), nrow(sym_jac), dimnames = dimnames(sym_jac)); for (i in seq_along(sym_jac)) m[[i]] <- safeParse(sym_jac[i]); m }
-  parsed_hess <- if (!is.null(sym_hess)) lapply(sym_hess, function(H) { m <- matrix(vector("list", length(H)), nrow(H), dimnames = dimnames(H)); for (i in seq_along(H)) m[[i]] <- safeParse(H[i]); m })
-  if (!fallback_ok) warning("R fallback unavailable. Please compile.")
-
-  # --- C++ codegen ---
-  codegen <- get_codegenfunCpp_py()
-  toList <- function(mat) if (is.null(mat)) NULL else setNames(lapply(seq_len(nrow(mat)), function(i) as.list(as.character(mat[i,]))), rownames(mat))
-  toHess <- function(hl) if (is.null(hl)) NULL else setNames(lapply(hl, function(H) lapply(seq_len(nrow(H)), function(i) as.list(as.character(H[i,])))), names(hl))
-  cpp_file <- file.path(outdir, paste0(modelname, ".cpp"))
-  if (file.exists(cpp_file)) message("Overwriting: ", normalizePath(cpp_file, "/", FALSE))
-  codegen$generate_fun_cpp(exprs = setNames(as.list(eqns), outnames), variables = as.list(variables),
-                           parameters = as.list(parameters), jacobian = toList(sym_jac), hessian = toHess(sym_hess),
-                           modelname = modelname, outdir = normalizePath(outdir, "/", FALSE), version = as.character(utils::packageVersion("CppODE")))
-
-  # --- Attach helpers ---
-  abind3 <- function(a, b) { d <- dim(a); db <- dim(b); r <- array(0, c(d[1]+db[1], d[2], d[3]), list(c(dimnames(a)[[1]], dimnames(b)[[1]]), dimnames(a)[[2]], dimnames(a)[[3]])); r[1:d[1],,] <- a; r[d[1]+1:db[1],,] <- b; r }
-  abind4 <- function(a, b) { d <- dim(a); db <- dim(b); r <- array(0, c(d[1]+db[1], d[2], d[3], d[4]), list(c(dimnames(a)[[1]], dimnames(b)[[1]]), dimnames(a)[[2]], dimnames(a)[[3]], dimnames(a)[[4]])); r[1:d[1],,,] <- a; r[d[1]+1:db[1],,,] <- b; r }
-
-  attachExtras <- function(res, n_obs, ev, ep, type) {
-    if (is.null(ev) && is.null(ep)) return(res)
-    if (type == "fun") {
-      if (!is.null(ev)) res <- rbind(res, t(ev))
-      if (!is.null(ep)) res <- rbind(res, matrix(rep(ep, each = n_obs), length(ep), n_obs, dimnames = list(names(ep), NULL)))
-    } else if (type == "jac") {
-      cs <- dimnames(res)[[2]]; ncs <- length(cs)
-      if (!is.null(ev)) res <- abind3(res, array(0, c(ncol(ev), ncs, n_obs), list(colnames(ev), cs, NULL)))
-      if (!is.null(ep)) { np <- length(ep); pn <- names(ep); d <- dim(res); new <- array(0, c(d[1]+np, d[2]+np, d[3]), list(c(dimnames(res)[[1]], pn), c(dimnames(res)[[2]], pn), NULL)); new[1:d[1],1:d[2],] <- res; for (k in seq_len(np)) new[d[1]+k,d[2]+k,] <- 1; res <- new }
-    } else {
-      cs <- dimnames(res)[[2]]; ncs <- length(cs)
-      if (!is.null(ev)) res <- abind4(res, array(0, c(ncol(ev), ncs, ncs, n_obs), list(colnames(ev), cs, cs, NULL)))
-      if (!is.null(ep)) { np <- length(ep); pn <- names(ep); d <- dim(res); new <- array(0, c(d[1]+np, d[2]+np, d[3]+np, d[4]), list(c(dimnames(res)[[1]], pn), c(dimnames(res)[[2]], pn), c(dimnames(res)[[3]], pn), NULL)); new[1:d[1],1:d[2],1:d[3],] <- res; res <- new }
-    }
-    res
-  }
-
-  # --- Core implementations ---
-  fun_impl <- function(vars, params = numeric(0), attach.input = FALSE, fixed = NULL) {
-    chk <- checkInputs(vars, params, attach.input); M <- chk$M; p <- chk$p; n_obs <- chk$n_obs
-    funsym <- paste0(modelname, "_eval")
-    if (is.loaded(funsym)) {
-      out <- .C(funsym, x = as.double(M), y = double(length(outnames) * n_obs), p = as.double(p), n = as.integer(n_obs), k = as.integer(length(innames)), l = as.integer(length(outnames)))
-      res <- matrix(out$y, length(outnames), n_obs, dimnames = list(outnames, NULL))
-    } else {
-      res <- matrix(NA_real_, length(outnames), n_obs, dimnames = list(outnames, NULL))
-      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); res[,i] <- vapply(parsed_exprs, function(e) eval(e, env), numeric(1)) }
-    }
-    attachExtras(res, n_obs, chk$extra_vars, chk$extra_params, "fun")
-  }
-
-  jac_impl <- if (deriv && !is.null(sym_jac)) function(vars, params = numeric(0), attach.input = FALSE, fixed = NULL) {
-    chk <- checkInputs(vars, params, attach.input); M <- chk$M; p <- chk$p; n_obs <- chk$n_obs
-    fixed_rt <- if (is.null(fixed)) character(0) else intersect(fixed, parameters); dsyms <- setdiff(diff_syms, fixed_rt)
-    funsym <- paste0(modelname, "_jacobian"); n_out <- length(outnames); n_sym <- length(diff_syms)
-    if (is.loaded(funsym)) {
-      out <- .C(funsym, x = as.double(M), jac = double(n_obs * n_out * n_sym), p = as.double(p), n = as.integer(n_obs), k = as.integer(length(innames)), l = as.integer(n_out))
-      arr <- array(out$jac, c(n_out, n_sym, n_obs), list(outnames, diff_syms, NULL))
-    } else {
-      arr <- array(0, c(n_out, n_sym, n_obs), list(outnames, diff_syms, NULL))
-      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); for (o in seq_len(n_out)) for (s in seq_len(n_sym)) if (!(diff_syms[s] %in% fixed_rt)) { e <- parsed_jac[[outnames[o], diff_syms[s]]]; if (!is.null(e)) arr[o,s,i] <- eval(e, env) } }
-    }
-    attachExtras(arr[,dsyms,,drop=FALSE], n_obs, chk$extra_vars, chk$extra_params, "jac")
-  }
-
-  hess_impl <- if (deriv2 && !is.null(sym_hess)) function(vars, params = numeric(0), attach.input = FALSE, fixed = NULL) {
-    chk <- checkInputs(vars, params, attach.input); M <- chk$M; p <- chk$p; n_obs <- chk$n_obs
-    fixed_rt <- if (is.null(fixed)) character(0) else intersect(fixed, parameters); dsyms <- setdiff(diff_syms, fixed_rt)
-    funsym <- paste0(modelname, "_hessian"); n_out <- length(outnames); n_sym <- length(diff_syms)
-    if (is.loaded(funsym)) {
-      out <- .C(funsym, x = as.double(M), hess = double(n_obs * n_out * n_sym^2), p = as.double(p), n = as.integer(n_obs), k = as.integer(length(innames)), l = as.integer(n_out))
-      arr <- array(out$hess, c(n_out, n_sym, n_sym, n_obs), list(outnames, diff_syms, diff_syms, NULL))
-    } else {
-      arr <- array(0, c(n_out, n_sym, n_sym, n_obs), list(outnames, diff_syms, diff_syms, NULL))
-      for (i in seq_len(n_obs)) { env <- setNames(as.list(c(M[,i], p)), c(innames, parameters)); for (o in seq_len(n_out)) { Hmat <- parsed_hess[[outnames[o]]]; for (s1 in seq_len(n_sym)) for (s2 in seq_len(n_sym)) if (!(diff_syms[s1] %in% fixed_rt) && !(diff_syms[s2] %in% fixed_rt)) { e <- Hmat[[diff_syms[s1], diff_syms[s2]]]; if (!is.null(e)) arr[o,s1,s2,i] <- eval(e, env) } } }
-    }
-    attachExtras(arr[,dsyms,dsyms,,drop=FALSE], n_obs, chk$extra_vars, chk$extra_params, "hess")
-  }
-
-  # --- Convenient wrapper ---
-  makeWrapper <- function(impl) {
-    if (is.null(impl)) return(NULL)
-    function(..., attach.input = FALSE, fixed = NULL) {
-      args <- list(...); M <- if (length(innames)) do.call(cbind, args[innames]); p <- if (length(parameters)) do.call(c, args[parameters]) else numeric(0)
-      if (attach.input) { extra <- setdiff(names(args), c(innames, parameters)); n_obs <- if (!is.null(M)) nrow(M) else 1L
-      for (nm in extra) { v <- args[[nm]]; if (length(v) == n_obs) { M <- if (is.null(M)) matrix(v, ncol=1, dimnames=list(NULL,nm)) else cbind(M, setNames(data.frame(v), nm)) } else if (length(v) == 1) p <- c(p, setNames(v, nm)) else warning("Extra '", nm, "' ignored") } }
-      impl(M, p, attach.input, fixed)
-    }
-  }
-
-  # --- Output ---
-  outfn <- list(func = if (convenient) makeWrapper(fun_impl) else fun_impl, jac = if (convenient) makeWrapper(jac_impl) else jac_impl, hess = if (convenient) makeWrapper(hess_impl) else hess_impl)
-  attr(outfn, "equations") <- eqns; attr(outfn, "variables") <- variables; attr(outfn, "parameters") <- parameters
-  attr(outfn, "fixed") <- fixed; attr(outfn, "modelname") <- modelname; attr(outfn, "srcfile") <- normalizePath(cpp_file, "/", FALSE)
-  if (deriv && !is.null(sym_jac)) attr(outfn, "jacobian.symb") <- sym_jac
-  if (deriv2 && !is.null(sym_hess)) attr(outfn, "hessian.symb") <- sym_hess
-  if (compile) compile(outfn, verbose = verbose)
-  outfn
 }

@@ -14,9 +14,12 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
 
 ## The Model
 
-This vignette demonstrates how to define, compile, and integrate an ODE
-system with **CppODE**, including automatic computation of parameter
-sensitivities via forward-mode AD (FADBAD++).
+This vignette is the minimal entry point into **CppODE**: a 2-state,
+non-stiff system with no events, focused on how to define a model,
+compile it, and read out **forward-mode AD parameter sensitivities**
+(FADBAD++). For a 15-state stiff example with event-driven ligand
+dosing and sensitivity propagation across event boundaries, see
+`vignette("CppODE_CascadeSignaling", package = "CppODE")`.
 
 As a simple example from theoretical ecology, we use the classic
 **Lotka–Volterra** predator–prey model:
@@ -62,8 +65,8 @@ diagnostics(res)
 ```{r plot-states, fig.cap="Prey and predator population dynamics."}
 df_states <- data.frame(
   time = res$time,
-  x    = res$variable["x", ],
-  y    = res$variable["y", ]
+  x    = res$variable[, "x"],
+  y    = res$variable[, "y"]
 ) |>
   pivot_longer(cols = c(x, y), names_to = "Species", values_to = "Population")
 
@@ -83,8 +86,8 @@ ggplot(df_states, aes(x = time, y = Population, colour = Species)) +
 
 ```{r phase, fig.cap="Phase portrait in (x, y) space."}
 df_phase <- data.frame(
-  x = res$variable["x", ],
-  y = res$variable["y", ]
+  x = res$variable[, "x"],
+  y = res$variable[, "y"]
 )
 
 ggplot(df_phase, aes(x = x, y = y)) +
@@ -101,16 +104,18 @@ ggplot(df_phase, aes(x = x, y = y)) +
 
 The sensitivities $\partial x_i / \partial p_j$ are computed automatically
 via forward-mode AD. `res$sens1` is a 3D array with dimensions
-`[n_states, n_sens, n_times]`.
+`[n_times, n_states, n_sens]`.
 
 ```{r plot-sensitivities, fig.height=7, fig.cap="First-order parameter sensitivities."}
 sens_names <- dimnames(res$sens1)$sens
 n_t <- length(res$time)
 
+# expand.grid varies first column fastest; to align with the column-major
+# flatten of sens1 [n_t, n_x, n_s], iterate t_idx first, then variable, then parameter.
 df_sens <- expand.grid(
+  t_idx     = seq_len(n_t),
   variable  = dimnames(res$sens1)$variable,
   parameter = sens_names,
-  t_idx     = seq_len(n_t),
   stringsAsFactors = FALSE
 )
 df_sens$time  <- res$time[df_sens$t_idx]
@@ -143,8 +148,8 @@ How sensitive is the system to the prey growth rate $\alpha$?
 ```{r sens-alpha, fig.cap="Sensitivity of both populations to α."}
 df_alpha <- data.frame(
   time      = res$time,
-  dx_dalpha = res$sens1["x", "alpha", ],
-  dy_dalpha = res$sens1["y", "alpha", ]
+  dx_dalpha = res$sens1[, "x", "alpha"],
+  dy_dalpha = res$sens1[, "y", "alpha"]
 ) |>
   pivot_longer(-time, names_to = "Sensitivity", values_to = "value")
 
@@ -168,6 +173,11 @@ ggplot(df_alpha, aes(x = time, y = value, colour = Sensitivity)) +
 - Sensitivities are computed automatically via forward-mode AD (FADBAD++) —
   no manual derivation of sensitivity equations required.
 - Results are numerically exact (machine precision, no finite differences).
+
+For a stiff 15-state MAPK signaling cascade with a time-triggered
+ligand bolus and sensitivities that survive the event jump via the
+analytical saltation matrix, see
+`vignette("CppODE_CascadeSignaling", package = "CppODE")`.
 
 ```{r session}
 sessionInfo()

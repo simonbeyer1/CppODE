@@ -1,0 +1,299 @@
+# Test parameter reparametrization p = Phi(theta) for sensitivities.
+
+skip_on_cran()
+skip_on_ci()
+
+# ── Simple scalar log-transform ───────────────────────────────────────────────
+
+test_that("log-transform reparam matches analytical dx/dtheta", {
+  # Model: dx/dt = -k*x, x(0) = x0. p = (x0, k).
+  # Reparametrize: theta = (x0, log(k)) → Phi(theta) = (theta_x0, exp(theta_lk))
+  # Phi_prime = [[1, 0], [0, k]]
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_log", deriv = TRUE, ntheta = 2L)
+
+  pars <- c(x = 1.0, k = 0.5)
+  Phi_prime <- matrix(c(1, 0, 0, 0.5), nrow = 2, ncol = 2,
+                      dimnames = list(c("x", "k"), c("theta_x0", "theta_lk")))
+
+  tvec <- seq(0, 2, by = 0.5)
+  res  <- solveODE(mod, times = tvec, parms = pars, sens1ini = Phi_prime,
+                   abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(res$sens1), c(length(tvec), 1L, 2L))
+  expect_equal(dimnames(res$sens1)$sens, c("theta_x0", "theta_lk"))
+
+  k  <- 0.5; x0 <- 1.0
+  expected_x0 <- exp(-k * tvec)
+  expected_lk <- -k * tvec * x0 * exp(-k * tvec)
+  expect_equal(as.numeric(res$sens1[, 1, 1]), expected_x0, tolerance = 1e-8)
+  expect_equal(as.numeric(res$sens1[, 1, 2]), expected_lk, tolerance = 1e-8)
+})
+
+# ── Parity: direct integration vs post-hoc S * Phi' ──────────────────────────
+
+test_that("reparam sens equals post-hoc S * Phi' (two-state model)", {
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+
+  pars <- c(A = 1.0, B = 0.0, k1 = 0.3, k2 = 0.1)
+  tvec <- seq(0, 5, length.out = 21)
+
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  # Identity model
+  mod_id <- CppODE(rhs, modelname = "rep_id", deriv = TRUE)
+  res_id <- solveODE(mod_id, tvec, pars,
+                     abstol = tight$abstol, reltol = tight$reltol)
+
+  # Reparametrized model: theta = (A0, B0, log(k1), log(k2))
+  mod_th <- CppODE(rhs, modelname = "rep_th", deriv = TRUE, ntheta = 4L)
+  k1 <- pars["k1"]; k2 <- pars["k2"]
+  Phi_prime <- matrix(
+    c(1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, k1, 0,
+      0, 0, 0, k2),
+    nrow = 4, ncol = 4, byrow = TRUE,
+    dimnames = list(c("A", "B", "k1", "k2"),
+                    c("A0", "B0", "log_k1", "log_k2"))
+  )
+  res_th <- solveODE(mod_th, tvec, pars, sens1ini = Phi_prime,
+                     abstol = tight$abstol, reltol = tight$reltol)
+
+  # Post-hoc: S_theta[t, i, j] = sum_p S_id[t, i, p] * Phi_prime[p, j]
+  # where rows of Phi_prime are (A, B, k1, k2) and columns are theta names.
+  S_id <- res_id$sens1
+  S_expected <- array(0, dim = dim(res_th$sens1), dimnames = dimnames(res_th$sens1))
+  for (ti in seq_len(dim(S_id)[1])) {
+    S_expected[ti, , ] <- S_id[ti, , ] %*% Phi_prime
+  }
+  expect_equal(as.numeric(res_th$sens1), as.numeric(S_expected),
+               tolerance = 1e-8)
+})
+
+# ── Rank-reduced reparam (n_theta < n_p) ────────────────────────────────────
+
+test_that("rank-reduced reparam integrates over smaller theta space", {
+  # Model: dx/dt = -k*x
+  # Reparametrize to theta = (log(k)), with x0 = exp(theta) (ties IC to rate).
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_rank1", deriv = TRUE, ntheta = 1L)
+
+  k <- 0.4; theta <- log(k); x0 <- exp(theta)   # x0 = k by this parametrization
+  pars <- c(x = x0, k = k)
+
+  # Phi(theta) = (exp(theta), exp(theta))
+  # Phi_prime = [[exp(theta)], [exp(theta)]] = [[k], [k]]
+  Phi_prime <- matrix(c(k, k), nrow = 2, ncol = 1,
+                      dimnames = list(c("x", "k"), "log_k"))
+
+  tvec <- seq(0, 3, by = 0.5)
+  res  <- solveODE(mod, tvec, pars, sens1ini = Phi_prime,
+                   abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(res$sens1), c(length(tvec), 1L, 1L))
+
+  # Analytic: x(t) = x0 * exp(-k*t) = k * exp(-k*t)
+  # dx/dtheta = dx/dx0 * exp(theta) + dx/dk * exp(theta)
+  #           = exp(-kt) * k + (-t*x0*exp(-kt)) * k
+  #           = k * exp(-kt) * (1 - k*t)
+  expected <- k * exp(-k * tvec) * (1 - k * tvec)
+  expect_equal(as.numeric(res$sens1[, 1, 1]), expected, tolerance = 1e-8)
+})
+
+# ── Guard rails ──────────────────────────────────────────────────────────────
+
+test_that("reparam requires sens1ini at solveODE() time", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_missing_sens", deriv = TRUE, ntheta = 2L)
+  expect_error(solveODE(mod, c(0, 1), c(x = 1, k = 0.5)),
+               "sens1ini")
+})
+
+test_that("reparam rejects 'fixed' argument", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_fixed_reject", deriv = TRUE, ntheta = 2L)
+  Phi_prime <- matrix(c(1, 0, 0, 0.5), 2, 2)
+  expect_error(solveODE(mod, c(0, 1), c(x = 1, k = 0.5),
+                        sens1ini = Phi_prime, fixed = "k"),
+               "not supported")
+})
+
+test_that("ntheta with deriv=FALSE is rejected at compile time", {
+  expect_error(CppODE(c(x = "-k*x"), modelname = "rep_no_deriv",
+                      deriv = FALSE, ntheta = 2L),
+               "deriv = TRUE")
+})
+
+# ── Phase 2: Second-order sensitivities under reparam ───────────────────────
+
+test_that("deriv2 + log-reparam matches analytical d^2x/dtheta^2", {
+  # p = Phi(theta) = (theta_x0, exp(theta_lk))
+  # Phi'  = [[1, 0], [0, k]]
+  # Phi'' = all zero except Phi''[k_row, theta_lk, theta_lk] = k
+  mod <- CppODE(c(x = "-k*x"), modelname = "d2_rep_log",
+                deriv = TRUE, deriv2 = TRUE, ntheta = 2L)
+
+  pars <- c(x = 1.0, k = 0.5); k <- 0.5; x0 <- 1.0
+  Phi_prime <- matrix(c(1, 0, 0, k), 2, 2)
+  Phi_pp <- array(0, dim = c(2, 2, 2)); Phi_pp[2, 2, 2] <- k
+
+  tvec <- c(0, 0.5, 1, 1.5, 2)
+  res <- solveODE(mod, tvec, pars,
+                  sens1ini = Phi_prime, sens2ini = Phi_pp,
+                  abstol = 1e-10, reltol = 1e-10)
+
+  expect_equal(dim(res$sens2), c(length(tvec), 1L, 2L, 2L))
+
+  # Analytic:
+  # d^2x/dtheta_x0^2 = 0
+  # d^2x/dtheta_x0 dtheta_lk = -k*t*exp(-kt)
+  # d^2x/dtheta_lk^2 = x0*exp(-kt)*k*t*(kt - 1)
+  expect_equal(as.numeric(res$sens2[, 1, 1, 1]),
+               rep(0, length(tvec)), tolerance = 1e-8)
+  expect_equal(as.numeric(res$sens2[, 1, 1, 2]),
+               -k * tvec * exp(-k * tvec), tolerance = 1e-8)
+  expect_equal(as.numeric(res$sens2[, 1, 2, 1]),   # symmetry
+               -k * tvec * exp(-k * tvec), tolerance = 1e-8)
+  expect_equal(as.numeric(res$sens2[, 1, 2, 2]),
+               x0 * exp(-k * tvec) * k * tvec * (k * tvec - 1),
+               tolerance = 1e-8)
+})
+
+# ── CVODE backend parity ────────────────────────────────────────────────────
+
+test_that("CVODE reparam matches Native reparam (no events)", {
+  skip_if_not(isTRUE(cvodeConfig$available), "CVODE backend not available")
+
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+  pars <- c(A = 1.0, B = 0.0, k1 = 0.3, k2 = 0.1)
+  tvec <- seq(0, 5, length.out = 11)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  k1 <- pars["k1"]; k2 <- pars["k2"]
+  Phi_prime <- matrix(
+    c(1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, k1, 0,
+      0, 0, 0, k2),
+    nrow = 4, ncol = 4, byrow = TRUE)
+
+  mod_native <- CppODE(rhs, modelname = "rep_par_nat",
+                       deriv = TRUE, ntheta = 4L)
+  mod_cvode  <- CVODE(rhs,  modelname = "rep_par_cv",
+                      deriv = TRUE, ntheta = 4L)
+
+  res_n <- solveODE(mod_native, tvec, pars, sens1ini = Phi_prime,
+                    abstol = tight$abstol, reltol = tight$reltol)
+  res_c <- solveODE(mod_cvode,  tvec, pars, sens1ini = Phi_prime,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  expect_equal(dim(res_n$sens1), dim(res_c$sens1))
+  expect_equal(as.numeric(res_n$sens1), as.numeric(res_c$sens1),
+               tolerance = 1e-6)
+})
+
+test_that("CVODE reparam with time event: chain-rule saltation (post-hoc parity)", {
+  skip_if_not(isTRUE(cvodeConfig$available), "CVODE backend not available")
+
+  # dx/dt = -k*x with a parameterised-time event: at t = t_e, x += dose.
+  # Reparametrize theta = (x0, log(k), t_e, dose); Phi'(theta) has
+  # a non-identity on the k row (dp_k/dtheta_lk = k).
+  eqns <- c(x = "-k*x")
+  evt  <- data.frame(var = "x", time = "t_e", value = "dose",
+                     method = "add", root = NA, stringsAsFactors = FALSE)
+  pars <- c(x = 1.0, k = 0.3, t_e = 2.0, dose = 0.5)
+
+  k <- pars["k"]
+  # Phi rows = (x, k, t_e, dose), theta = (theta_x0, theta_lk, theta_te, theta_dose)
+  Phi_prime <- matrix(c(
+    1, 0,  0, 0,
+    0, k,  0, 0,
+    0, 0,  1, 0,
+    0, 0,  0, 1),
+    nrow = 4, ncol = 4, byrow = TRUE)
+
+  tvec <- seq(0, 5, length.out = 21)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  # CVODE non-reparam (reference in p-coordinates, with event saltation)
+  mod_id <- CVODE(eqns, events = evt, modelname = "rep_ev_cv_id",
+                  deriv = TRUE)
+  res_id <- solveODE(mod_id, tvec, pars,
+                     abstol = tight$abstol, reltol = tight$reltol)
+
+  # CVODE reparam (uses chain-rule saltation internally)
+  mod_cv <- CVODE(eqns, events = evt, modelname = "rep_ev_cv_th",
+                  deriv = TRUE, ntheta = 4L)
+  res_cv <- solveODE(mod_cv, tvec, pars, sens1ini = Phi_prime,
+                     abstol = tight$abstol, reltol = tight$reltol)
+
+  # Post-hoc composition: S_theta[t, i, j] = sum_p S_id[t, i, p] * Phi_prime[p, j]
+  S_id <- res_id$sens1  # [t, x, (x, k, t_e, dose)]
+  S_expected <- array(0, dim = dim(res_cv$sens1))
+  for (ti in seq_len(dim(S_id)[1])) {
+    S_expected[ti, , ] <- S_id[ti, , ] %*% Phi_prime
+  }
+  expect_equal(as.numeric(res_cv$sens1), as.numeric(S_expected),
+               tolerance = 1e-5)
+})
+
+test_that("sens2 chain-rule parity: direct vs post-hoc composition", {
+  # Nonlinear reparametrization over a 2-state model: theta -> p
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+
+  pars <- c(A = 1.0, B = 0.2, k1 = 0.3, k2 = 0.1)
+  tvec <- seq(0, 3, length.out = 7)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  # Identity model with deriv2 for post-hoc composition
+  mod_id <- CppODE(rhs, modelname = "d2_par_id", deriv = TRUE, deriv2 = TRUE)
+  res_id <- solveODE(mod_id, tvec, pars,
+                     abstol = tight$abstol, reltol = tight$reltol)
+
+  # Reparametrized model: theta = (A0, B0, log(k1), log(k2))
+  mod_th <- CppODE(rhs, modelname = "d2_par_th",
+                   deriv = TRUE, deriv2 = TRUE, ntheta = 4L)
+  k1 <- pars["k1"]; k2 <- pars["k2"]
+  Phi_prime <- matrix(
+    c(1, 0, 0,  0,
+      0, 1, 0,  0,
+      0, 0, k1, 0,
+      0, 0, 0,  k2),
+    nrow = 4, ncol = 4, byrow = TRUE
+  )
+  Phi_pp <- array(0, dim = c(4, 4, 4))
+  Phi_pp[3, 3, 3] <- k1  # d^2 k1 / d(log_k1)^2 = k1
+  Phi_pp[4, 4, 4] <- k2  # d^2 k2 / d(log_k2)^2 = k2
+
+  res_th <- solveODE(mod_th, tvec, pars,
+                     sens1ini = Phi_prime, sens2ini = Phi_pp,
+                     abstol = tight$abstol, reltol = tight$reltol)
+
+  # Post-hoc chain rule:
+  #   H^theta[t, k, a, b] = sum_{i,j} H_id[t, k, i, j] * Phi'[i, a] * Phi'[j, b]
+  #                      + sum_i      S_id[t, k, i]   * Phi''[i, a, b]
+  # where i, j range over the full n_phi_rows = n_states + n_params = 4 slots.
+  S_id <- res_id$sens1   # [t, k, i] but here i only has n_active = 4 slots (all)
+  H_id <- res_id$sens2   # [t, k, i, j] with same i, j basis
+  H_expected <- array(0, dim = dim(res_th$sens2))
+
+  # Note: S_id / H_id are indexed by ACTIVE slots, which under identity mode
+  # correspond to the full (variables, parameters) vector since nothing is fixed.
+  for (ti in seq_along(tvec)) {
+    for (kk in seq_len(dim(H_id)[2])) {
+      # Hessian term
+      H_expected[ti, kk, , ] <- t(Phi_prime) %*% H_id[ti, kk, , ] %*% Phi_prime
+      # Gradient-times-Phi'' term
+      for (a in seq_len(4)) {
+        for (b in seq_len(4)) {
+          H_expected[ti, kk, a, b] <- H_expected[ti, kk, a, b] +
+            sum(S_id[ti, kk, ] * Phi_pp[, a, b])
+        }
+      }
+    }
+  }
+
+  expect_equal(as.numeric(res_th$sens2), as.numeric(H_expected),
+               tolerance = 1e-7)
+})
+

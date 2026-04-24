@@ -2,11 +2,11 @@
  Main header for CppODE – ODE integration and sensitivity calculation
  using FADBAD++ automatic differentiation.
 
- The stepper architecture (Rosenbrock4, BDF) is derived from Boost.Odeint
+ The stepper architecture (Rosenbrock4, NDF/BDF) is derived from Boost.Odeint
  by Karsten Ahnert, Mario Mulansky, and Christoph Koke (2011–2015),
  distributed under the Boost Software License, Version 1.0.
  Substantially rewritten: LAPACK/KLU linear algebra, AD-aware LU
- decomposition, event handling, BDF support, PI step-size control.
+ decomposition, event handling, NDF/BDF support, PI step-size control.
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -66,19 +66,30 @@
 #include <cppode/cppode_stepper_traits.hpp>
 
 // ============================================================================
-//  CppODE Rosenbrock4 stepper (unified: double + AD)
+//  CppODE single-step methods (Rosenbrock4, Tsit5)
+//
+//  Unified onestep_controller and onestep_dense_output work with any
+//  single-step stepper.  The old rosenbrock4_controller / _dense_output
+//  headers are thin wrappers that include these.
 // ============================================================================
 #include <cppode/cppode_rosenbrock4.hpp>
-#include <cppode/cppode_rosenbrock4_controller.hpp>
-#include <cppode/cppode_rosenbrock4_dense_output.hpp>
+#include <cppode/cppode_tsit5.hpp>
+#include <cppode/cppode_onestep_controller.hpp>
+#include <cppode/cppode_onestep_dense_output.hpp>
 #include <cppode/cppode_integrate_times.hpp>
 #include <cppode/cppode_step_checker.hpp>
 
 // ============================================================================
-//  CppODE BDF stepper (unified: double + AD, variable order 1–5)
+//  CppODE multistep family (BDF / Adams / MSODA)
+//
+//  Single unified multistepper class (cppode::multistepper) with a
+//  method selector (multistep_method enum).  Default coefficients are
+//  the Klopfenstein-Shampine NDF family (Shampine & Reichelt 1997);
+//  classical BDF, pure Adams-Moulton, and the two LSODA-style
+//  switching variants are all instantiations of the same class.
 // ============================================================================
-#include <cppode/cppode_bdf.hpp>
-#include <cppode/cppode_bdf_controller.hpp>
-#include <cppode/cppode_bdf_dense_output.hpp>
+#include <cppode/cppode_multistepper.hpp>
+#include <cppode/cppode_multistepper_controller.hpp>
+#include <cppode/cppode_multistepper_dense_output.hpp>
 
 #endif // CPPODE_HPP

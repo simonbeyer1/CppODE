@@ -1,0 +1,196 @@
+#!/bin/sh
+# =====================================================================
+# CppODE configure — detect optional system libraries at install time.
+#
+# Two independent capabilities are probed:
+#
+#   1. SUNDIALS (>= 6.0) — required by the CVODE() backend.
+#   2. SuiteSparse / KLU — required by the sparse Jacobian path of
+#      both CppODE() and CVODE().
+#
+# Both are optional: if a library is missing the relevant runtime
+# entry points fail with a clear, distro-specific install hint. The
+# install itself always succeeds.
+#
+# The detected flags are written to inst/cvodeConfig.dcf, which is
+# read at package load time (R/zzz.R) into an internal `cvodeConfig`
+# environment consumed by R/CVODE.R and R/tools.R at runtime.
+# =====================================================================
+set -e
+
+PKG_CONFIG="${PKG_CONFIG:-pkg-config}"
+
+: "${R_HOME:=$(R RHOME 2>/dev/null || true)}"
+if [ -z "${R_HOME}" ]; then
+  echo "configure: cannot locate R_HOME — aborting." >&2
+  exit 1
+fi
+RBIN="${R_HOME}/bin/R"
+
+CXX=$("${RBIN}" CMD config CXX)
+CXXFLAGS=$("${RBIN}" CMD config CXXFLAGS)
+CPPFLAGS=$("${RBIN}" CMD config CPPFLAGS)
+
+log() { echo "configure: $*"; }
+
+probe_compile() {
+  # $1: source snippet; $2: extra cflags; $3: extra libs
+  snippet="$1"; extra_cflags="$2"; extra_libs="$3"
+  tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t conftest)
+  printf '%s\n' "$snippet" > "$tmpdir/conftest.cpp"
+  if $CXX $CPPFLAGS $CXXFLAGS $extra_cflags -o "$tmpdir/conftest" \
+      "$tmpdir/conftest.cpp" $extra_libs >/dev/null 2>&1; then
+    rm -rf "$tmpdir"
+    return 0
+  fi
+  rm -rf "$tmpdir"
+  return 1
+}
+
+# ---------------------------------------------------------------------
+# SUNDIALS (CVODES + NVector_Serial + dense matrix / solver)
+# ---------------------------------------------------------------------
+sundials_available=0
+sundials_cflags=""
+sundials_libs=""
+
+if command -v "$PKG_CONFIG" >/dev/null 2>&1 \
+    && "$PKG_CONFIG" --exists sundials-cvodes 2>/dev/null; then
+  sundials_cflags=$("$PKG_CONFIG" --cflags \
+      sundials-cvodes sundials-nvecserial \
+      sundials-sunmatrixdense sundials-sunlinsoldense 2>/dev/null || true)
+  sundials_libs=$("$PKG_CONFIG" --libs \
+      sundials-cvodes sundials-nvecserial \
+      sundials-sunmatrixdense sundials-sunlinsoldense 2>/dev/null || true)
+  if [ -n "$sundials_libs" ]; then
+    sundials_available=1
+    log "SUNDIALS detected via pkg-config"
+  fi
+fi
+
+if [ "$sundials_available" = "0" ]; then
+  snippet='
+#include <cvodes/cvodes.h>
+#include <nvector/nvector_serial.h>
+#include <sunmatrix/sunmatrix_dense.h>
+#include <sunlinsol/sunlinsol_dense.h>
+int main() {
+  SUNContext ctx = 0;
+  SUNContext_Create(0, &ctx);
+  if (ctx) SUNContext_Free(&ctx);
+  return 0;
+}
+'
+  trial_libs="-lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense"
+  if probe_compile "$snippet" "" "$trial_libs"; then
+    sundials_cflags=""
+    sundials_libs="$trial_libs"
+    sundials_available=1
+    log "SUNDIALS detected via compile probe (default include paths)"
+  fi
+fi
+
+if [ "$sundials_available" = "0" ]; then
+  log "----------------------------------------------------------------"
+  log "SUNDIALS not found — CVODE() backend will be DISABLED."
+  log "  To enable it, install SUNDIALS (>= 6.0) development headers:"
+  log "    Debian/Ubuntu : sudo apt install libsundials-dev"
+  log "    Fedora        : sudo dnf install sundials-devel"
+  log "    Arch          : sudo pacman -S sundials"
+  log "    macOS (brew)  : brew install sundials"
+  log "  Then re-run: R CMD INSTALL <path/to/CppODE>"
+  log "----------------------------------------------------------------"
+fi
+
+# ---------------------------------------------------------------------
+# SuiteSparse / KLU (needed by both CppODE() and CVODE() sparse paths)
+# ---------------------------------------------------------------------
+klu_available=0
+klu_cflags=""
+klu_libs=""
+
+# pkg-config — Debian ships an uppercase `KLU` package
+if command -v "$PKG_CONFIG" >/dev/null 2>&1; then
+  for name in KLU klu; do
+    if "$PKG_CONFIG" --exists "$name" 2>/dev/null; then
+      pc_cflags=$("$PKG_CONFIG" --cflags "$name" 2>/dev/null || true)
+      pc_libs=$("$PKG_CONFIG" --libs "$name" 2>/dev/null || true)
+      if [ -n "$pc_libs" ]; then
+        klu_cflags="$pc_cflags"
+        klu_libs="$pc_libs"
+        # The SUNDIALS sparse linsol wrappers (needed by CVODE only) are
+        # gated at compile time by -DCVODE_KLU; appending them here is
+        # harmless for the CppODE() path that doesn't reference them.
+        if [ "$sundials_available" = "1" ]; then
+          klu_libs="-lsundials_sunmatrixsparse -lsundials_sunlinsolklu $klu_libs"
+        fi
+        klu_available=1
+        log "KLU detected via pkg-config ($name)"
+        break
+      fi
+    fi
+  done
+fi
+
+# Compile-probe fallback for distros without pkg-config for KLU.
+# Try the minimal `-lklu` first — modern shared KLU pulls in its SuiteSparse
+# deps (amd, colamd, btf, suitesparseconfig) transitively via SONAME. Only
+# fall back to the explicit list if the minimal probe fails (static KLU or
+# linkers configured with --as-needed).
+if [ "$klu_available" = "0" ]; then
+  snippet="#include <klu.h>
+int main() { klu_common c; klu_defaults(&c); return 0; }"
+  for d in /usr/include/suitesparse /usr/local/include/suitesparse \
+           /opt/homebrew/include/suitesparse /opt/local/include/suitesparse; do
+    if [ -f "$d/klu.h" ]; then
+      trial_cflags="-I$d"
+      for trial_libs in "-lklu" "-lklu -lamd -lcolamd -lbtf -lsuitesparseconfig"; do
+        if probe_compile "$snippet" "$trial_cflags" "$trial_libs"; then
+          klu_cflags="$trial_cflags"
+          klu_libs="$trial_libs"
+          if [ "$sundials_available" = "1" ]; then
+            klu_libs="-lsundials_sunmatrixsparse -lsundials_sunlinsolklu $klu_libs"
+          fi
+          klu_available=1
+          log "KLU detected via compile probe ($d, libs: $trial_libs)"
+          break 2
+        fi
+      done
+    fi
+  done
+fi
+
+if [ "$klu_available" = "0" ]; then
+  log "----------------------------------------------------------------"
+  log "KLU not found — sparse Jacobian path will be DISABLED for both"
+  log "  CppODE() and CVODE() (sparse=TRUE errors; sparse=NULL falls"
+  log "  back to dense). To enable it, install SuiteSparse development"
+  log "  headers:"
+  log "    Debian/Ubuntu : sudo apt install libsuitesparse-dev"
+  log "    Fedora        : sudo dnf install suitesparse-devel"
+  log "    Arch          : sudo pacman -S suitesparse"
+  log "    macOS (brew)  : brew install suite-sparse"
+  log "  Then re-run: R CMD INSTALL <path/to/CppODE>"
+  log "----------------------------------------------------------------"
+fi
+
+# ---------------------------------------------------------------------
+# Write inst/cvodeConfig.dcf.  Consumed by R/zzz.R at package load time.
+# R source files are never rewritten.
+# ---------------------------------------------------------------------
+bool() { [ "$1" = "1" ] && echo TRUE || echo FALSE; }
+
+sundials_on=$(bool $sundials_available)
+klu_on=$(bool $klu_available)
+
+mkdir -p inst
+cat > inst/cvodeConfig.dcf <<EOF
+available: $sundials_on
+cflags: $sundials_cflags
+libs: $sundials_libs
+klu_available: $klu_on
+klu_cflags: $klu_cflags
+klu_libs: $klu_libs
+EOF
+
+log "Summary:  CVODE=$([ $sundials_available = 1 ] && echo ON || echo off), KLU=$([ $klu_available = 1 ] && echo ON || echo off)"

@@ -1,0 +1,308 @@
+---
+title: "Cascade Signaling: Event-Driven Ligand Dosing with Sensitivities"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Cascade Signaling: Event-Driven Ligand Dosing with Sensitivities}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, dpi = 150)
+```
+
+## The Model
+
+This vignette walks through a realistic 15-state MAPK signaling cascade —
+stiff, non-linear, with gene-regulatory feedback — and demonstrates two
+features that go beyond the
+[Predator–Prey vignette](CppODE_LotkaVolterra.html):
+
+- **Time-triggered events**, used here to inject a ligand bolus into the
+  ligand state at $t = t_{\text{dose}}$.
+- **Sensitivity propagation across event boundaries** via the analytical
+  **saltation matrix** that both backends apply automatically — so
+  $\partial y / \partial p$ stays consistent through the dose jump.
+
+The network is adapted from
+`benchmarks/bench_cascade_model.R`, with the only difference that the
+ligand `L` is promoted from a static parameter to a state variable so
+that an event can act on it.
+
+### States
+
+The 15 states split into three functional layers:
+
+| Layer | States |
+|---|---|
+| Receptor binding | `L`, `R`, `LR` |
+| MAPK cascade | `KKK`, `KKKa`, `KK`, `KKa`, `K`, `Ka` |
+| Gene regulation | `TF`, `TFa`, `mRNA_target`, `P_target`, `mRNA_inhib`, `P_inhib` |
+
+Active phosphorylated kinases are suffixed with `a`. `P_inhib` closes a
+negative feedback loop onto `KKKa` dephosphorylation.
+
+## Define and compile the model
+
+```{r define}
+library(CppODE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+rhs <- c(
+  L           = "-kon * L * R + koff * LR",
+  R           = "-kon * L * R + koff * LR + ksyn_R",
+  LR          = " kon * L * R - koff * LR - kint * LR",
+  KKK         = "-k1 * LR * KKK  / (Km1 + KKK)  + k2 * KKKa / (Km2 + KKKa) * (1 + ki * P_inhib)",
+  KKKa        = " k1 * LR * KKK  / (Km1 + KKK)  - k2 * KKKa / (Km2 + KKKa) * (1 + ki * P_inhib)",
+  KK          = "-k3 * KKKa * KK / (Km3 + KK)   + k4 * KKa  / (Km4 + KKa)",
+  KKa         = " k3 * KKKa * KK / (Km3 + KK)   - k4 * KKa  / (Km4 + KKa)",
+  K           = "-k5 * KKa * K   / (Km5 + K)    + k6 * Ka   / (Km6 + Ka)",
+  Ka          = " k5 * KKa * K   / (Km5 + K)    - k6 * Ka   / (Km6 + Ka)",
+  TF          = "-k7 * Ka * TF + k8 * TFa",
+  TFa         = " k7 * Ka * TF - k8 * TFa",
+  mRNA_target = "ktx   * TFa - kdeg_mRNA   * mRNA_target",
+  P_target    = "ktl   * mRNA_target - kdeg_P   * P_target",
+  mRNA_inhib  = "ktx_i * TFa - kdeg_mRNA_i * mRNA_inhib",
+  P_inhib     = "ktl_i * mRNA_inhib  - kdeg_P_i * P_inhib"
+)
+```
+
+### The event: add ligand at $t = 0$
+
+We start with no ligand in the system (`L = 0`) and then add a bolus of
+`L_dose` at time `t_dose` via a **fixed-time event**. Using a parameter
+name for the time (`t_dose`) lets CppODE propagate sensitivities with
+respect to the dose timing through the saltation matrix.
+
+```{r event}
+events <- data.frame(
+  var    = "L",
+  time   = "t_dose",
+  value  = "L_dose",
+  method = "add",
+  root   = NA,
+  stringsAsFactors = FALSE
+)
+```
+
+### Compile
+
+We compute sensitivities only for a handful of physiologically
+interesting parameters — the dose magnitude `L_dose`, the receptor-binding
+rate `kon`, the three phosphorylation rate constants `k1`/`k3`/`k5`, the
+transcription-factor activation rate `k7`, and the feedback strength
+`ki`. Every other parameter and initial condition is declared `fixed`,
+which turns them into plain scalars at the C++ level and skips their AD
+columns entirely.
+
+```{r compile}
+all_states <- names(rhs)
+sens_pars  <- c("L_dose", "kon", "k1", "k3", "k5", "k7", "ki")
+all_pars   <- c("t_dose", "L_dose", "kon", "koff", "kint", "ksyn_R",
+                "k1", "Km1", "k2", "Km2", "k3", "Km3", "k4", "Km4",
+                "k5", "Km5", "k6", "Km6", "ki", "k7", "k8",
+                "ktx", "kdeg_mRNA", "ktl", "kdeg_P",
+                "ktx_i", "kdeg_mRNA_i", "ktl_i", "kdeg_P_i")
+fixed <- c(all_states, setdiff(all_pars, sens_pars))
+
+model <- CppODE(
+  rhs,
+  events    = events,
+  fixed     = fixed,
+  deriv     = TRUE,
+  method    = "bdf",
+  useNDF    = TRUE,
+  modelname = "cascade_signaling",
+  outdir    = tempdir()
+)
+```
+
+The default multistep is NDF-on-BDF — a good stiff choice for this
+network. For comparison you can swap `method = "rb4"` (Rosenbrock-4) or
+`method = "msoda"` (LSODA-style auto-switching).
+
+## Solve
+
+```{r solve}
+parms <- c(
+  # Initial conditions
+  L = 0, R = 100, LR = 0,
+  KKK = 100, KKKa = 0, KK = 100, KKa = 0, K = 100, Ka = 0,
+  TF = 100, TFa = 0,
+  mRNA_target = 0, P_target = 0, mRNA_inhib = 0, P_inhib = 0,
+  # Event parameters
+  t_dose = 0.1, L_dose = 10,
+  # Kinetics
+  kon = 0.1, koff = 0.05, kint = 0.01, ksyn_R = 0.5,
+  k1 = 0.5, Km1 = 10, k2 = 0.2, Km2 = 10,
+  k3 = 0.3, Km3 = 10, k4 = 0.15, Km4 = 10,
+  k5 = 0.4, Km5 = 10, k6 = 0.1, Km6 = 10, ki = 0.5,
+  k7 = 0.2, k8 = 0.05,
+  ktx = 1.0, kdeg_mRNA = 0.1, ktl = 0.5, kdeg_P = 0.05,
+  ktx_i = 0.3, kdeg_mRNA_i = 0.2, ktl_i = 0.4, kdeg_P_i = 0.1
+)
+
+times <- seq(0, 100, length.out = 500)
+res   <- solveODE(model, times, parms, abstol = 1e-9, reltol = 1e-7)
+diagnostics(res)
+```
+
+`t_dose = 0.1` places the event just inside the integration interval —
+the jump is visible at the very start of the plots below.
+
+## Cascade dynamics
+
+```{r plot-cascade, fig.height=6, fig.cap="State trajectories after the ligand bolus. Dashed vertical line marks t = t_dose."}
+df <- cbind(time = res$time, as.data.frame(res$variable)) |>
+  pivot_longer(-time, names_to = "state", values_to = "value")
+
+layer <- c(
+  L = "Receptor",  R = "Receptor",  LR = "Receptor",
+  KKK = "Kinase",  KKKa = "Kinase", KK = "Kinase", KKa = "Kinase",
+  K = "Kinase",    Ka = "Kinase",
+  TF = "Gene",     TFa = "Gene",
+  mRNA_target = "Gene", P_target = "Gene",
+  mRNA_inhib  = "Gene", P_inhib  = "Gene"
+)
+df$layer <- factor(layer[df$state],
+                   levels = c("Receptor", "Kinase", "Gene"))
+
+ggplot(df, aes(x = time, y = value, colour = state)) +
+  geom_vline(xintercept = parms["t_dose"], linetype = "dashed",
+             colour = "grey60", linewidth = 0.4) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ layer, scales = "free_y", ncol = 1) +
+  labs(x = "Time", y = "Concentration", colour = NULL,
+       title = "Cascade response to ligand bolus") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right",
+        strip.background = element_rect(fill = "grey95"))
+```
+
+The ligand is consumed by receptor binding, the cascade transduces the
+signal upward through `KKKa → KKa → Ka`, and the gene-regulatory layer
+lags behind with both a target product (`P_target`) and a feedback
+inhibitor (`P_inhib`) that eventually dampens the active pool.
+
+## Parameter sensitivities
+
+`res$sens1` is a 3D array with dimensions `[n_times, n_states, n_sens]`.
+Because we declared most parameters `fixed`, the sensitivity dimension
+collapses from the 43 total symbols down to the seven we actually care
+about.
+
+```{r sens-summary}
+dim(res$sens1)
+dimnames(res$sens1)$sens
+```
+
+### Sensitivity of active MAPK (`Ka`) to kinetic parameters
+
+```{r plot-sens, fig.cap="How much does each kinetic parameter drive the active MAPK (Ka) response?"}
+df_sens <- data.frame(time = res$time, res$sens1[, "Ka", ]) |>
+  pivot_longer(-time, names_to = "parameter", values_to = "value")
+
+ggplot(df_sens, aes(x = time, y = value, colour = parameter)) +
+  geom_vline(xintercept = parms["t_dose"], linetype = "dashed",
+             colour = "grey60", linewidth = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dotted", colour = "grey70") +
+  geom_line(linewidth = 0.7) +
+  labs(x = "Time", y = expression(partial*Ka / partial*p),
+       colour = "p",
+       title = "First-order sensitivity of Ka") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "right")
+```
+
+Notice the jump in $\partial Ka / \partial L_{\text{dose}}$ at
+$t = t_{\text{dose}}$: the event rewrites `L`, and the saltation matrix
+propagates that perturbation into every downstream state's sensitivity
+coordinates — **no finite differences**, no manual event-aware
+chain rule.
+
+### Comparison across output layers
+
+```{r plot-sens-outputs, fig.height=6, fig.cap="Sensitivity of one representative state per layer to the ligand dose."}
+outputs <- c(Receptor = "LR", Kinase = "Ka", Gene = "P_target")
+
+df_out <- do.call(rbind, lapply(names(outputs), function(lyr) {
+  st <- outputs[[lyr]]
+  data.frame(time  = res$time,
+             layer = lyr,
+             state = st,
+             value = res$sens1[, st, "L_dose"])
+}))
+df_out$layer <- factor(df_out$layer, levels = names(outputs))
+
+ggplot(df_out, aes(x = time, y = value)) +
+  geom_vline(xintercept = parms["t_dose"], linetype = "dashed",
+             colour = "grey60", linewidth = 0.4) +
+  geom_hline(yintercept = 0, linetype = "dotted", colour = "grey70") +
+  geom_line(linewidth = 0.7, colour = "#0072B2") +
+  facet_wrap(~ layer + state, scales = "free_y", ncol = 1) +
+  labs(x = "Time", y = expression(partial*y / partial*L[dose]),
+       title = "Dose sensitivity propagates down the cascade") +
+  theme_bw(base_size = 12) +
+  theme(strip.background = element_rect(fill = "grey95"))
+```
+
+The dose sensitivity rises immediately at the receptor layer, peaks a
+few time units later at the kinase layer, and builds slowly at the gene
+layer — the characteristic temporal hierarchy of signaling cascades,
+recovered directly from first-order AD.
+
+## Cross-check with the CVODE backend
+
+Both `CppODE()` and `CVODE()` share the same front-end. Swapping the
+constructor gives a second, independently compiled solver with sparse
+KLU linear algebra — and the two agree to integration tolerance.
+
+```{r cvode}
+model_cv <- CVODE(
+  rhs,
+  events    = events,
+  fixed     = fixed,
+  deriv     = TRUE,
+  method    = "bdf",
+  sparse    = TRUE,
+  modelname = "cascade_signaling_cvode",
+  outdir    = tempdir()
+)
+
+res_cv <- solveODE(model_cv, times, parms, abstol = 1e-9, reltol = 1e-7)
+
+# Align on the shared user time grid (CppODE inserts the event time as an
+# extra row; CVODE does not — pick the times both reported).
+keep_cpp <- res$time    %in% times
+keep_cv  <- res_cv$time %in% times
+
+max_state_diff <- max(abs(res$variable[keep_cpp, ] - res_cv$variable[keep_cv, ]))
+max_sens_diff  <- max(abs(res$sens1[keep_cpp, , ]  - res_cv$sens1[keep_cv, , ]))
+
+cat(sprintf("  L-infinity difference (states)       : %.3e\n", max_state_diff))
+cat(sprintf("  L-infinity difference (sensitivities): %.3e\n", max_sens_diff))
+```
+
+## Summary
+
+- A single **event data frame** (`var`, `time`, `value`, `method`,
+  `root`) is all that is needed to inject a dose — the backend merges the
+  event time into the integration grid, applies the action, and resets
+  the stepper.
+- **Sensitivities and events interact cleanly** thanks to the analytical
+  saltation-matrix correction. First-order AD costs one extra state per
+  sensitivity parameter — the exact number you get back, no more.
+- **CppODE and CVODE are interchangeable.** Use the CppODE multistepper
+  for pure R-side control and deep integration with the AD chain rule;
+  use CVODE when you want SUNDIALS' battle-tested BDF or very large
+  sparse problems through KLU.
+
+For a simpler starting point without events see
+`vignette("CppODE_LotkaVolterra", package = "CppODE")`.
+
+```{r session}
+sessionInfo()
+```

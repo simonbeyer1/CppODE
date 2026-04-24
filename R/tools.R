@@ -51,6 +51,13 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   })))
   all_args <- paste(c(obj_args, args), collapse = " ")
 
+  # --- extra linker flags from objects (linkArgs) ---
+  obj_linkargs <- unique(unlist(lapply(objects, function(obj) {
+    a <- attr(obj, "linkArgs")
+    if (!is.null(a) && nzchar(a)) a else NULL
+  })))
+  extra_libs <- paste(obj_linkargs, collapse = " ")
+
   # --- compiler flags ---
   if (.Platform$OS.type == "windows") cores <- 1
   pic  <- if (.Platform$OS.type == "windows") "" else "-fPIC"
@@ -61,7 +68,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   lapack_libs <- cfg("LAPACK_LIBS")
   blas_libs   <- cfg("BLAS_LIBS")
 
-  # --- KLU (pre-built static archive, installed with package) ---
+  # --- KLU (system SuiteSparse, discovered by ./configure at install) ---
   uses_sparse <- any(vapply(objects, function(obj) {
     isTRUE(attr(obj, "sparse"))
   }, logical(1)))
@@ -70,12 +77,20 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   klu_cflags <- ""
 
   if (uses_sparse) {
-    lib_subdir <- if (nzchar(.Platform$r_arch)) file.path("lib", .Platform$r_arch) else "lib"
-    klu_lib <- system.file(lib_subdir, "libcppode_ss.a", package = "CppODE")
-    if (file.exists(klu_lib)) {
-      klu_cflags <- "-DKLU"
-      klu_libs   <- shQuote(klu_lib)
+    if (!isTRUE(cvodeConfig$klu_available)) {
+      stop(
+        "Sparse Jacobian requested but the KLU linear solver was not\n",
+        "available at install time. Install SuiteSparse development\n",
+        "headers and re-install CppODE:\n",
+        "    Debian/Ubuntu : sudo apt install libsuitesparse-dev\n",
+        "    Fedora        : sudo dnf install suitesparse-devel\n",
+        "    Arch          : sudo pacman -S suitesparse\n",
+        "    macOS (brew)  : brew install suite-sparse\n",
+        "  Then: R CMD INSTALL <path/to/CppODE>",
+        call. = FALSE)
     }
+    klu_cflags <- paste("-DKLU", cvodeConfig$klu_cflags)
+    klu_libs   <- cvodeConfig$klu_libs
   }
 
   cxxflagsString <- paste(base, klu_cflags)
@@ -83,7 +98,7 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
   Sys.setenv(
     PKG_CXXFLAGS = cxxflagsString,
     PKG_CPPFLAGS = paste0("-I", system.file("include", package = "CppODE")),
-    PKG_LIBS = paste(klu_libs, lapack_libs, blas_libs)
+    PKG_LIBS = paste(klu_libs, lapack_libs, blas_libs, extra_libs)
   )
 
   # --- toolchain report ---

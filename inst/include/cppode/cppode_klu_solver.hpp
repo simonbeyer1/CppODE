@@ -18,9 +18,10 @@
 
 #ifdef KLU
 
-#include "suitesparse/cppode_ss_prefix.h"
-
-#include "suitesparse/klu.h"
+// KLU is provided by the system SuiteSparse installation; the include
+// path is discovered by ./configure at install time and injected via
+// PKG_CXXFLAGS when a sparse model is compiled.
+#include <klu.h>
 
 #include <vector>
 #include <stdexcept>

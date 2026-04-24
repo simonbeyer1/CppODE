@@ -288,6 +288,9 @@ public:
       m_lu.solve(m_g5.m_v); }
 
     // --- Error estimate (stage 6) ---
+    // Uses the Hairer-Wanner 6-stage formulation: an additional
+    // f-evaluation and W⁻¹ solve to produce the embedded error.
+    // The error is added to the solution (local extrapolation).
     vec_axpy(m_xtmp.m_v, value_type(1), m_g5.m_v);
     { auto _tp = m_prof.timer(prof_cat::f_eval);
       deriv_func(m_xtmp.m_v, xerr, value_type(t_s + dt_s)); }

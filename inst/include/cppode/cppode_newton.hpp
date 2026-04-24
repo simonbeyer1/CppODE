@@ -1,44 +1,24 @@
 /*
- CppODE Newton Solver — CVODE-style Newton iteration
- =====================================================
+ CppODE Newton Solver — simplified Newton iteration for NDF/BDF
+ ================================================================
 
- Free function template that performs Newton iteration for BDF steps.
- Takes the LU solver by reference — works with any lu_W<Value, is_sparse>.
+ Free function template that performs one chord (simplified Newton)
+ solve for a single NDF/BDF step.  Takes the LU solver by reference --
+ works with any lu_W<Value, is_sparse>.
 
- AD optimization — adaptive scalar-solve / IFT split:
+ Unified code path for both AD and non-AD types:
 
  For AD types (F<double,N>, F<F<double,N>,M>, ...):
-
- Iteration m=0: FULL IFT solve (identical to non-optimized path).
- If Newton converges on the first try, there is ZERO overhead
- compared to the original code.  This is the common case for
- well-behaved problems.
-
- Iterations m>=1: SCALAR-ONLY solve (no IFT, no batched deriv solves).
- Only the value components are iterated.  Derivative components
- in acor stay at the values from m=0's IFT solve.
-
- After convergence at m>=1: single IFT sensitivity correction.
- One full AD f-eval + full IFT solve to correct the derivative
- components of acor for the additional value corrections from
- iterations 1..m.
-
- Cost model:
- m=0 convergence: identical to original (most common case)
- m=1 convergence: 1 IFT + 1 scalar + 1 IFT = 2 IFT + 1 scalar
- (vs original: 2 IFT — slightly MORE expensive)
- m=2 convergence: 1 IFT + 2 scalar + 1 IFT = 2 IFT + 2 scalar
- (vs original: 3 IFT — saves 1 IFT solve)
- m=3 convergence: 1 IFT + 3 scalar + 1 IFT = 2 IFT + 3 scalar
- (vs original: 4 IFT — saves 2 IFT solves)
-
- Break-even at m=2, net savings for m>=2.
- No penalty for the common m=0 case.
+ lu.solve(tempv) performs full IFT at every iteration, giving correct
+ value AND derivative corrections each time.  Newton convergence is
+ checked AD-aware (derivative components included) so that sensitivity
+ blow-ups trigger fresh Jacobian evaluations.
 
  For non-AD types (double):
- Falls through to the standard Newton — no overhead, no change.
+ lu.solve() is a standard forward/back-substitution.
+ wrms_norm_correction == wrms_norm (no derivative components).
 
- Separated from the BDF stepper for testability.
+ Separated from the NDF stepper for testability.
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -132,54 +112,66 @@ double wrms_norm_correction(const std::vector<T>& b,
 }
 
 /// WRMS norm of vector v, weighted against reference y0 — AD-AWARE.
-/// Includes derivative components for AD types, equivalent to the
-/// augmented sensitivity system.  Used for error control (acnrm,
-/// dsm, order selection eta computations).
-/// For double, the derivative loop compiles to nothing.
+/// Returns max(state_wrms, max_j sens_wrms[j]) over the state and
+/// each sensitivity-parameter slice.  This matches CVODES's
+/// `cvSensUpdateNorm` (CV_STAGGERED) convention: every sensitivity
+/// vector is held individually below tolerance, rather than letting
+/// large per-parameter errors hide inside an averaged WRMS.
+/// For non-AD types the sens loop compiles to nothing → returns the
+/// pure state WRMS.
 template<class T>
 double wrms_norm(const std::vector<T>& v,
                  const std::vector<T>& y0,
                  size_t n, double atol, double rtol)
 {
-  double sumsq = 0.0;
-  size_t N_eff = 0;
+  if (n == 0) return 0.0;
+
+  double state_sumsq = 0.0;
+  unsigned nd = 0;
+  if constexpr (ad_lu::is_ad<T>::value) {
+    nd = const_cast<T&>(v[0]).size();
+  }
+  std::vector<double> sens_sumsq(nd, 0.0);
 
   for (size_t i = 0; i < n; ++i) {
     double vi = std::abs(scalar_value(v[i]));
     double yi = std::abs(scalar_value(y0[i]));
     double r = vi / (atol + rtol * yi);
-    sumsq += r * r;
-    ++N_eff;
+    state_sumsq += r * r;
 
     if constexpr (ad_lu::is_ad<T>::value) {
       auto& v_ad = const_cast<T&>(v[i]);
       auto& y_ad = const_cast<T&>(y0[i]);
-      unsigned nd = v_ad.size();
       for (unsigned j = 0; j < nd; ++j) {
         double vd = std::abs(scalar_value(v_ad.d(j)));
         double yd = std::abs(scalar_value(y_ad.d(j)));
         double rd = vd / (atol + rtol * yd);
-        sumsq += rd * rd;
-        ++N_eff;
+        sens_sumsq[j] += rd * rd;
       }
     }
   }
-  return (N_eff > 0) ? std::sqrt(sumsq / N_eff) : 0.0;
+
+  double max_norm = std::sqrt(state_sumsq / n);
+  for (unsigned j = 0; j < nd; ++j) {
+    double sens_norm = std::sqrt(sens_sumsq[j] / n);
+    if (sens_norm > max_norm) max_norm = sens_norm;
+  }
+  return max_norm;
 }
 
 } // namespace newton_detail
 
 // ============================================================================
-//  bdf_newton_solve
+//  ndf_newton_solve
 //
-//  Performs CVODE-style Newton iteration for one BDF step.
+//  Performs one Newton iteration for one NDF/BDF step.
 //
 //  For AD types: adaptive scalar-solve / IFT split.
 //  For double:   standard Newton (no AD overhead).
 // ============================================================================
 
 template<class LU, class DerivFunc, class Value, class TimeType>
-newton_result bdf_newton_solve(
+newton_result ndf_newton_solve(
     LU& lu,
     DerivFunc& deriv_func,
     const std::vector<Value>& zn0,
@@ -197,311 +189,162 @@ newton_result bdf_newton_solve(
     std::vector<Value>& ftemp,
     double& crate,
     double gamrat,
-    cppode::profiler& prof)
+    cppode::profiler& prof,
+    const std::vector<double>& ewt = {})
 {
-  using newton_detail::scalar_value;
   using newton_detail::wrms_norm_correction;
   using newton_detail::wrms_norm;
+  using newton_detail::scalar_value;
 
+  const bool use_ewt = !ewt.empty();
   const size_t n = zn0.size();
+  int n_fevals = 0;
 
-  // ========================================================================
-  //  AD path: adaptive scalar-solve / IFT split
-  //
-  //  m=0: full IFT solve (identical to original — zero overhead)
-  //  m>=1: scalar-only solves + single IFT correction at convergence
-  // ========================================================================
-  if constexpr (ad_lu::is_ad<Value>::value) {
+  // Initialize
+  { auto _t = prof.timer(prof_cat::newton_overhead);
+    for (size_t i = 0; i < n; ++i) {
+      acor[i] = Value(0);
+      y[i] = zn0[i];
+    }
+  }
 
-    // Thread-local scalar work vector for solve_scalar (m>=1 only)
-    static thread_local std::vector<double> s_tempv_val;
+  // Initial f-eval at predicted point
+  { auto _t = prof.timer(prof_cat::f_eval);
+    deriv_func(y, ftemp, t_new); }
+  ++n_fevals;
 
-    int n_fevals = 0;
+  double del = 0.0, delp = 0.0;
 
-    // Initialize (full AD)
+  for (int m = 0; m < max_iter; ++m) {
+    // Residual: tempv = f(y) - (rl1*zn1 + acor) / gamma
     { auto _t = prof.timer(prof_cat::newton_overhead);
       for (size_t i = 0; i < n; ++i) {
-        acor[i] = Value(0);
-        y[i] = zn0[i];
+        tempv[i] = ftemp[i] - (rl1 * zn1[i] + acor[i]) / gamma;
       }
     }
 
-    // Initial f-eval at predicted point (full AD)
-    { auto _t = prof.timer(prof_cat::f_eval);
-      deriv_func(y, ftemp, t_new); }
-    ++n_fevals;
+    // Solve W * delta = tempv
+    // For AD types, lu.solve() performs full IFT at every iteration,
+    // giving correct value AND derivative corrections each time.
+    { auto _t = prof.timer(prof_cat::lu_solve);
+      lu.solve(tempv); }
 
-    double del = 0.0, delp = 0.0;
+    // Linear solution scaling for gamma drift
+    if (std::abs(gamrat - 1.0) > 1e-14) {
+      double scale = 2.0 / (1.0 + gamrat);
+      for (size_t i = 0; i < n; ++i)
+        tempv[i] *= scale;
+    }
 
-    for (int m = 0; m < max_iter; ++m) {
-
-      if (m == 0) {
-        // ==============================================================
-        //  First iteration (m=0): FULL IFT solve
-        //
-        //  Identical to the original code path.  If Newton converges
-        //  here, there is zero overhead — acor gets correct values
-        //  AND derivatives in one shot.
-        // ==============================================================
-
-        // Full AD residual
-        { auto _t = prof.timer(prof_cat::newton_overhead);
-          for (size_t i = 0; i < n; ++i) {
-            tempv[i] = ftemp[i] - (rl1 * zn1[i] + acor[i]) / gamma;
-          }
+    // WRMS norm of correction — AD-aware, max over (state, sens[j]).
+    // ewt is interleaved: [val_0, d0_0, d1_0, ..., val_1, d0_1, ...].
+    // Each sensitivity vector contributes its own per-vector WRMS;
+    // the controller sees the worst — matching CVODES cvSensUpdateNorm.
+    { auto _t = prof.timer(prof_cat::error_norm);
+      if (use_ewt) {
+        double state_sumsq = 0.0;
+        unsigned nd = 0;
+        if constexpr (ad_lu::is_ad<Value>::value) {
+          if (n > 0) nd = const_cast<Value&>(tempv[0]).size();
         }
-
-        // Full IFT solve (value + all derivative directions)
-        { auto _t = prof.timer(prof_cat::lu_solve);
-          lu.solve(tempv); }
-
-        // Linear solution scaling
-        if (std::abs(gamrat - 1.0) > 1e-14) {
-          double scale = 2.0 / (1.0 + gamrat);
-          for (size_t i = 0; i < n; ++i)
-            tempv[i] *= scale;
-        }
-
-        // WRMS norm of correction — scalar only for convergence
-        { auto _t = prof.timer(prof_cat::error_norm);
-          del = wrms_norm_correction(tempv, y, n, atol, rtol); }
-
-        // Update (full AD — acor gets both values and derivatives)
-          { auto _t = prof.timer(prof_cat::newton_overhead);
-            for (size_t i = 0; i < n; ++i) {
-              acor[i] += tempv[i];
-              y[i] = zn0[i] + acor[i];
+        std::vector<double> sens_sumsq(nd, 0.0);
+        size_t ew = 0;
+        for (size_t i = 0; i < n; ++i) {
+          double vi = std::abs(scalar_value(tempv[i]));
+          double r = vi * ewt[ew++];
+          state_sumsq += r * r;
+          if constexpr (ad_lu::is_ad<Value>::value) {
+            auto& v_ad = const_cast<Value&>(tempv[i]);
+            for (unsigned j = 0; j < nd; ++j) {
+              double vd = std::abs(scalar_value(v_ad.d(j)));
+              double rd = vd * ewt[ew++];
+              sens_sumsq[j] += rd * rd;
             }
           }
-
-        // Convergence test
-        double dcon = del * std::min(1.0, crate) / tq4;
-
-        if (dcon <= 1.0) {
-          // Converged at m=0 — acor already has correct derivs from IFT.
-          // This is the fast path: identical to original code.
-          double acnrm;
-          { auto _t = prof.timer(prof_cat::error_norm);
-            acnrm = wrms_norm(acor, zn0, n, atol, rtol); }
-          return { true, acnrm, n_fevals };
         }
-
-        // Not converged — continue to m=1 with scalar-only solves.
-        // acor now has derivatives from the m=0 IFT solve, but they
-        // will be stale after further scalar-only value corrections.
-        // We'll fix them in Phase 2 if/when we converge.
-
-        delp = del;
-
-        // Re-evaluate f at updated y (full AD)
-        { auto _t = prof.timer(prof_cat::f_eval);
-          deriv_func(y, ftemp, t_new); }
-        ++n_fevals;
-
+        double max_norm = (n > 0) ? std::sqrt(state_sumsq / n) : 0.0;
+        for (unsigned j = 0; j < nd; ++j) {
+          double sens_norm = std::sqrt(sens_sumsq[j] / n);
+          if (sens_norm > max_norm) max_norm = sens_norm;
+        }
+        del = max_norm;
       } else {
-        // ==============================================================
-        //  Iterations m>=1: SCALAR-ONLY solve
-        //
-        //  Save expensive IFT solves.  Only the value components are
-        //  iterated.  Derivative components in acor are stale (from m=0).
-        //  They will be corrected in Phase 2 after convergence.
-        // ==============================================================
-
-        // Lazy-init scalar work vector
-        s_tempv_val.resize(n);
-
-        // Extract scalar residual
-        { auto _t = prof.timer(prof_cat::newton_overhead);
-          for (size_t i = 0; i < n; ++i) {
-            s_tempv_val[i] = scalar_value(ftemp[i])
-            - (static_cast<double>(rl1) * scalar_value(zn1[i])
-                 + scalar_value(acor[i])) / static_cast<double>(gamma);
-          }
-        }
-
-        // Scalar solve (no IFT, no batched derivative solves)
-        { auto _t = prof.timer(prof_cat::lu_solve);
-          lu.solve_scalar(s_tempv_val); }
-
-        // Linear solution scaling
-        if (std::abs(gamrat - 1.0) > 1e-14) {
-          double scale = 2.0 / (1.0 + gamrat);
-          for (size_t i = 0; i < n; ++i)
-            s_tempv_val[i] *= scale;
-        }
-
-        // WRMS norm of scalar correction
-        { auto _t = prof.timer(prof_cat::error_norm);
-          static thread_local std::vector<double> s_y_val;
-          s_y_val.resize(n);
-          for (size_t i = 0; i < n; ++i)
-            s_y_val[i] = scalar_value(y[i]);
-          del = newton_detail::wrms_norm_scalar(
-            s_tempv_val, s_y_val, n, atol, rtol);
-        }
-
-        // Update value components only
-        { auto _t = prof.timer(prof_cat::newton_overhead);
-          for (size_t i = 0; i < n; ++i) {
-            acor[i].x() += s_tempv_val[i];
-            y[i] = zn0[i] + acor[i];
-          }
-        }
-
-        // Convergence test
-        crate = std::max(0.3 * crate, (delp > 0.0) ? del / delp : del);
-        double dcon = del * std::min(1.0, crate) / tq4;
-
-        if (dcon <= 1.0) {
-          // ----------------------------------------------------------------
-          //  Phase 2: Single IFT sensitivity correction
-          //
-          //  Value iteration converged at m>=1.  The derivative components
-          //  in acor are stale (from the m=0 IFT solve — they don't
-          //  account for the scalar corrections from iterations 1..m).
-          //
-          //  Fix: one full AD f-eval + IFT solve at the converged point
-          //  to recompute the correct derivative components.
-          //
-          //  y.d(j) = zn0.d(j) + acor.d(j)  where acor.d(j) is from m=0.
-          //  The f-eval sees these (partially correct) derivatives.
-          //  The IFT solve gives the incremental derivative correction.
-          // ----------------------------------------------------------------
-
-          // Full AD f-eval at converged y*
-          { auto _t = prof.timer(prof_cat::f_eval);
-            deriv_func(y, ftemp, t_new); }
-          ++n_fevals;
-
-          // Full AD residual
-          { auto _t = prof.timer(prof_cat::newton_overhead);
-            for (size_t i = 0; i < n; ++i) {
-              tempv[i] = ftemp[i] - (rl1 * zn1[i] + acor[i]) / gamma;
-            }
-          }
-
-          // Full IFT solve
-          { auto _t = prof.timer(prof_cat::lu_solve);
-            lu.solve(tempv); }
-
-          // Gamrat scaling
-          if (std::abs(gamrat - 1.0) > 1e-14) {
-            double scale = 2.0 / (1.0 + gamrat);
-            for (size_t i = 0; i < n; ++i)
-              tempv[i] *= scale;
-          }
-
-          // Update acor and y with the full correction
-          { auto _t = prof.timer(prof_cat::newton_overhead);
-            for (size_t i = 0; i < n; ++i) {
-              acor[i] += tempv[i];
-              y[i] = zn0[i] + acor[i];
-            }
-          }
-
-          // AD-aware acnrm for error control
-          double acnrm;
-          { auto _t = prof.timer(prof_cat::error_norm);
-            acnrm = wrms_norm(acor, zn0, n, atol, rtol); }
-
-          return { true, acnrm, n_fevals };
-        }
-
-        if (m >= 2 && del > 2.0 * delp) {
-          return { false, 0.0, n_fevals };
-        }
-
-        delp = del;
-
-        // Re-evaluate f at updated y (full AD)
-        { auto _t = prof.timer(prof_cat::f_eval);
-          deriv_func(y, ftemp, t_new); }
-        ++n_fevals;
+        del = wrms_norm(tempv, y, n, atol, rtol);
       }
     }
 
-    return { false, 0.0, n_fevals };
-
-  } else {
-    // ========================================================================
-    //  Non-AD path: standard Newton iteration (unchanged)
-    // ========================================================================
-
-    int n_fevals = 0;
-
-    // Initialize
-    { auto _t = prof.timer(prof_cat::newton_overhead);
-      for (size_t i = 0; i < n; ++i) {
-        acor[i] = Value(0);
-        y[i] = zn0[i];
-      }
-    }
-
-    // Initial f-eval at predicted point
-    { auto _t = prof.timer(prof_cat::f_eval);
-      deriv_func(y, ftemp, t_new); }
-    ++n_fevals;
-
-    double del = 0.0, delp = 0.0;
-
-    for (int m = 0; m < max_iter; ++m) {
-      // Residual: tempv = f(y) - (rl1*zn1 + acor) / gamma
+    // Update
       { auto _t = prof.timer(prof_cat::newton_overhead);
         for (size_t i = 0; i < n; ++i) {
-          tempv[i] = ftemp[i] - (rl1 * zn1[i] + acor[i]) / gamma;
+          acor[i] += tempv[i];
+          y[i] = zn0[i] + acor[i];
         }
       }
 
-      // Solve W * delta = tempv
-      { auto _t = prof.timer(prof_cat::lu_solve);
-        lu.solve(tempv); }
+    // Convergence test
+    if (m > 0) {
+      crate = std::max(0.3 * crate, (delp > 0.0) ? del / delp : del);
+    }
+    double dcon = del * std::min(1.0, crate) / tq4;
 
-      // CVODE linear solution scaling
-      if (std::abs(gamrat - 1.0) > 1e-14) {
-        double scale = 2.0 / (1.0 + gamrat);
-        for (size_t i = 0; i < n; ++i)
-          tempv[i] *= scale;
-      }
-
-      // WRMS norm of correction
+    if (dcon <= 1.0) {
+      // AD-aware acnrm for error control: max over (state_wrms,
+      // each sens-vector_wrms).  The step-size controller therefore
+      // limits the worst-case local truncation error across the
+      // augmented system, including each sensitivity parameter
+      // individually — matching CVODES `cvSensUpdateNorm`
+      // (CV_STAGGERED).  A flat WRMS over all components averages
+      // per-parameter errors and can hide one bad sensitivity behind
+      // many small ones; the max-norm prevents that.
+      double acnrm;
       { auto _t = prof.timer(prof_cat::error_norm);
-        del = wrms_norm_correction(tempv, y, n, atol, rtol); }
-
-      // Update
-        { auto _t = prof.timer(prof_cat::newton_overhead);
-          for (size_t i = 0; i < n; ++i) {
-            acor[i] += tempv[i];
-            y[i] = zn0[i] + acor[i];
+        if (use_ewt) {
+          double state_sumsq = 0.0;
+          unsigned nd = 0;
+          if constexpr (ad_lu::is_ad<Value>::value) {
+            if (n > 0) nd = const_cast<Value&>(acor[0]).size();
           }
+          std::vector<double> sens_sumsq(nd, 0.0);
+          size_t ew = 0;
+          for (size_t i = 0; i < n; ++i) {
+            double vi = std::abs(scalar_value(acor[i]));
+            double r = vi * ewt[ew++];
+            state_sumsq += r * r;
+            if constexpr (ad_lu::is_ad<Value>::value) {
+              auto& a_ad = const_cast<Value&>(acor[i]);
+              for (unsigned j = 0; j < nd; ++j) {
+                double vd = std::abs(scalar_value(a_ad.d(j)));
+                double rd = vd * ewt[ew++];
+                sens_sumsq[j] += rd * rd;
+              }
+            }
+          }
+          double max_norm = (n > 0) ? std::sqrt(state_sumsq / n) : 0.0;
+          for (unsigned j = 0; j < nd; ++j) {
+            double sens_norm = std::sqrt(sens_sumsq[j] / n);
+            if (sens_norm > max_norm) max_norm = sens_norm;
+          }
+          acnrm = max_norm;
+        } else {
+          acnrm = wrms_norm(acor, zn0, n, atol, rtol);
         }
-
-      // Convergence test (CVODE-style)
-      if (m > 0) {
-        crate = std::max(0.3 * crate, (delp > 0.0) ? del / delp : del);
       }
-      double dcon = del * std::min(1.0, crate) / tq4;
-
-      if (dcon <= 1.0) {
-        double acnrm;
-        { auto _t = prof.timer(prof_cat::error_norm);
-          acnrm = wrms_norm(acor, zn0, n, atol, rtol); }
-        return { true, acnrm, n_fevals };
-      }
-
-      if (m >= 2 && del > 2.0 * delp) {
-        return { false, 0.0, n_fevals };
-      }
-
-      delp = del;
-
-      // Re-evaluate f at updated y
-      { auto _t = prof.timer(prof_cat::f_eval);
-        deriv_func(y, ftemp, t_new); }
-      ++n_fevals;
+      return { true, acnrm, n_fevals };
     }
 
-    return { false, 0.0, n_fevals };
+    if (m >= 2 && del > 2.0 * delp) {
+      return { false, 0.0, n_fevals };
+    }
+
+    delp = del;
+
+    // Re-evaluate f at updated y
+    { auto _t = prof.timer(prof_cat::f_eval);
+      deriv_func(y, ftemp, t_new); }
+    ++n_fevals;
   }
+
+  return { false, 0.0, n_fevals };
 }
 
 } // namespace cppode

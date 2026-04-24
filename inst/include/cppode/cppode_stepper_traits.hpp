@@ -1,6 +1,6 @@
 /*
  Stepper traits for CppODE — compile-time dispatch between
- single-step (Rosenbrock) and multi-step (BDF) methods.
+ single-step (Rosenbrock) and multi-step methods.
 
  Copyright (C) 2026 Simon Beyer
 
@@ -8,15 +8,17 @@
  the EventEngine, integrate_times, and integrate_times_dense use to
  adapt their behaviour to different stepper families:
 
- - is_multistep:              true for BDF (History-based methods)
+ - is_multistep:              true for multistep steppers (NDF/BDF/Adams
+                              and variants — all instantiations of
+                              cppode::multistepper)
  - needs_restart_after_event: true if the stepper must discard its
- history and restart at order 1 after
- a state discontinuity (events)
+                              history and restart at order 1 after
+                              a state discontinuity (events)
  - min_order / max_order:     order range of the method
 
  The default (unspecialised) traits match Rosenbrock4 and other
- single-step methods.  BDF specialisations are provided via forward
- declarations; the actual bdf_stepper class is defined elsewhere.
+ single-step methods.  The multistepper specialisation is matched via
+ a nested tag typedef — see below.
 
  Distributed under the Boost Software License, Version 1.0.
  */
@@ -48,7 +50,7 @@ struct stepper_traits {
 //  Trait extraction helpers (for use in if-constexpr / enable_if)
 // ============================================================================
 
-/// True if the stepper is a multi-step method (BDF, Adams, etc.)
+/// True if the stepper is a multi-step method (NDF, BDF, Adams, etc.)
 template<class Stepper>
 inline constexpr bool is_multistep_v = stepper_traits<Stepper>::is_multistep;
 
@@ -58,26 +60,26 @@ template<class Stepper>
 inline constexpr bool needs_restart_after_event_v =
 stepper_traits<Stepper>::needs_restart_after_event;
 // ============================================================================
-//  Forward declaration of BDF stepper (defined in cppode_bdf.hpp)
+//  Multistepper detection via tag
+//
+//  The cppode::multistepper class declares a nested tag typedef
+//    typedef void is_multistepper_tag;
+//  which we detect by SFINAE.  Covers all multistepper instantiations
+//  (bdf, adams, msoda).
 // ============================================================================
 
-// The BDF specialisation is written here as a partial specialisation
-// that matches any type with a nested typedef `is_bdf_stepper_tag`.
-// The bdf_stepper class defines this tag, so the match is automatic
-// without needing to know the full template parameter list.
-
-/// SFINAE detector for BDF stepper tag
+/// SFINAE detector for the multistepper tag
 template<class T, class = void>
-struct has_bdf_stepper_tag : std::false_type {};
+struct has_multistepper_tag : std::false_type {};
 
 template<class T>
-struct has_bdf_stepper_tag<T, std::void_t<typename T::is_bdf_stepper_tag>>
+struct has_multistepper_tag<T, std::void_t<typename T::is_multistepper_tag>>
 : std::true_type {};
 
-/// Specialisation for any type carrying the BDF tag
+/// Specialisation for any type carrying the multistepper tag
 template<class Stepper>
 struct stepper_traits<Stepper,
-                     std::enable_if_t<has_bdf_stepper_tag<Stepper>::value>>
+                     std::enable_if_t<has_multistepper_tag<Stepper>::value>>
                      {
                        static constexpr bool is_multistep = true;
                        static constexpr bool needs_restart_after_event = true;
@@ -106,17 +108,17 @@ template<class T>
 struct has_inner_stepper_type<T, std::void_t<typename T::stepper_type>>
 : std::true_type {};
 
-/// Detector for BDF tag on inner stepper (through wrapper chain)
+/// Detector for multistepper tag on inner stepper (through wrapper chain)
 template<class T, class = void>
-struct inner_has_bdf_tag : std::false_type {};
+struct inner_has_multistepper_tag : std::false_type {};
 
 template<class T>
-struct inner_has_bdf_tag<T,
+struct inner_has_multistepper_tag<T,
                          std::enable_if_t<
                            has_inner_stepper_type<T>::value &&
-                           !has_bdf_stepper_tag<T>::value &&
+                           !has_multistepper_tag<T>::value &&
                            !std::is_same<T, typename T::stepper_type>::value>>  // guard against self-referential stepper_type
-                           : has_bdf_stepper_tag<typename T::stepper_type> {};
+                           : has_multistepper_tag<typename T::stepper_type> {};
 
 // Recursive version: chase through multiple wrapper layers
 // (e.g. dense_output → controller → stepper)
@@ -125,23 +127,23 @@ struct inner_has_bdf_tag<T,
 // (some Boost steppers like rosenbrock4 define a self-referential
 // stepper_type typedef, which would cause infinite template recursion).
 template<class T, class = void>
-struct deep_has_bdf_tag : has_bdf_stepper_tag<T> {};
+struct deep_has_multistepper_tag : has_multistepper_tag<T> {};
 
 template<class T>
-struct deep_has_bdf_tag<T,
+struct deep_has_multistepper_tag<T,
                         std::enable_if_t<
                           has_inner_stepper_type<T>::value &&
-                          !has_bdf_stepper_tag<T>::value &&
+                          !has_multistepper_tag<T>::value &&
                           !std::is_same<T, typename T::stepper_type>::value>>
-                          : deep_has_bdf_tag<typename T::stepper_type> {};
+                          : deep_has_multistepper_tag<typename T::stepper_type> {};
 
 /// Propagated traits for wrapper types (controller, dense output)
-/// that wrap a BDF stepper somewhere in their chain
+/// that wrap a multistepper somewhere in their chain
 template<class Wrapper>
 struct stepper_traits<Wrapper,
                       std::enable_if_t<
-                        !has_bdf_stepper_tag<Wrapper>::value &&
-                        deep_has_bdf_tag<Wrapper>::value>>
+                        !has_multistepper_tag<Wrapper>::value &&
+                        deep_has_multistepper_tag<Wrapper>::value>>
                         {
                           static constexpr bool is_multistep = true;
                           static constexpr bool needs_restart_after_event = true;

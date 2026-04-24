@@ -14,6 +14,8 @@
 #include <stdexcept>
 #include <cstdio>
 
+#include "cppode_return_codes.hpp"
+
 namespace cppode {
 
 /**
@@ -40,11 +42,15 @@ public:
  * function evaluations, Jacobian evaluations, last step size, last/next
  * method order, and the time reached by the solver).
  *
- * Return codes:
- *   0 = integration successful (default, set by caller on success)
- *   1 = maximum total steps exceeded
- *   2 = maximum no-progress steps exceeded
- *  -1 = other error (exception in integration)
+ * Return codes: numerically identical to the SUNDIALS CVODE flag scheme
+ * (see cppode_return_codes.hpp). Typical values set by this class:
+ *    0 = RC_SUCCESS          (default, set by caller on success)
+ *   -1 = RC_TOO_MUCH_WORK    (maximum total steps exceeded)
+ *   -4 = RC_CONV_FAILURE     (maximum no-progress steps exceeded,
+ *                             i.e. too many consecutive rejected steps)
+ * The caller may also set any other CVODE flag (e.g. RC_LSETUP_FAIL,
+ * RC_UNRECOGNIZED_ERR) via set_return_code() when a downstream error
+ * cannot be expressed as a step-limit violation.
  *
  * @par Usage
  * @code
@@ -106,7 +112,7 @@ public:
    */
   void operator()() {
     if (m_no_progress_steps++ >= m_max_no_progress_steps) {
-      m_return_code = 2;
+      m_return_code = RC_CONV_FAILURE;
       char msg[200];
       std::snprintf(msg, sizeof(msg),
                     "Maximum number of steps without progress exceeded (%d).",
@@ -114,7 +120,7 @@ public:
       throw no_progress_error(msg);
     }
     if (m_total_steps++ >= m_max_total_steps) {
-      m_return_code = 1;
+      m_return_code = RC_TOO_MUCH_WORK;
       char msg[200];
       std::snprintf(msg, sizeof(msg),
                     "Maximum number of steps exceeded (%d).",
@@ -129,7 +135,13 @@ public:
 
   // --- Diagnostics ---
 
-  /// Return code: 0 = success, 1 = max steps, 2 = no progress, -1 = other error
+  /// Return code using the CVODE flag scheme (see cppode_return_codes.hpp):
+  ///    0 = RC_SUCCESS
+  ///   -1 = RC_TOO_MUCH_WORK        (max steps)
+  ///   -4 = RC_CONV_FAILURE         (no-progress / repeated conv failures)
+  ///   -6 = RC_LSETUP_FAIL          (linear-solver setup failed)
+  ///   -8 = RC_RHSFUNC_FAIL         (RHS function returned unrecoverable error)
+  ///  -99 = RC_UNRECOGNIZED_ERR     (unclassified C++ exception)
   int return_code() const { return m_return_code; }
   void set_return_code(int rc) { m_return_code = rc; }
 

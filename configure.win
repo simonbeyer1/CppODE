@@ -1,0 +1,41 @@
+#!/bin/sh
+# =====================================================================
+# CppODE configure.win — CVODE backend is not supported on Windows by
+# default (no prebuilt SUNDIALS via Rtools).  Emit a disabled stub so
+# the rest of the package builds cleanly.  Users who build SUNDIALS
+# themselves can set the CPPODE_CVODE_* env vars before R CMD INSTALL
+# to override.
+#
+# Minimal library set (what the sources actually reference):
+#   CPPODE_CVODE_LIBS      = -lsundials_cvodes -lsundials_nvecserial \
+#                            -lsundials_sunmatrixdense \
+#                            -lsundials_sunlinsoldense
+#   CPPODE_CVODE_KLU_LIBS  = -lsundials_sunmatrixsparse \
+#                            -lsundials_sunlinsolklu -lklu
+# (Windows KLU builds may additionally need -lamd -lcolamd -lbtf
+#  -lsuitesparseconfig if KLU is linked statically.)
+#
+# The detected flags are written to inst/cvodeConfig.dcf, which is
+# read at package load time (R/zzz.R) into an internal `cvodeConfig`
+# environment consumed by R/CVODE.R and R/tools.R at runtime.
+# =====================================================================
+
+cflags="${CPPODE_CVODE_CFLAGS:-}"
+libs="${CPPODE_CVODE_LIBS:-}"
+klu_cflags="${CPPODE_CVODE_KLU_CFLAGS:-}"
+klu_libs="${CPPODE_CVODE_KLU_LIBS:-}"
+
+available=FALSE
+klu_available=FALSE
+if [ -n "$libs" ]; then available=TRUE; fi
+if [ -n "$klu_libs" ]; then klu_available=TRUE; fi
+
+mkdir -p inst
+cat > inst/cvodeConfig.dcf <<EOF
+available: $available
+cflags: $cflags
+libs: $libs
+klu_available: $klu_available
+klu_cflags: $klu_cflags
+klu_libs: $klu_libs
+EOF

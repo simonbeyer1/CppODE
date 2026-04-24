@@ -12,6 +12,14 @@ Description: Generates, compiles, and runs 'C++' solvers for systems of ordinary
     Jacobian generation, and sparse matrix factorization for large systems.
 Language: en-US
 License: MIT + file LICENSE
+SystemRequirements: C++17; Python (>= 3.8) with SymPy; optional system
+    libraries, detected by ./configure at install time:
+    SUNDIALS (>= 6.0) for the CVODE() backend (libsundials-dev on
+    Debian/Ubuntu, sundials-devel on Fedora, sundials via Homebrew on
+    macOS); SuiteSparse / KLU for the sparse Jacobian path of both
+    CppODE() and CVODE() (libsuitesparse-dev / suitesparse-devel /
+    suite-sparse). Missing libraries don't prevent install — the
+    affected features error cleanly at runtime with install hints.
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

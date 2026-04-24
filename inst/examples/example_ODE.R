@@ -26,7 +26,7 @@ times  <- seq(0, 10, length.out = 300)
 res <- solveODE(f, times, params)
 
 head(res$time)             # time vector
-head(res$variable)         # variables
+head(res$variable)         # variables [n_t, n_x]
 head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }

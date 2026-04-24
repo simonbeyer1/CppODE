@@ -15,11 +15,12 @@ CppODE(
   outdir = tempdir(),
   deriv = TRUE,
   deriv2 = FALSE,
-  fullErr = TRUE,
+  ntheta = NULL,
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
-  method = c("bdf", "rb4"),
+  method = c("bdf", "adams", "msoda", "rb4", "tsit5"),
+  useNDF = TRUE,
   profile = FALSE,
   stepTrace = FALSE,
   verbose = FALSE
@@ -52,8 +53,16 @@ If \code{NULL}, a random identifier is used.}
 \item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers;
 requires \code{deriv = TRUE}.}
 
-\item{fullErr}{Logical. If \code{TRUE}, compute error estimates using full state vector
-including derivatives. If \code{FALSE}, use only the value components for error control.}
+\item{ntheta}{Optional integer giving the compile-time theta dimension for
+parameter reparametrization \eqn{p = \Phi(\theta)}. When \code{NULL} (default),
+the AD width equals the number of non-fixed (state + parameter) slots and
+\code{sens1ini} is interpreted in legacy \verb{[n_states, n_active]} shape (or
+omitted for identity seeding). When set to an explicit integer, the AD
+width is fixed to \code{ntheta}, \code{sens1ini} must be supplied at \code{solveODE()}
+time as the full Jacobian \eqn{\Phi'(\theta)} of shape
+\verb{[n_states + n_params, ntheta]}, and sensitivity output columns are
+labelled as theta slots instead of model-parameter names. Requires
+\code{deriv = TRUE} and is incompatible with runtime \code{fixed}.}
 
 \item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
 
@@ -63,13 +72,37 @@ including derivatives. If \code{FALSE}, use only the value components for error 
 \code{NULL} (default) auto-selects based on Jacobian sparsity.
 \code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
 
-\item{method}{Character string selecting the integration method: \code{"bdf"} (default),
-\code{"rb4"}, or \code{"rosenbrock4"} (alias for \code{"rb4"}).}
+\item{method}{Character string selecting the integration method. One of:
+\itemize{
+\item \code{"bdf"} \emph{(default)} — BDF/NDF, max order 5, stiff (see \code{useNDF})
+\item \code{"adams"} — Adams-Moulton PECE, max order 12, \strong{non-stiff only}
+\item \code{"msoda"} — BDF/NDF + Adams with LSODA-style auto-switching, max order 12
+\item \code{"rb4"} (or \code{"rosenbrock4"}) — Rosenbrock4, fourth-order L-stable single-step
+\item \code{"tsit5"} — Tsitouras 5(4) explicit RK with FSAL, \strong{non-stiff only}
+}
+
+Use \code{"bdf"} for problems known to be stiff throughout, \code{"adams"} or \code{"tsit5"}
+for problems known to be non-stiff, and \code{"msoda"} when stiffness varies in
+time. \code{"rb4"} is a good alternative to BDF when the Jacobian is cheap and
+Newton iteration overhead matters. \code{"tsit5"} is the fastest option for
+non-stiff problems where function evaluations dominate.}
+
+\item{useNDF}{Logical. If \code{TRUE} (default), the stiff-side corrector uses
+Klopfenstein-Shampine NDF kappa coefficients. If \code{FALSE}, classical BDF.
+Applies to methods \code{"bdf"} and \code{"msoda"}; silently ignored for \code{"adams"}
+and \code{"rb4"}.}
 
 \item{profile}{Logical. If \code{TRUE}, compile with profiling counters (\code{-DCPPODE_PROFILE}).}
 
-\item{stepTrace}{Logical. If \code{TRUE}, emit per-step diagnostics (order, step size, gamrat,
-setup triggers) to stderr. Verbose; intended for debugging only.}
+\item{stepTrace}{Logical. If \code{TRUE}, compile the solver with
+\code{-DCPPODE_STEP_TRACE}, which makes the multistepper and the one-step
+controller append one row per step attempt (order, step size, gamrat,
+setup triggers, error-test norms, cumulative counters) into an in-memory
+buffer. The buffer is returned to R as the \verb{$trace} element of the
+result from \code{\link[=solveODE]{solveODE()}}, which attaches it as a \code{data.frame} and
+optionally writes it to a user-supplied CSV path (\code{traceFile} argument).
+Intended for debugging and apples-to-apples comparisons against the
+CVODE step trace.}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
@@ -100,10 +133,50 @@ equations (ODEs) of the form
 
 \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
 
-Two integration methods are available: \strong{BDF} (Backward Differentiation Formulas,
-variable-order up to 5, default) and \strong{Rosenbrock4} (a fourth-order L-stable method
-derived from Boost.Odeint).
-Both steppers support dense output, error control, sparse and dense LU factorization,
+Four integration methods are available, all sharing a common Nordsieck-based
+multistep machinery (the \code{multistepper} template) plus Rosenbrock4:\tabular{lllll}{
+   Method \tab Family \tab Max order \tab Stiff? \tab Auto-switching \cr
+   \code{"bdf"} \emph{(default)} \tab BDF/NDF \tab 5 \tab Stiff \tab — \cr
+   \code{"adams"} \tab Adams-Moulton (PECE) \tab 12 \tab Non-stiff \tab — \cr
+   \code{"msoda"} \tab BDF/NDF + Adams with LSODA-style switching \tab 12 \tab Both \tab yes \cr
+   \code{"rb4"} \tab Rosenbrock4 (L-stable, single-step) \tab 4 \tab Stiff \tab — \cr
+   \code{"tsit5"} \tab Tsitouras 5(4) (explicit RK, FSAL) \tab 5 \tab Non-stiff \tab — \cr
+}
+
+
+\strong{BDF} is a variable-order (1..5) Nordsieck multistep method. By default
+(\code{useNDF = TRUE}) it uses Shampine's NDF kappa modification (Shampine &
+Reichelt, SIAM J. Sci. Comput. 18(1), 1997, Table 1) which is typically
+~10\% faster than classical BDF. Set \code{useNDF = FALSE} for classical BDF.
+
+\strong{Adams} is a variable-order (1..12) Adams-Moulton method with PECE
+(Predict-Evaluate-Correct-Evaluate) iteration. It is explicit in the sense
+that no Newton iteration / linear solve is required, which makes it
+significantly cheaper per step on \strong{non-stiff} problems. On stiff problems
+it will fail or stall — use BDF or MSODA instead.
+
+\strong{MSODA} (Multistep Solver for ODEs with Automatic method switching) starts
+in Adams mode and dynamically switches to BDF/NDF when stiffness is detected,
+and back to Adams when the problem becomes non-stiff again. The detection
+logic is a faithful port of the LSODA switching heuristic (Petzold 1983),
+driven by the dominant eigenvalue estimate \code{pdest} from the PECE iteration
+rate and the matrix 1-norm \verb{pnorm = ||J||_1} from the cached Jacobian. Use
+MSODA when the problem has phases of differing stiffness — for example, slow
+drift followed by a fast transient. The \code{useNDF} flag controls whether the
+stiff side uses NDF or classical BDF coefficients.
+
+\strong{Rosenbrock4} is a fourth-order L-stable single-step method derived from
+Boost.Odeint. It uses one Jacobian evaluation and one LU factorization per
+step but no Newton iteration, which can be advantageous for problems where
+the Jacobian is cheap relative to the right-hand side.
+
+\strong{Tsit5} (Tsitouras 2011) is a 5th-order explicit Runge-Kutta method with
+an embedded 4th-order error estimator and FSAL (First Same As Last) property.
+It requires only function evaluations (no Jacobian or linear algebra) and is
+the method of choice for \strong{non-stiff} problems where function evaluations are
+expensive. On stiff problems it will fail or stall — use BDF or Rb4 instead.
+
+All steppers support dense output, error control, sparse and dense LU factorization,
 \strong{time-based} and \strong{root-triggered events}, and, optionally,
 \strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
 \strong{dual number} types provided by
@@ -165,23 +238,25 @@ Integration stops when any expression crosses zero. Variables, parameters, and
 \subsection{Output}{
 
 The generated solver function (accessible via \code{.Call}) returns a named list:
+
+All output arrays are \strong{time-first}: the leading dimension indexes time.
 \itemize{
 \item \code{deriv = FALSE}, \code{deriv2 = FALSE}
 Returns \code{list(time, variable)}
 \itemize{
 \item \code{time}: numeric vector of length \eqn{n_t}
-\item \code{variable}: numeric matrix \eqn{X_{ij}} of shape \eqn{(n_x,n_t)}, containing \eqn{x_i(t_j)}
+\item \code{variable}: numeric matrix of shape \eqn{(n_t,n_x)}, containing \eqn{x_i(t_j)}
 }
 \item \code{deriv = TRUE}, \code{deriv2 = FALSE}
 Returns \code{list(time, variable, sens1)}
 \itemize{
-\item \code{sens1}: numeric array \eqn{\partial X_{ijk}} of shape \eqn{(n_x,n_s,n_t)}, containing
+\item \code{sens1}: numeric array of shape \eqn{(n_t,n_x,n_s)}, containing
 \eqn{\partial x_i(t_k)/\partial p_j}
 }
 \item \code{deriv = TRUE}, \code{deriv2 = TRUE}
 Returns \code{list(time, variable, sens1, sens2)}
 \itemize{
-\item \code{sens2}: numeric array \eqn{\partial^2 X_{ijkl}} of shape \eqn{(n_x,n_s,n_s,n_t)},
+\item \code{sens2}: numeric array of shape \eqn{(n_t,n_x,n_s,n_s)},
 containing \eqn{\partial^2 x_i(t_k)/\partial p_j\,\partial p_k}
 }
 }
@@ -219,7 +294,7 @@ times  <- seq(0, 10, length.out = 300)
 res <- solveODE(f, times, params)
 
 head(res$time)             # time vector
-head(res$variable)         # variables
+head(res$variable)         # variables [n_t, n_x]
 head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }

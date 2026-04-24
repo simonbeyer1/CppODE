@@ -49,11 +49,18 @@ install.packages("devtools")
 devtools::install_github("simonbeyer1/CppODE")
 ```
 
-## Getting started
+## Vignettes
 
-For a worked example — defining an ODE system, computing sensitivities,
-and plotting the results — see the
-[Predator–Prey vignette](vignettes/CppODE_LotkaVolterra.Rmd).
+- [**Predator–Prey (Lotka–Volterra)**](vignettes/CppODE_LotkaVolterra.Rmd) —
+  minimal entry point: 2 states, forward-mode AD sensitivities, phase
+  portrait. A good starting tutorial.
+- [**Cascade signaling network**](vignettes/CppODE_CascadeSignaling.Rmd) —
+  15-state MAPK cascade with an event-triggered ligand bolus,
+  sensitivities propagated across the event via the saltation matrix,
+  and a side-by-side cross-check with the CVODE backend.
+
+After installation both vignettes are also available via
+`vignette(package = "CppODE")`.
 
 ## License
 

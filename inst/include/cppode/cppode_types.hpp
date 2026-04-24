@@ -199,32 +199,6 @@ inline void vec_axpy(std::vector<double>& y, double alpha, const std::vector<dou
            y.data(), &inc);
 }
 
-/// ||v||_∞
-template<class T>
-inline double vec_norm_inf(const std::vector<T>& v)
-{
-  double mx = 0;
-  for (const auto& x : v) {
-    double a = std::abs(static_cast<double>(x));
-    if (a > mx) mx = a;
-  }
-  return mx;
-}
-
-/// Weighted RMS norm: sqrt(mean((v[i]/w[i])^2))
-template<class T>
-inline double vec_wrms_norm(const std::vector<T>& v, const std::vector<T>& w)
-{
-  const size_t n = v.size();
-  if (n == 0) return 0.0;
-  double sum = 0;
-  for (size_t i = 0; i < n; ++i) {
-    double r = static_cast<double>(v[i]) / static_cast<double>(w[i]);
-    sum += r * r;
-  }
-  return std::sqrt(sum / static_cast<double>(n));
-}
-
 // ============================================================================
 //  Dense matrix-vector product: y = A * x  (column-major)
 // ============================================================================
@@ -260,36 +234,6 @@ inline void matvec(const dense_matrix<double>& A,
            &beta, y.data(), &inc  FCONE);
 }
 
-/// y -= A * x  (for IFT: rhs -= dW · x_val)
-template<class T>
-inline void matvec_sub(const dense_matrix<T>& A,
-                       const std::vector<T>& x,
-                       std::vector<T>& y)
-{
-  const int m = A.rows(), k = A.cols();
-  for (int j = 0; j < k; ++j) {
-    const T xj = x[j];
-    for (int i = 0; i < m; ++i)
-      y[i] -= A(i, j) * xj;
-  }
-}
-
-/// y -= A * x — BLAS dgemv specialization for double
-inline void matvec_sub(const dense_matrix<double>& A,
-                       const std::vector<double>& x,
-                       std::vector<double>& y)
-{
-  int m = A.rows(), n = A.cols();
-  if (m == 0 || n == 0) return;
-  double alpha = -1.0, beta = 1.0;
-  int inc = 1;
-  char trans = 'N';
-  F77_CALL(dgemv)(&trans, &m, &n, &alpha,
-           const_cast<double*>(A.ptr()), &m,
-           const_cast<double*>(x.data()), &inc,
-           &beta, y.data(), &inc  FCONE);
-}
-
 // ============================================================================
 //  CSC matrix-vector product: y += W * x
 // ============================================================================
@@ -303,19 +247,6 @@ inline void csc_matvec_add(const csc_matrix<T>& W,
     const T xj = x[j];
     for (int p = W.Ap[j]; p < W.Ap[j + 1]; ++p)
       y[W.Ai[p]] += W.Ax[p] * xj;
-  }
-}
-
-/// y -= W * x
-template<class T>
-inline void csc_matvec_sub(const csc_matrix<T>& W,
-                           const std::vector<T>& x,
-                           std::vector<T>& y)
-{
-  for (int j = 0; j < W.n; ++j) {
-    const T xj = x[j];
-    for (int p = W.Ap[j]; p < W.Ap[j + 1]; ++p)
-      y[W.Ai[p]] -= W.Ax[p] * xj;
   }
 }
 

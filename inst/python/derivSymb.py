@@ -360,6 +360,12 @@ def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False,
         else:
             hess = _compute_hessian_serial(fnames, exprs_syms, vars_syms, real, simplify_func)
 
+    # Parallel path populates dicts in completion order; restore fnames order
+    # so downstream consumers can rely on row alignment with `names`.
+    jac = {fname: jac[fname] for fname in fnames}
+    if hess is not None:
+        hess = {fname: hess[fname] for fname in fnames}
+
     return {
         "jacobian": jac,
         "hessian": hess,

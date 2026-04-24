@@ -8,3 +8,5 @@
 ^doc$
 ^Meta$
 ^README\.html$
+^\.positai$
+^\.claude$

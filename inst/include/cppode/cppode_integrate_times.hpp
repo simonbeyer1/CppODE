@@ -35,6 +35,7 @@
 #include <cppode/cppode_step_checker.hpp>
 #include <cppode/cppode_stepper_traits.hpp>
 #include <cppode/cppode_profiler.hpp>
+#include <cppode/cppode_utils.hpp>
 
 #include <fadbad++/fadiff.h>
 #include <cppode/cppode_fadiff_extensions.hpp>
@@ -282,9 +283,19 @@ inline bool direction_matches(double last_val, double curr_val, int direction) {
 }
 
 // ============================================================================
-// Steady-state root function helper
+// Steady-state termination helper (threshold check, no root-finding)
 // ============================================================================
 
+template<class System, class State, class Time>
+std::function<bool(const State&, const Time&)> make_steady_state_termination(System& sys, double tol) {
+  return [&sys, tol](const State& x, const Time& t) -> bool {
+    State dxdt(x.size());
+    sys(x, dxdt, t);
+    return cppode::max_abs_all_levels_vec(dxdt) < tol;
+  };
+}
+
+// Kept for backward compatibility
 template<class System, class State, class Time>
 auto make_steady_state_root_func(System& sys, double tol) {
   auto first = std::make_shared<bool>(true);
@@ -775,12 +786,16 @@ public:
  using time_type  = Time;
  using value_type = typename State::value_type;
 
+ using TerminationFunc = std::function<bool(const State&, const Time&)>;
+
  EventEngine(Stepper& st, System& sys,
              const std::vector<FixedEvent<State, value_type>>& fixed,
              const std::vector<RootEvent<State, Time>>& root,
              DtEstimator dt_est = DtEstimator())
    : m_st(st), m_sys(sys), m_fixed(fixed), m_root(root),
      m_dt_estimator(std::move(dt_est)) {}
+
+ void set_termination(TerminationFunc f) { m_termination = std::move(f); }
 
  cppode::profiler& get_profiler() const {
    if constexpr (has_controlled_stepper_method<Stepper>::value) {
@@ -860,11 +875,28 @@ private:
 
  // ----------------------------------------------------------------
  // init_stepper_after_event
+ //
+ // Multistep methods (bdf/adams/msoda) discard their Nordsieck history
+ // at order 1 after an event, so the pre-event step size is no longer
+ // a meaningful starting point — it was tuned to the previous regime
+ // and pre-event Nordsieck data, neither of which survives the
+ // restart.  Reusing it drives the Newton corrector into repeated
+ // convergence failures that collapse h down to the HMIN guard.
+ //
+ // Re-estimate h0 from scratch via cppode_hin, using the remaining
+ // interval (t_now → t_final) as the upper-bound hint — same strategy
+ // the multistepper controller uses on its order-1 fallback path.
  // ----------------------------------------------------------------
  void init_stepper_after_event(State& x, Time t, Time& dt) {
    if constexpr (::cppode::needs_restart_after_event_v<Stepper>) {
      if constexpr (!std::is_same_v<DtEstimator, no_dt_estimator>) {
        dt = m_dt_estimator(x, t);
+     } else {
+       const double atol = m_st.controlled_stepper().atol();
+       const double rtol = m_st.controlled_stepper().rtol();
+       const double h_est = odeint_utils::cppode_hin<value_type>(
+           m_sys.first, x, t, m_t_final, atol, rtol);
+       dt = Time(h_est);
      }
      m_st.initialize(x, t, dt);
      State f0(x.size());
@@ -926,6 +958,7 @@ public:
    auto it = times.begin();
    const auto end = times.end();
    Time t = *it;
+   m_t_final = scalar_value(times.back());
 
    if (apply_fixed_events_at_time(x, t, m_fixed, m_sys))
      reset_stepper_unified(m_st, x, t, dt);
@@ -954,6 +987,11 @@ public:
          ++steps; checker(); checker.reset(); dt = dt_step;
          checker.set_last_order(get_stepper_order(m_st));
          checker.set_last_dt(scalar_value(dt_step));
+
+         if (m_termination && m_termination(x, t)) {
+           obs(x, t); return steps;
+         }
+
          eval_root_funcs(curr_val, x, t);
          check_root_triggers(triggered, last_val, curr_val, fired, max_trigger);
 
@@ -1019,6 +1057,7 @@ public:
 
    size_t steps = 0;
    auto it = times.begin(); auto end = times.end();
+   m_t_final = scalar_value(times.back());
 
    if (apply_fixed_events_at_time(x, *it, m_fixed, m_sys))
      m_st.initialize(x, *it, dt);
@@ -1036,6 +1075,14 @@ public:
 
    State x_at_start(x.size());
    m_st.calc_state(t_start, x_at_start);
+
+   if (m_termination) {
+     State x_check(x.size());
+     m_st.calc_state(t_end, x_check);
+     if (m_termination(x_check, t_end)) {
+       obs(x_check, t_end); x = x_check; return steps;
+     }
+   }
 
    std::vector<double> last_val(m_root.size());
    std::vector<State>  last_state(m_root.size(), x_at_start);
@@ -1073,6 +1120,14 @@ public:
        for (size_t i = 0; i < m_root.size(); ++i) {
          last_val[i] = curr_val[i]; last_state[i] = x; last_time[i] = t_end;
        }
+
+       if (m_termination) {
+         m_st.calc_state(t_end, x);
+         if (m_termination(x, t_end)) {
+           obs(x, t_end); return steps;
+         }
+       }
+
        m_st.do_step(m_sys); ++steps; checker(); checker.reset();
        checker.set_last_order(get_stepper_order(m_st));
        t_start = m_st.previous_time(); t_end = m_st.current_time();
@@ -1191,6 +1246,11 @@ private:
  const std::vector<FixedEvent<State, value_type>>& m_fixed;
  const std::vector<RootEvent<State, Time>>& m_root;
  DtEstimator m_dt_estimator;
+ TerminationFunc m_termination;
+ // Integration endpoint, set at the start of process_{controlled,dense}.
+ // Used as the upper-bound hint for cppode_hin when re-estimating the
+ // initial step size after an event restart on multistep methods.
+ double m_t_final = 0.0;
 };
 
 // ============================================================================
@@ -1207,10 +1267,12 @@ size_t integrate_times(
    const std::vector<RootEvent<State, Time>>& root,
    StepChecker& checker, double root_tol = 1e-8, size_t max_trigger_root = 1,
    DtEstimator dt_est = DtEstimator(),
+   std::function<bool(const State&, const Time&)> termination = nullptr,
    cppode::controlled_stepper_tag = cppode::controlled_stepper_tag())
 {
  auto times = merge_user_and_event_times<Time>(t_begin, t_end, fixed);
  EventEngine<Stepper, System, State, Time, DtEstimator> eng(stepper, system, fixed, root, std::move(dt_est));
+ if (termination) eng.set_termination(std::move(termination));
  try {
    size_t steps = eng.process_controlled(x, times, dt, obs, checker, root_tol, max_trigger_root);
    transfer_stepper_diagnostics(stepper, checker);
@@ -1231,10 +1293,12 @@ size_t integrate_times_dense(
    const std::vector<RootEvent<State, Time>>& root,
    StepChecker& checker, double root_tol = 1e-8, size_t max_trigger_root = 1,
    DtEstimator dt_est = DtEstimator(),
+   std::function<bool(const State&, const Time&)> termination = nullptr,
    cppode::dense_output_stepper_tag = cppode::dense_output_stepper_tag())
 {
  auto times = merge_user_and_event_times<Time>(t_begin, t_end, fixed);
  EventEngine<Stepper, System, State, Time, DtEstimator> eng(stepper, system, fixed, root, std::move(dt_est));
+ if (termination) eng.set_termination(std::move(termination));
  try {
    size_t steps = eng.process_dense(x, times, dt, obs, checker, root_tol, max_trigger_root);
    transfer_stepper_diagnostics(stepper, checker);
@@ -1253,6 +1317,7 @@ using detail::EventMethod;
 using detail::integrate_times;
 using detail::integrate_times_dense;
 using detail::make_steady_state_root_func;
+using detail::make_steady_state_termination;
 
 } // namespace cppode
 

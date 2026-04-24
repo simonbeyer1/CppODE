@@ -221,23 +221,50 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 # Precompiled regex for std::pow(expr, 2.0) → (expr)*(expr) optimization.
 # Matches std::pow(ARG, 2.0) or std::pow(ARG, 2) where ARG may contain
 # nested parentheses (up to 2 levels) or simple identifiers.
-_POW2_PATTERN = re.compile(
-    r'std::pow\('
-    r'((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))+)'  # capture group 1: argument
-    r',\s*2(?:\.0)?\)'
-)
-
 def _optimize_pow2(cpp_str):
     """Replace std::pow(expr, 2.0) with (expr)*(expr) for performance.
-    Also handles fadbad::pow for AD types."""
-    result = _POW2_PATTERN.sub(r'(\1)*(\1)', cpp_str)
-    # Same for fadbad::pow in AD mode
-    result = re.sub(
-        r'fadbad::pow\('
-        r'((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))+)'
-        r',\s*2(?:\.0)?\)',
-        r'(\1)*(\1)', result)
-    return result
+    Also handles fadbad::pow for AD types.
+
+    Uses parenthesis-counting instead of regex to avoid catastrophic
+    backtracking on deeply nested expressions.
+    """
+    for prefix in ("std::pow(", "fadbad::pow("):
+        result = []
+        i = 0
+        plen = len(prefix)
+        while i < len(cpp_str):
+            if cpp_str[i:i+plen] == prefix:
+                # Found pow( — find the comma separating args by counting parens
+                depth = 1
+                start = i + plen
+                j = start
+                comma_pos = -1
+                while j < len(cpp_str) and depth > 0:
+                    c = cpp_str[j]
+                    if c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    elif c == ',' and depth == 1:
+                        comma_pos = j
+                    j += 1
+                if comma_pos > 0 and depth == 0:
+                    arg1 = cpp_str[start:comma_pos]
+                    arg2 = cpp_str[comma_pos+1:j].strip()
+                    if arg2 in ("2", "2.0"):
+                        result.append(f"(({arg1})*({arg1}))")
+                        i = j + 1
+                        continue
+                # No match or not pow2 — emit original
+                result.append(prefix)
+                i += plen
+            else:
+                result.append(cpp_str[i])
+                i += 1
+        cpp_str = "".join(result)
+    return cpp_str
 
 def _negate_cpp_expr(expr_str):
     """Negate a C++ expression string for pre-negated Jacobian storage.
@@ -323,10 +350,6 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
     cpp_code = _optimize_pow2(cpp_code)
     
     return cpp_code
-# NOTE: eval_scalar method removed — the unified BDF stepper no longer
-# uses a separate scalar-Newton path.  All Newton iterations use the
-# full AD lu_solve() which dispatches to IFT internally.
-
 # =====================================================================
 # Main ODE generator
 # =====================================================================
@@ -339,13 +362,13 @@ def generate_ode_cpp(
     fixed_params=None,
     forcings_list=None,
     sparse=None,
+    skip_jacobian=False,
 ):
     """
     Generate C++ code for ODE system and Jacobian.
     
     Optimizations:
     - Parallel Jacobian computation via ThreadPoolExecutor
-    - Common Subexpression Elimination (CSE) across RHS + Jacobian + dfdt
     - Reusable CXX17CodePrinter instance
     - Single-pass regex replacements
     
@@ -438,13 +461,25 @@ def generate_ode_cpp(
     # Falls back to the standard path if dedup doesn't help.
     # =====================================================================
     dedup_result = None
-    if n_states > 64 and not forcings_list:
+    if n_states > 64 and not forcings_list and not skip_jacobian:
         dedup_result = _try_template_dedup(
             odes_list, states_list, params_list, n_states, num_type,
             forcings_list, t
         )
 
-    if dedup_result is not None:
+    if skip_jacobian:
+        # EXPLICIT METHOD PATH: skip Jacobian entirely.
+        # Only parse RHS + generate ODE code; emit a no-op Jacobian stub.
+        exprs = [_safe_sympify(expr, local_symbols) for expr in odes_list]
+        jac_matrix = None
+        time_derivs = [sp.Integer(0)] * n_states
+
+        ode_cpp_lines = _generate_ode_code_plain(
+            exprs, states_list, params_list, n_states, num_type, forcings_list
+        )
+        jac_cpp_lines = _generate_noop_jacobian(n_states, num_type)
+
+    elif dedup_result is not None:
         # Template dedup succeeded — use its results
         ode_cpp_lines = dedup_result["ode_cpp_lines"]
         jac_cpp_lines = dedup_result["jac_cpp_lines"]
@@ -474,27 +509,19 @@ def generate_ode_cpp(
         # Compute time derivatives
         time_derivs = [sp.diff(expr, t) for expr in exprs]
 
-        # Build the ODE code with CSE (only for small-medium systems)
-        if n_states <= 200:
-            ode_cpp_lines = _generate_ode_code_with_cse(
-                exprs, states_list, params_list, n_states, num_type, forcings_list
-            )
-            jac_cpp_lines = _generate_jac_code_with_cse(
-                jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
-                states_list, params_list, n_states, num_type
-            )
-        else:
-            # Large system, no dedup match: generate without CSE
-            ode_cpp_lines = _generate_ode_code_plain(
-                exprs, states_list, params_list, n_states, num_type, forcings_list
-            )
-            jac_cpp_lines = _generate_jac_code_plain(
-                jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
-                states_list, params_list, n_states, num_type
-            )
+        # Generate ODE + Jacobian code (plain, no CSE)
+        ode_cpp_lines = _generate_ode_code_plain(
+            exprs, states_list, params_list, n_states, num_type, forcings_list
+        )
+        jac_cpp_lines = _generate_jac_code_plain(
+            jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
+            states_list, params_list, n_states, num_type
+        )
 
     # Sparsity analysis — decide dense vs sparse
-    if dedup_result is not None:
+    if skip_jacobian:
+        pre_pattern = set()
+    elif dedup_result is not None:
         pre_pattern = set(zip(dedup_result["jac_nnz_rows"], dedup_result["jac_nnz_cols"]))
     else:
         pre_pattern = _extract_jac_sparsity(jac_matrix, n_states)
@@ -507,13 +534,18 @@ def generate_ode_cpp(
     # Determine sparse vs dense:
     # sparse=True  -> force sparse
     # sparse=False -> force dense
-    # sparse=None  -> auto-detect
+    # sparse=None  -> auto-detect based on size and sparsity
     if sparse is True:
         use_sparse = True
     elif sparse is False:
         use_sparse = False
     else:
-        use_sparse = (jac_nnz / n_states) < 10
+        # AD types carry derivative components through every LU operation,
+        # so sparse only pays off at larger sizes.
+        is_ad = (num_type != "double")
+        min_n = 200 if is_ad else 50
+        min_sparsity = 95.0  # percent zeros required
+        use_sparse = (n_states >= min_n) and (jac_zeros_pct >= min_sparsity)
 
     sparsity_stats = {
         'n': n_states,
@@ -532,7 +564,9 @@ def generate_ode_cpp(
     states_syms_list = [states_syms[s] for s in states_list]
     states_syms_set = set(states_syms_list)
 
-    if dedup_result is not None:
+    if skip_jacobian:
+        pass  # no-op Jacobian already generated; skip sparse stringification
+    elif dedup_result is not None:
         jac_nnz_rows = dedup_result["jac_nnz_rows"]
         jac_nnz_cols = dedup_result["jac_nnz_cols"]
         jac_nnz_exprs = dedup_result["jac_nnz_exprs"]
@@ -551,7 +585,10 @@ def generate_ode_cpp(
     # Sparse path: raw CSC with direct Ax[] writes
     # Dense path:  writes to matrix<T> via J(i,j) = expr (with zero_matrix init)
     # Only ONE is generated — the one matching use_sparse.
-    if use_sparse:
+    # skip_jacobian: no-op stub already in jac_cpp_lines; skip generation.
+    if skip_jacobian:
+        jac_code = "\n".join(jac_cpp_lines)
+    elif use_sparse:
         jac_re = re.compile(r'^\s*J\((\d+),(\d+)\)\s*=\s*(.+);')
         num = num_type
 
@@ -610,7 +647,6 @@ def generate_ode_cpp(
         sparse_jac_lines.append(f"struct jacobian {{")
         sparse_jac_lines.append(f"  std::vector<{num}> params;")
         sparse_jac_lines.append(f"  std::vector<const cppode::PchipForcing<{num}>*> F;")
-        sparse_jac_lines.append(f"  bool m_jac_consts_set = false;  // one-time init for constant entries")
         sparse_jac_lines.append(f"")
         sparse_jac_lines.append(f"  jacobian(const std::vector<{num}>& p_,")
         sparse_jac_lines.append(f"           const std::vector<const cppode::PchipForcing<{num}>*>& F_)")
@@ -620,6 +656,10 @@ def generate_ode_cpp(
         sparse_jac_lines.append(f"                  cppode::csc_matrix<{num}>& W,")
         sparse_jac_lines.append(f"                  const {num}& t,")
         sparse_jac_lines.append(f"                  std::vector<{num}>& dfdt) {{")
+        # Gate constant-entry init on W (pattern-built) so that callers which pass
+        # a fresh csc_matrix (e.g. estimate_initial_dt allocating its own W) get
+        # constants applied; subsequent calls with the same W skip them.
+        sparse_jac_lines.append(f"    const bool _init_consts = !W.pattern_built;")
 
         # First-call: build CSC pattern from static arrays
         rows_str = _fmt_int_array(sorted_rows)
@@ -722,10 +762,10 @@ def generate_ode_cpp(
                     else:
                         const_entries.append((local_j, neg_expr))
 
-                # Constant entries: write once (guarded by m_jac_consts_set flag)
+                # Constant entries: write once per fresh W (gated on _init_consts).
                 if const_entries:
                     sparse_jac_lines.append(f"    // Template {tmpl_idx}: {len(const_entries)} constant + {len(state_entries)} state-dependent entries")
-                    sparse_jac_lines.append(f"    if (!m_jac_consts_set) {{")
+                    sparse_jac_lines.append(f"    if (_init_consts) {{")
                     sparse_jac_lines.append(f"      for (int c = 0; c < {n_instances}; ++c) {{")
                     for local_j, neg_expr in const_entries:
                         sparse_jac_lines.append(f"        W.Ax[t{tmpl_idx}_ax[c * {n_jac} + {local_j}]] = {neg_expr};")
@@ -741,9 +781,6 @@ def generate_ode_cpp(
                 loop_dfdt = _tmpl_to_loop_cpp(td_tmpl)
                 sparse_jac_lines.append(f"      dfdt[t{tmpl_idx}_rows[c]] = {loop_dfdt};")
                 sparse_jac_lines.append(f"    }}")
-
-            # Set the flag after first complete evaluation
-            sparse_jac_lines.append(f"    m_jac_consts_set = true;")
 
         else:
             # =============================================================
@@ -770,6 +807,11 @@ def generate_ode_cpp(
                     break
                 if 'set_zero' in stripped or 'zero_matrix' in stripped or '::Zero(' in stripped:
                     continue
+                # Skip dense dirty-entry clearing code (static _dr/_dc arrays and J() zeroing loop)
+                if 'static const int _dr[' in stripped or 'static const int _dc[' in stripped:
+                    continue
+                if '_dr[_k]' in stripped or '_dc[_k]' in stripped:
+                    continue
                 m = jac_re.match(line)
                 if m:
                     row_idx, col_idx = int(m.group(1)), int(m.group(2))
@@ -785,13 +827,15 @@ def generate_ode_cpp(
                 sparse_jac_lines.append(line)
 
             # Emit Ax writes in CSC order (NEGATED for pre-negated W storage)
+            # dense_jac_entries values are ALREADY negated (parsed from
+            # the dense Jacobian code which applies _negate_cpp_expr).
+            # Do NOT negate again — that would flip the sign back to +J.
             for ax_k, (r, c, expr) in enumerate(zip(sorted_rows, sorted_cols, sorted_exprs)):
                 if expr is not None:
-                    # Real entry — look up the C++ expression and negate
+                    # Real entry — look up the already-negated C++ expression
                     cpp_expr = dense_jac_entries.get((r, c), expr)
                     cpp_expr = _optimize_pow2(cpp_expr)
-                    neg_expr = _negate_cpp_expr(cpp_expr)
-                    sparse_jac_lines.append(f"    W.Ax[{ax_k}] = {neg_expr};")
+                    sparse_jac_lines.append(f"    W.Ax[{ax_k}] = {cpp_expr};")
                 else:
                     # Missing diagonal — zero (will get identity term from factorize_W)
                     sparse_jac_lines.append(f"    W.Ax[{ax_k}] = {num}(0);")
@@ -865,162 +909,14 @@ def _compute_ode_jacobian_serial(exprs, states_syms_list, states_syms_set):
                 row.append(sp.Integer(0))
         jac_matrix.append(row)
     return jac_matrix
-# =====================================================================
-# CSE-based ODE and Jacobian code generation
-# =====================================================================
+def _generate_noop_jacobian(n_states, num_type):
+    """Generate a no-op Jacobian struct for explicit methods (tsit5, adams).
 
-def _is_nontrivial(expr):
-    """Check if an expression is worth including in CSE."""
-    if expr is sp.S.Zero or expr == 0 or isinstance(expr, (sp.Integer, sp.Float)):
-        return False
-    if isinstance(expr, sp.Symbol):
-        return False
-    # Negative symbol: -x
-    if (isinstance(expr, sp.Mul) and len(expr.args) == 2
-            and expr.args[0] is sp.S.NegativeOne
-            and isinstance(expr.args[1], sp.Symbol)):
-        return False
-    return True
-def _apply_cse(expr_list):
-    """Apply CSE to a list of expressions, returning (replacements, reduced).
-    
-    Only runs CSE when there are enough non-trivial expressions to benefit.
-    Returns ([], expr_list) if CSE is not worthwhile.
-    """
-    # Count non-trivial expressions
-    n_nontrivial = sum(1 for e in expr_list if _is_nontrivial(e))
-    if n_nontrivial < 3:
-        return [], expr_list
-    
-    try:
-        replacements, reduced = sp.cse(expr_list, optimizations='basic')
-        return replacements, reduced
-    except Exception:
-        # Fallback: no CSE if it fails
-        return [], expr_list
-def _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list):
-    """Convert CSE temporary variable assignments to C++ code lines."""
-    lines = []
-    if not replacements:
-        return lines
-    
-    for sym, expr in replacements:
-        cpp = _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
-        lines.append(f"    const {num_type} {sym} = {cpp};")
-    return lines
-def _reduced_expr_to_cpp(expr, cse_syms, states_list, params_list, n_states, num_type, forcings_list):
-    """Convert a CSE-reduced expression to C++ code.
-    
-    CSE temporaries (x0, x1, ...) are already declared as C++ local variables,
-    so they must NOT be replaced by the symbol replacer. We handle this by:
-    1. Substituting CSE syms with unique placeholder strings before _to_cpp
-    2. Restoring them after _to_cpp's symbol replacement pass
-    """
-    if not cse_syms:
-        return _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
-    
-    # Fast path for trivial expressions
-    if expr is sp.S.Zero or expr == 0:
-        return "0.0"
-    if isinstance(expr, sp.Integer):
-        return str(int(expr)) + ".0"
-    if isinstance(expr, sp.Float):
-        return repr(float(expr))
-    
-    # Check if this expression contains any CSE symbols
-    expr_free = expr.free_symbols
-    used_cse = expr_free & cse_syms
-    
-    if not used_cse:
-        # No CSE temporaries — use standard path
-        return _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
-    
-    # Replace CSE symbols with placeholders before printing
-    placeholders = {}
-    subs_map = {}
-    for sym in used_cse:
-        ph = f"__CSE_{sym.name}__"
-        placeholders[ph] = str(sym)
-        subs_map[sym] = sp.Symbol(ph)
-    
-    expr_subst = expr.subs(subs_map)
-    cpp = _to_cpp(expr_subst, states_list, params_list, n_states, num_type, forcings_list)
-    
-    # Restore CSE symbol names
-    for ph, name in placeholders.items():
-        cpp = cpp.replace(ph, name)
-    
-    return cpp
-def _generate_ode_code_with_cse(exprs, states_list, params_list, n_states, num_type, forcings_list):
-    """Generate ODE system C++ code with Common Subexpression Elimination."""
-    
-    # Apply CSE to RHS expressions
-    replacements, reduced = _apply_cse(exprs)
-    cse_syms = set(sym for sym, _ in replacements)
-    
-    ode_cpp_lines = [
-        "// ODE system",
-        "struct ode_system {",
-        f"  std::vector<{num_type}> params;",
-        f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
-        "",
-        f"  ode_system(const std::vector<{num_type}>& p_,",
-        f"             const std::vector<const cppode::PchipForcing<{num_type}>*>& F_)",
-        "    : params(p_), F(F_) {}",
-        "",
-        f"  void operator()(const std::vector<{num_type}>& x,",
-        f"                  std::vector<{num_type}>& dxdt,",
-        f"                  const {num_type}& t) {{",
-    ]
-
-    # Emit CSE temporaries
-    if replacements:
-        ode_cpp_lines.append("    // Common subexpressions")
-        ode_cpp_lines.extend(
-            _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list)
-        )
-        ode_cpp_lines.append("")
-
-    # Emit RHS assignments
-    for i, expr in enumerate(reduced):
-        cpp = _reduced_expr_to_cpp(expr, cse_syms, states_list, params_list, n_states, num_type, forcings_list)
-        ode_cpp_lines.append(f"    dxdt[{i}] = {cpp};")
-
-    ode_cpp_lines += ["  }", "};"]
-    return ode_cpp_lines
-def _generate_jac_code_with_cse(jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
-                                 states_list, params_list, n_states, num_type):
-    """Generate Jacobian C++ code with Common Subexpression Elimination."""
-    
-    # Collect all non-zero Jacobian entries and dfdt expressions for CSE
-    _zero = sp.Integer(0)
-    _szero = sp.S.Zero
-    
-    # Build list of (index_info, expression) for non-zero Jac entries
-    jac_entries = []
-    jac_indices = []  # (i, j) pairs
-    for i in range(n_states):
-        for j in range(n_states):
-            e = jac_matrix[i][j]
-            if e is not _zero and e is not _szero and e != 0:
-                jac_indices.append((i, j))
-                jac_entries.append(e)
-    
-    # dfdt entries (including forcing chain rule terms handled separately)
-    dfdt_entries = list(time_derivs)
-    
-    # Apply CSE over Jacobian entries + dfdt entries jointly
-    all_exprs = jac_entries + dfdt_entries
-    replacements, reduced = _apply_cse(all_exprs)
-    cse_syms = set(sym for sym, _ in replacements)
-    
-    # Split reduced back into Jac and dfdt parts
-    n_jac = len(jac_entries)
-    reduced_jac = reduced[:n_jac]
-    reduced_dfdt = reduced[n_jac:]
-    
-    jac_cpp_lines = [
-        "// Jacobian for stiff solver",
+    The struct satisfies the same interface as the real Jacobian functor
+    so the generated C++ compiles, but the body is empty — explicit
+    steppers never call the Jacobian."""
+    return [
+        "// No-op Jacobian (explicit method — Jacobian not needed at runtime)",
         "struct jacobian {",
         f"  std::vector<{num_type}> params;",
         f"  std::vector<const cppode::PchipForcing<{num_type}>*> F;",
@@ -1033,57 +929,18 @@ def _generate_jac_code_with_cse(jac_matrix, time_derivs, exprs, forcing_syms, fo
         f"                  cppode::dense_matrix<{num_type}>& J,",
         f"                  const {num_type}& t,",
         f"                  std::vector<{num_type}>& dfdt) {{",
+        f"    // Explicit method: Jacobian never evaluated.",
+        f"    (void)x; (void)J; (void)t; (void)dfdt;",
+        "  }",
+        "};",
     ]
 
-    # Zero the full matrix once, then set only non-zero entries
-    jac_cpp_lines.append(f"    J.set_zero();")
-
-    # Emit CSE temporaries
-    if replacements:
-        jac_cpp_lines.append("    // Common subexpressions")
-        # Jacobian entries don't use forcings (forcings=[] in the original code)
-        # but dfdt entries do. Use forcings_list for the CSE temps since they
-        # may contain forcing references from the dfdt part.
-        jac_cpp_lines.extend(
-            _cse_temps_to_cpp(replacements, states_list, params_list, n_states, num_type, forcings_list)
-        )
-        jac_cpp_lines.append("")
-
-    # Emit Jacobian assignments
-    for idx, (i, j) in enumerate(jac_indices):
-        cpp = _reduced_expr_to_cpp(
-            reduced_jac[idx], cse_syms, states_list, params_list, n_states, num_type,
-            []  # Jacobian entries don't reference forcings directly
-        )
-        jac_cpp_lines.append(f"    J({i},{j}) = {cpp};")
-
-    # dfdt with forcing chain rule
-    for i, expr in enumerate(exprs):
-        cpp_code = _reduced_expr_to_cpp(
-            reduced_dfdt[i], cse_syms, states_list, params_list, n_states, num_type, forcings_list
-        )
-
-        forcing_terms = []
-        for j, fname in enumerate(forcings_list):
-            df_dF = sp.diff(expr, forcing_syms[fname])
-            if df_dF != 0:
-                forcing_terms.append(
-                    f"({_to_cpp(df_dF, states_list, params_list, n_states, num_type, forcings_list)})*F[{j}]->derivative(t)"
-                )
-
-        if forcing_terms:
-            cpp_code = " + ".join([cpp_code] + forcing_terms) if cpp_code != "0" else " + ".join(forcing_terms)
-
-        jac_cpp_lines.append(f"    dfdt[{i}] = {cpp_code};")
-
-    jac_cpp_lines += ["  }", "};"]
-    return jac_cpp_lines
 # =====================================================================
-# Plain (no-CSE) code generation for large systems
+# ODE and Jacobian code generation
 # =====================================================================
 
 def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type, forcings_list):
-    """Generate ODE system C++ code without CSE (for large systems)."""
+    """Generate ODE system C++ code."""
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
@@ -1105,7 +962,7 @@ def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type
     return ode_cpp_lines
 def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forcings_list,
                              states_list, params_list, n_states, num_type):
-    """Generate Jacobian C++ code without CSE (for large systems).
+    """Generate Jacobian C++ code.
 
     Always produces DENSE signature (cppode::dense_matrix<T>& J, J(i,j) = ...).
     The caller in generate_ode_cpp converts to sparse if use_sparse is True.
@@ -1129,13 +986,29 @@ def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forci
         f"                  std::vector<{num_type}>& dfdt) {{",
         f"    J.set_zero();",
     ]
-    # fill entries
+    # Collect non-zero (i,j) positions first for dirty-index clearing
+    jac_entries_plain = []
     for i in range(n_states):
         for j in range(n_states):
             e = jac_matrix[i][j]
             if e is not _zero and e is not _szero and e != 0:
-                cpp = _to_cpp(e, states_list, params_list, n_states, num_type, [])
-                jac_cpp_lines.append(f"    J({i},{j}) = {cpp};")
+                jac_entries_plain.append((i, j, e))
+
+    # Replace set_zero with dirty-index clearing
+    jac_cpp_lines[-1] = f"    // Clear only dirty entries from previous call (O(nnz) not O(n²))"
+    n_dirty = len(jac_entries_plain)
+    if n_dirty > 0:
+        dirty_rows = [str(i) for i, j, e in jac_entries_plain]
+        dirty_cols = [str(j) for i, j, e in jac_entries_plain]
+        jac_cpp_lines.append(f"    static const int _dr[{n_dirty}] = {{{','.join(dirty_rows)}}};")
+        jac_cpp_lines.append(f"    static const int _dc[{n_dirty}] = {{{','.join(dirty_cols)}}};")
+        jac_cpp_lines.append(f"    for (int _k = 0; _k < {n_dirty}; ++_k) J(_dr[_k], _dc[_k]) = {num_type}(0);")
+
+    # fill NEGATED entries
+    for i, j, e in jac_entries_plain:
+        cpp = _to_cpp(e, states_list, params_list, n_states, num_type, [])
+        neg_cpp = _negate_cpp_expr(cpp)
+        jac_cpp_lines.append(f"    J({i},{j}) = {neg_cpp};")
 
     for i, expr in enumerate(exprs):
         cpp_code = _to_cpp(time_derivs[i], states_list, params_list, n_states, num_type, forcings_list)
@@ -1327,7 +1200,6 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
         f"                  const {num_type}& t,",
         f"                  std::vector<{num_type}>& dfdt) {{",
     ]
-    jac_cpp_lines.append(f"    J.set_zero();")
 
     jac_nnz_rows = []
     jac_nnz_cols = []
@@ -1338,6 +1210,8 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
     _zero_sym = sp.Integer(0)
     jac_matrix = [[_zero_sym] * n_states for _ in range(n_states)]
 
+    # Collect all (row, col, cpp_expr) entries first
+    jac_entry_list = []
     for key, members in groups.items():
         jac_tmpl = template_cpp[key]['jac']
         jac_sym = template_data[key]['jac_entries']
@@ -1346,7 +1220,7 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
                 actual_state = dep_names[j]
                 col_idx = name_to_state_idx[actual_state]
                 cpp = _expand_template(jac_str, dep_names)
-                jac_cpp_lines.append(f"    J({expr_idx},{col_idx}) = {cpp};")
+                jac_entry_list.append((expr_idx, col_idx, cpp))
 
                 jac_nnz_rows.append(expr_idx)
                 jac_nnz_cols.append(col_idx)
@@ -1354,6 +1228,21 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
 
                 # Store symbolic entry for sparsity analysis
                 jac_matrix[expr_idx][col_idx] = jac_sym[j]
+
+    # Emit dirty-index clearing (O(nnz) not O(n²))
+    n_dirty = len(jac_entry_list)
+    jac_cpp_lines.append(f"    // Clear only dirty entries from previous call (O(nnz) not O(n²))")
+    if n_dirty > 0:
+        dirty_rows = [str(r) for r, c, e in jac_entry_list]
+        dirty_cols = [str(c) for r, c, e in jac_entry_list]
+        jac_cpp_lines.append(f"    static const int _dr[{n_dirty}] = {{{','.join(dirty_rows)}}};")
+        jac_cpp_lines.append(f"    static const int _dc[{n_dirty}] = {{{','.join(dirty_cols)}}};")
+        jac_cpp_lines.append(f"    for (int _k = 0; _k < {n_dirty}; ++_k) J(_dr[_k], _dc[_k]) = {num_type}(0);")
+
+    # Emit NEGATED Jacobian assignments
+    for expr_idx, col_idx, cpp in jac_entry_list:
+        neg_cpp = _negate_cpp_expr(cpp)
+        jac_cpp_lines.append(f"    J({expr_idx},{col_idx}) = {neg_cpp};")
 
     # dfdt
     for key, members in groups.items():
@@ -1926,29 +1815,18 @@ def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
     )
 def _generate_equilibrate_code(num_type):
     """
-    Generate C++ code for steady-state detection (terminal event).
+    Generate C++ code for steady-state detection (direct threshold check).
 
-    Steady-state root events are always terminal — they stop integration
-    when max(|dxdt|) drops below a tolerance.  No state modification,
-    hence no saltation correction needed: dg_dx / dg_dt are nullptr.
+    Checks after each step whether max(|dxdt|) across all AD levels
+    is below root_tol.  Uses the termination callback mechanism —
+    no root-finding or sign-change detection needed.
     """
     state_type = f"std::vector<{num_type}>"
-    
+
     return [
         "",
         "  // --- Steady-state termination (rootfunc = 'equilibrate') ---",
-        f"  auto ss_root_func = make_steady_state_root_func<ode_system, {state_type}, {num_type}>(sys, root_tol);",
-        f"  root_events.push_back(RootEvent<{state_type}, {num_type}>{{",
-        f"    ss_root_func,",
-        f"    0,            // state_index (ignored for terminal)",
-        f"    [](const {state_type}&, const {num_type}&) {{ return {num_type}(0.0); }},  // value_func",
-        f"    EventMethod::Replace,  // method (ignored for terminal)",
-        f"    true,         // terminal = true",
-        f"    -1,           // direction = -1",
-        f"    nullptr,      // dg_dx (not needed for terminal)",
-        f"    nullptr,      // dg_dt (not needed for terminal)",
-        f"    nullptr       // g_dot_dot (not needed for terminal)",
-        f"  }});",
+        f"  auto ss_termination = make_steady_state_termination<ode_system, {state_type}, {num_type}>(sys, root_tol);",
         ""
     ]
 def _generate_user_rootfunc_code(rootfunc_list, states_list, params_list, 
