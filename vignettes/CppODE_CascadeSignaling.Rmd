@@ -295,8 +295,11 @@ cat(
   "> **Note:** the CVODE cross-check was skipped because the CVODE ",
   "backend is disabled in this installation — SUNDIALS (>= 6.0) was ",
   "not found on the build host. Install `libsundials-dev` ",
-  "(Debian/Ubuntu), `sundials-devel` (Fedora), or `brew install sundials` ",
-  "(macOS) and re-install CppODE to enable it.\n",
+  "(Debian/Ubuntu), `sundials-devel` (Fedora), `brew install sundials` ",
+  "(macOS), or on Windows run ",
+  "`C:/rtools<ver>/usr/bin/pacman.exe -Sy --noconfirm mingw-w64-ucrt-x86_64-sundials` ",
+  "(substitute your installed Rtools version for `<ver>`). ",
+  "Then re-install CppODE to enable it.\n",
   sep = ""
 )
 ```

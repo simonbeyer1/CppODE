@@ -40,6 +40,119 @@ install.packages("devtools")
 devtools::install_github("simonbeyer1/CppODE")
 ```
 
+### Optional system dependencies
+
+The core package installs without any system libraries. Two features are
+gated on optional dependencies, detected by `./configure` (Unix/macOS)
+or `./configure.win` (Windows) at install time:
+
+- **`CVODE()` backend** — needs **SUNDIALS** (\>= 6.0).
+- **Sparse Jacobian path** of both `CppODE()` and `CVODE()` — needs
+  **SuiteSparse / KLU**.
+
+If a library is missing the install still succeeds; the affected entry
+points just error at runtime with the same hints. To enable both:
+
+| Platform | SUNDIALS | SuiteSparse / KLU |
+|:---|:---|:---|
+| Debian/Ubuntu | `sudo apt install libsundials-dev` | `sudo apt install libsuitesparse-dev` |
+| Fedora | `sudo dnf install sundials-devel` | `sudo dnf install suitesparse-devel` |
+| Arch | `sudo pacman -S sundials` | `sudo pacman -S suitesparse` |
+| macOS (Homebrew) | `brew install sundials` | `brew install suite-sparse` |
+| Windows (Rtools 4.4 / 4.5) | see below | see below |
+
+**On Windows**, from any shell (e.g. PowerShell or cmd) call Rtools’
+bundled `pacman` by
+
+``` powershell
+C:\rtools<ver>\usr\bin\pacman.exe -Sy --noconfirm `
+    mingw-w64-ucrt-x86_64-sundials `
+    mingw-w64-ucrt-x86_64-suitesparse
+```
+
+Substitute your installed Rtools version for `<ver>` (e.g. `44` or
+`45`). Re-install subsequently.
+
+### Custom-prefix install (HPCs, no sudo)
+
+If you can’t use the system package manager — typical for HPC clusters,
+shared research servers, or systems where the packaged SUNDIALS is too
+old to be performant — build the libraries into `$HOME` and point the
+package at them through four environment variables. `configure`
+(Unix/macOS) and `configure.win` honour the same overrides:
+
+| Variable | Purpose |
+|:---|:---|
+| `CPPODE_CVODE_CFLAGS` | extra `-I` flags for the SUNDIALS headers |
+| `CPPODE_CVODE_LIBS` | full link line for SUNDIALS (incl. `-L`, `-Wl,-rpath`, `-l…`) |
+| `CPPODE_CVODE_KLU_CFLAGS` | extra `-I` flags for `klu.h` |
+| `CPPODE_CVODE_KLU_LIBS` | full link line for KLU + SUNDIALS sparse glue |
+
+When any variable is set, the corresponding probe in `configure` is
+skipped — you become responsible for the full link line, including
+runtime resolution.
+
+**1. Check first whether your cluster already ships them as modules:**
+
+``` sh
+module avail sundials suitesparse
+module load gcc cmake R sundials suitesparse   # if available
+```
+
+If both exist, point the env vars below at the module prefix (commonly
+`$EBROOTSUNDIALS`, `$SUNDIALS_ROOT`, …) and skip step 2.
+
+**2. Otherwise build SuiteSparse + SUNDIALS into `$HOME/.local`:**
+
+``` sh
+PREFIX=$HOME/.local
+
+# SuiteSparse / KLU — skip if module-provided or already in $PREFIX
+git clone --depth 1 -b v7.10.0 https://github.com/DrTimothyAldenDavis/SuiteSparse.git
+cmake -S SuiteSparse -B SuiteSparse/build \
+      -DCMAKE_INSTALL_PREFIX=$PREFIX \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DSUITESPARSE_ENABLE_PROJECTS="suitesparse_config;amd;colamd;btf;klu"
+cmake --build SuiteSparse/build -j && cmake --install SuiteSparse/build
+
+# SUNDIALS (>= 7 strongly recommended — measurably faster than 6.x
+# Debian/Ubuntu builds because of fewer hardening flags)
+git clone --depth 1 -b v7.4.0 https://github.com/LLNL/sundials.git
+cmake -S sundials -B sundials/build \
+      -DCMAKE_INSTALL_PREFIX=$PREFIX \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DENABLE_KLU=ON \
+      -DKLU_INCLUDE_DIR=$PREFIX/include/suitesparse \
+      -DKLU_LIBRARY_DIR=$PREFIX/lib
+cmake --build sundials/build -j && cmake --install sundials/build
+```
+
+**3. Export the env vars and install CppODE:**
+
+``` sh
+PREFIX=$HOME/.local
+export CPPODE_CVODE_CFLAGS="-I$PREFIX/include"
+export CPPODE_CVODE_LIBS="-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib \
+  -lsundials_cvodes -lsundials_nvecserial \
+  -lsundials_sunmatrixdense -lsundials_sunlinsoldense -lsundials_core"
+export CPPODE_CVODE_KLU_CFLAGS="-I$PREFIX/include/suitesparse"
+export CPPODE_CVODE_KLU_LIBS="-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib \
+  -lsundials_sunmatrixsparse -lsundials_sunlinsolklu \
+  -lklu -lamd -lcolamd -lbtf -lsuitesparseconfig"
+
+R CMD INSTALL .         # or: Rscript -e 'devtools::install_github("simonbeyer1/CppODE")'
+```
+
+The `-Wl,-rpath,$PREFIX/lib` fragment bakes the library search path into
+the compiled solver itself, so `dyn.load()` resolves the SUNDIALS / KLU
+shared libraries on compute nodes without `LD_LIBRARY_PATH` — important
+for schedulers (SLURM, PBS, …) that strip the user environment between
+login and worker shells.
+
+To persist the configuration across sessions, drop the four `export`
+lines into `~/.cppode_env` and `source` it from `~/.bashrc` (or load it
+explicitly before each install).
+
 ## Vignettes
 
 - [**Predator–Prey

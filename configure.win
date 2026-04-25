@@ -1,15 +1,41 @@
 #!/bin/sh
 # =====================================================================
-# CppODE configure.win — CVODE backend is not supported on Windows by
-# default (no prebuilt SUNDIALS via Rtools).  Emit a disabled stub so
-# the rest of the package builds cleanly.  Users who build SUNDIALS
-# themselves can set the CPPODE_CVODE_* env vars before R CMD INSTALL
-# to override.
+# CppODE configure.win — Windows install-time detection of optional
+# system libraries (SUNDIALS, SuiteSparse/KLU).
+#
+# Detection order (each step skipped if already populated):
+#   1. Explicit env vars (CPPODE_CVODE_*) override everything — for
+#      users who have built or installed SUNDIALS / SuiteSparse in a
+#      custom location and want to point the package at it directly.
+#   2. pkg-config probe — only useful when pkg-config is on PATH AND
+#      the library shipped a .pc file. KLU does (uppercase `KLU.pc`),
+#      but the MSYS2 mingw-w64-ucrt-x86_64-sundials package as of
+#      v7.5 ships no sundials*.pc, so this step typically misses
+#      SUNDIALS on Windows.
+#   3. Rtools-ucrt64 compile probe — the realistic Windows path.
+#      Rtools 4.4 / 4.5 expose their install root via
+#      RTOOLS{44,45}_HOME env var. The ucrt64 sub-prefix
+#      (`<rtools>/ucrt64/`) is the standard MSYS2 layout: `pacman -S
+#      mingw-w64-ucrt-x86_64-{sundials,suitesparse}` populates
+#      `<rtools>/ucrt64/{include,lib,bin}`. Rtools' R does NOT add
+#      this to LOCAL_SOFT (which points at the static.posix sysroot
+#      instead), so we have to inject `-I<rtools>/ucrt64/include` and
+#      `-L<rtools>/ucrt64/lib` ourselves. The compile probe verifies
+#      ABI compatibility before committing the flags. The bin path is
+#      recorded as `runtime_dll_path` so R/zzz.R can prepend it to
+#      PATH at package load time, otherwise dyn.load() of the
+#      compiled solver would fail to resolve libsundials_*.dll.
+#
+# If none of the routes find the libraries, an empty stub config is
+# written and Windows-specific install instructions are printed; the
+# package still installs, but CVODE() and the sparse Jacobian path
+# error at runtime with the same hints.
 #
 # Minimal library set (what the sources actually reference):
 #   CPPODE_CVODE_LIBS      = -lsundials_cvodes -lsundials_nvecserial \
 #                            -lsundials_sunmatrixdense \
-#                            -lsundials_sunlinsoldense
+#                            -lsundials_sunlinsoldense \
+#                            -lsundials_core
 #   CPPODE_CVODE_KLU_LIBS  = -lsundials_sunmatrixsparse \
 #                            -lsundials_sunlinsolklu -lklu
 # (Windows KLU builds may additionally need -lamd -lcolamd -lbtf
@@ -20,15 +46,235 @@
 # environment consumed by R/CVODE.R and R/tools.R at runtime.
 # =====================================================================
 
+PKG_CONFIG="${PKG_CONFIG:-pkg-config}"
+
+log() { echo "configure.win: $*"; }
+
+# Normalise a Windows path to forward slashes (bash-safe expansion).
+fwd_slash() { echo "$1" | sed 's|\\|/|g'; }
+
+# --- Toolchain handles for compile probes ---
+: "${R_HOME:=$(R RHOME 2>/dev/null || true)}"
+R_HOME=$(fwd_slash "$R_HOME")
+RBIN=""
+CXX=""
+if [ -n "$R_HOME" ] && [ -x "${R_HOME}/bin/R" ]; then
+  RBIN="${R_HOME}/bin/R"
+elif command -v R >/dev/null 2>&1; then
+  RBIN="$(command -v R)"
+fi
+if [ -n "$RBIN" ]; then
+  CXX=$("${RBIN}" CMD config CXX 2>/dev/null || true)
+  CXXFLAGS=$("${RBIN}" CMD config CXXFLAGS 2>/dev/null || true)
+  CPPFLAGS=$("${RBIN}" CMD config CPPFLAGS 2>/dev/null || true)
+fi
+
+probe_compile() {
+  # $1: source snippet; $2: extra cflags; $3: extra libs
+  [ -z "$CXX" ] && return 1
+  snippet="$1"; extra_cflags="$2"; extra_libs="$3"
+  tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t conftest)
+  printf '%s\n' "$snippet" > "$tmpdir/conftest.cpp"
+  if $CXX $CPPFLAGS $CXXFLAGS $extra_cflags -o "$tmpdir/conftest.exe" \
+      "$tmpdir/conftest.cpp" $extra_libs >/dev/null 2>&1; then
+    rm -rf "$tmpdir"
+    return 0
+  fi
+  rm -rf "$tmpdir"
+  return 1
+}
+
+# --- Discover Rtools ucrt64 sysroot (where pacman drops mingw-w64-ucrt-* pkgs) ---
+ucrt_root=""
+for v in 44 45 46 47; do
+  eval "rh=\${RTOOLS${v}_HOME:-}"
+  rh=$(fwd_slash "$rh")
+  if [ -n "$rh" ] && [ -d "${rh}/ucrt64/include" ] && [ -d "${rh}/ucrt64/lib" ]; then
+    ucrt_root="${rh}/ucrt64"
+    log "Rtools ucrt64 sysroot: $ucrt_root (from RTOOLS${v}_HOME)"
+    break
+  fi
+done
+# Fallback: probe standard install paths if the env vars weren't set.
+if [ -z "$ucrt_root" ]; then
+  for cand in "C:/rtools47/ucrt64" "C:/rtools46/ucrt64" \
+              "C:/rtools45/ucrt64" "C:/rtools44/ucrt64"; do
+    if [ -d "${cand}/include" ] && [ -d "${cand}/lib" ]; then
+      ucrt_root="$cand"
+      log "Rtools ucrt64 sysroot: $ucrt_root (probed default path)"
+      break
+    fi
+  done
+fi
+
+# --- Start with env-var overrides (always win if set) ---
 cflags="${CPPODE_CVODE_CFLAGS:-}"
 libs="${CPPODE_CVODE_LIBS:-}"
 klu_cflags="${CPPODE_CVODE_KLU_CFLAGS:-}"
 klu_libs="${CPPODE_CVODE_KLU_LIBS:-}"
 
+if [ -n "$libs" ]; then
+  log "SUNDIALS configured via CPPODE_CVODE_LIBS env var"
+fi
+if [ -n "$klu_libs" ]; then
+  log "KLU configured via CPPODE_CVODE_KLU_LIBS env var"
+fi
+
+# --- SUNDIALS via pkg-config (only if env var didn't set it) ---
+if [ -z "$libs" ] && command -v "$PKG_CONFIG" >/dev/null 2>&1 \
+    && "$PKG_CONFIG" --exists sundials-cvodes 2>/dev/null; then
+  cflags=$("$PKG_CONFIG" --cflags \
+      sundials-cvodes sundials-nvecserial \
+      sundials-sunmatrixdense sundials-sunlinsoldense 2>/dev/null || true)
+  libs=$("$PKG_CONFIG" --libs \
+      sundials-cvodes sundials-nvecserial \
+      sundials-sunmatrixdense sundials-sunlinsoldense 2>/dev/null || true)
+  if [ -n "$libs" ]; then
+    log "SUNDIALS detected via pkg-config"
+  fi
+fi
+
+# --- SUNDIALS via compile probe against Rtools ucrt64 sysroot ---
+if [ -z "$libs" ] && [ -n "$ucrt_root" ] && [ -d "$ucrt_root/include/sundials" ]; then
+  snippet='
+#include <cvodes/cvodes.h>
+#include <nvector/nvector_serial.h>
+#include <sunmatrix/sunmatrix_dense.h>
+#include <sunlinsol/sunlinsol_dense.h>
+int main() {
+  SUNContext ctx = 0;
+  SUNContext_Create(0, &ctx);
+  if (ctx) SUNContext_Free(&ctx);
+  return 0;
+}
+'
+  # SUNDIALS 7+ split out libsundials_core; SUNDIALS 6.x doesn't ship
+  # it at all (the linker errors with "cannot find -lsundials_core"
+  # rather than dropping the missing lib). Try the 6.x-style link
+  # first, then add -lsundials_core for 7+.
+  trial_cflags="-I${ucrt_root}/include"
+  base_libs="-L${ucrt_root}/lib -lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense"
+  for trial_libs in "$base_libs" "$base_libs -lsundials_core"; do
+    if probe_compile "$snippet" "$trial_cflags" "$trial_libs"; then
+      cflags="$trial_cflags"
+      libs="$trial_libs"
+      log "SUNDIALS detected via compile probe ($ucrt_root, libs: $trial_libs)"
+      break
+    fi
+  done
+fi
+
+# --- KLU via pkg-config (only if env var didn't set it) ---
+if [ -z "$klu_libs" ] && command -v "$PKG_CONFIG" >/dev/null 2>&1; then
+  for name in KLU klu; do
+    if "$PKG_CONFIG" --exists "$name" 2>/dev/null; then
+      pc_cflags=$("$PKG_CONFIG" --cflags "$name" 2>/dev/null || true)
+      pc_libs=$("$PKG_CONFIG" --libs "$name" 2>/dev/null || true)
+      if [ -n "$pc_libs" ]; then
+        klu_cflags="$pc_cflags"
+        klu_libs="$pc_libs"
+        if [ -n "$libs" ]; then
+          klu_libs="-lsundials_sunmatrixsparse -lsundials_sunlinsolklu $klu_libs"
+        fi
+        log "KLU detected via pkg-config ($name)"
+        break
+      fi
+    fi
+  done
+fi
+
+# --- KLU via compile probe against Rtools ucrt64 sysroot ---
+# MSYS2 ships klu.h in <ucrt_root>/include/suitesparse/, matching KLU.pc's
+# prefix layout.
+if [ -z "$klu_libs" ] && [ -n "$ucrt_root" ] && [ -f "$ucrt_root/include/suitesparse/klu.h" ]; then
+  klu_snippet="#include <klu.h>
+int main() { klu_common c; klu_defaults(&c); return 0; }"
+  trial_klu_cflags="-I${ucrt_root}/include/suitesparse"
+  for trial_klu_libs in \
+      "-L${ucrt_root}/lib -lklu" \
+      "-L${ucrt_root}/lib -lklu -lamd -lcolamd -lbtf -lsuitesparseconfig"; do
+    if probe_compile "$klu_snippet" "$trial_klu_cflags" "$trial_klu_libs"; then
+      klu_cflags="$trial_klu_cflags"
+      klu_libs="$trial_klu_libs"
+      if [ -n "$libs" ]; then
+        klu_libs="-lsundials_sunmatrixsparse -lsundials_sunlinsolklu $klu_libs"
+      fi
+      log "KLU detected via compile probe ($ucrt_root, libs: $trial_klu_libs)"
+      break
+    fi
+  done
+fi
+
+# --- Runtime DLL path (only set if we used the Rtools ucrt64 sysroot) ---
+runtime_dll_path=""
+if [ -n "$ucrt_root" ] && { [ -n "$libs" ] || [ -n "$klu_libs" ]; }; then
+  # Only expose the bin path if we actually picked up libs from this
+  # sysroot. If the user supplied custom env vars, they're responsible
+  # for runtime DLL discoverability themselves.
+  case "${cflags}${libs}${klu_cflags}${klu_libs}" in
+    *"$ucrt_root"*) runtime_dll_path="${ucrt_root}/bin" ;;
+  esac
+fi
+
 available=FALSE
 klu_available=FALSE
-if [ -n "$libs" ]; then available=TRUE; fi
-if [ -n "$klu_libs" ]; then klu_available=TRUE; fi
+[ -n "$libs" ] && available=TRUE
+[ -n "$klu_libs" ] && klu_available=TRUE
+
+# --- Print Windows-specific install hints if missing ---
+if [ "$available" = "FALSE" ] || [ "$klu_available" = "FALSE" ]; then
+  log "----------------------------------------------------------------"
+  if [ "$available" = "FALSE" ] && [ "$klu_available" = "FALSE" ]; then
+    log "SUNDIALS and SuiteSparse/KLU not found - CVODE() backend and"
+    log "  sparse Jacobian path will both be DISABLED."
+  elif [ "$available" = "FALSE" ]; then
+    log "SUNDIALS not found - CVODE() backend will be DISABLED."
+  else
+    log "SuiteSparse/KLU not found - sparse Jacobian path will be"
+    log "  DISABLED for both CppODE() and CVODE() (sparse=TRUE errors;"
+    log "  sparse=NULL falls back to dense)."
+  fi
+  log ""
+  log "  Recommended install path on Windows (Rtools 4.4 / 4.5):"
+  log ""
+  log "    1. From any shell (PowerShell, cmd, Git Bash), call Rtools'"
+  log "       pacman by full path -- substitute your installed version"
+  log "       for <ver> (e.g. 44 or 45):"
+  log ""
+  log "         C:\\rtools<ver>\\usr\\bin\\pacman.exe -Sy --noconfirm \\"
+  if [ "$available" = "FALSE" ]; then
+    log "             mingw-w64-ucrt-x86_64-sundials \\"
+  fi
+  if [ "$klu_available" = "FALSE" ]; then
+    log "             mingw-w64-ucrt-x86_64-suitesparse"
+  fi
+  log ""
+  log "       (Don't just type 'pacman' in Git Bash -- that bash"
+  log "        doesn't see Rtools' /usr/bin and will say 'command not"
+  log "        found'.  Calling pacman.exe by full path avoids the"
+  log "        wrong-shell trap.)"
+  log ""
+  log "    2. Re-run R CMD INSTALL <path/to/CppODE> from PowerShell."
+  log "       configure.win compile-probes <RTOOLS_HOME>/ucrt64/ and"
+  log "       picks up the libs automatically; the runtime DLL path"
+  log "       is recorded so R/zzz.R can put it on PATH at load time."
+  log ""
+  log "  Advanced: if you have a custom SUNDIALS / SuiteSparse build"
+  log "  (CMake from source, vcpkg, standalone MSYS2, etc.), point the"
+  log "  package at it via env vars before R CMD INSTALL.  In PowerShell:"
+  if [ "$available" = "FALSE" ]; then
+    log "    \$env:CPPODE_CVODE_CFLAGS = '-IC:/path/to/sundials/include'"
+    log "    \$env:CPPODE_CVODE_LIBS   = '-LC:/path/to/sundials/lib -lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense -lsundials_core'"
+  fi
+  if [ "$klu_available" = "FALSE" ]; then
+    log "    \$env:CPPODE_CVODE_KLU_CFLAGS = '-IC:/path/to/suitesparse/include'"
+    log "    \$env:CPPODE_CVODE_KLU_LIBS   = '-LC:/path/to/suitesparse/lib -lsundials_sunmatrixsparse -lsundials_sunlinsolklu -lklu -lamd -lcolamd -lbtf -lsuitesparseconfig'"
+  fi
+  log "  In that case you must also ensure the matching DLL bin/ dir"
+  log "  is on PATH at R session start, otherwise dyn.load() will"
+  log "  fail to resolve the runtime libraries."
+  log "----------------------------------------------------------------"
+fi
 
 mkdir -p inst
 cat > inst/cvodeConfig.dcf <<EOF
@@ -38,4 +284,8 @@ libs: $libs
 klu_available: $klu_available
 klu_cflags: $klu_cflags
 klu_libs: $klu_libs
+runtime_dll_path: $runtime_dll_path
 EOF
+
+log "Summary:  CVODE=$([ $available = TRUE ] && echo ON || echo off), KLU=$([ $klu_available = TRUE ] && echo ON || echo off)"
+[ -n "$runtime_dll_path" ] && log "Runtime DLL path recorded: $runtime_dll_path"

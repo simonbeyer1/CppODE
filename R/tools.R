@@ -86,6 +86,10 @@ compile <- function(..., output = NULL, args = NULL, cores = 1, verbose = FALSE)
         "    Fedora        : sudo dnf install suitesparse-devel\n",
         "    Arch          : sudo pacman -S suitesparse\n",
         "    macOS (brew)  : brew install suite-sparse\n",
+        "    Windows       : from any shell (PowerShell / cmd / Git Bash)\n",
+        "                    call Rtools' pacman by full path -- substitute\n",
+        "                    your installed version for <ver> (e.g. 44 or 45):\n",
+        "                      C:/rtools<ver>/usr/bin/pacman.exe -Sy --noconfirm mingw-w64-ucrt-x86_64-suitesparse\n",
         "  Then: R CMD INSTALL <path/to/CppODE>",
         call. = FALSE)
     }

@@ -17,12 +17,13 @@ cvodeConfig <- new.env(parent = emptyenv())
 .onLoad <- function(libname, pkgname) {
   reticulate::py_require("sympy")
 
-  cvodeConfig$available     <- FALSE
-  cvodeConfig$cflags        <- ""
-  cvodeConfig$libs          <- ""
-  cvodeConfig$klu_available <- FALSE
-  cvodeConfig$klu_cflags    <- ""
-  cvodeConfig$klu_libs      <- ""
+  cvodeConfig$available        <- FALSE
+  cvodeConfig$cflags           <- ""
+  cvodeConfig$libs             <- ""
+  cvodeConfig$klu_available    <- FALSE
+  cvodeConfig$klu_cflags       <- ""
+  cvodeConfig$klu_libs         <- ""
+  cvodeConfig$runtime_dll_path <- ""
 
   file <- system.file("cvodeConfig.dcf", package = pkgname)
   if (nzchar(file) && file.exists(file)) {
@@ -33,12 +34,29 @@ cvodeConfig <- new.env(parent = emptyenv())
         v <- d[1L, k]
         if (is.na(v)) "" else as.character(v)
       }
-      cvodeConfig$available     <- identical(get_str("available"), "TRUE")
-      cvodeConfig$cflags        <- get_str("cflags")
-      cvodeConfig$libs          <- get_str("libs")
-      cvodeConfig$klu_available <- identical(get_str("klu_available"), "TRUE")
-      cvodeConfig$klu_cflags    <- get_str("klu_cflags")
-      cvodeConfig$klu_libs      <- get_str("klu_libs")
+      cvodeConfig$available        <- identical(get_str("available"), "TRUE")
+      cvodeConfig$cflags           <- get_str("cflags")
+      cvodeConfig$libs             <- get_str("libs")
+      cvodeConfig$klu_available    <- identical(get_str("klu_available"), "TRUE")
+      cvodeConfig$klu_cflags       <- get_str("klu_cflags")
+      cvodeConfig$klu_libs         <- get_str("klu_libs")
+      cvodeConfig$runtime_dll_path <- get_str("runtime_dll_path")
+    }
+  }
+
+  # On Windows, the SUNDIALS / SuiteSparse DLLs picked up from the
+  # Rtools ucrt64 sysroot live outside R's default DLL search path.
+  # Prepend the recorded bin/ directory to PATH so dyn.load() of the
+  # compiled solver can resolve libsundials_*.dll / libklu.dll etc.
+  # No-op on non-Windows or when configure.win didn't populate it.
+  if (.Platform$OS.type == "windows" && nzchar(cvodeConfig$runtime_dll_path)) {
+    dll_path  <- gsub("/", "\\\\", cvodeConfig$runtime_dll_path)
+    cur_path  <- Sys.getenv("PATH")
+    has_entry <- vapply(strsplit(cur_path, ";", fixed = TRUE)[[1]], function(p) {
+      identical(tolower(gsub("/", "\\\\", p)), tolower(dll_path))
+    }, logical(1))
+    if (!any(has_entry)) {
+      Sys.setenv(PATH = paste(dll_path, cur_path, sep = ";"))
     }
   }
 }

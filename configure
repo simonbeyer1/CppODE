@@ -33,6 +33,18 @@ CPPFLAGS=$("${RBIN}" CMD config CPPFLAGS)
 
 log() { echo "configure: $*"; }
 
+# Env-var overrides (mirrors configure.win) — let users point the package
+# at a custom SUNDIALS / SuiteSparse install (e.g. SUNDIALS 7 in $HOME/.local)
+# without touching pkg-config or system paths.
+sundials_cflags="${CPPODE_CVODE_CFLAGS:-}"
+sundials_libs="${CPPODE_CVODE_LIBS:-}"
+klu_cflags="${CPPODE_CVODE_KLU_CFLAGS:-}"
+klu_libs="${CPPODE_CVODE_KLU_LIBS:-}"
+sundials_available=0
+klu_available=0
+[ -n "$sundials_libs" ] && { sundials_available=1; log "SUNDIALS configured via CPPODE_CVODE_LIBS env var"; }
+[ -n "$klu_libs" ]      && { klu_available=1;      log "KLU configured via CPPODE_CVODE_KLU_LIBS env var"; }
+
 probe_compile() {
   # $1: source snippet; $2: extra cflags; $3: extra libs
   snippet="$1"; extra_cflags="$2"; extra_libs="$3"
@@ -50,11 +62,8 @@ probe_compile() {
 # ---------------------------------------------------------------------
 # SUNDIALS (CVODES + NVector_Serial + dense matrix / solver)
 # ---------------------------------------------------------------------
-sundials_available=0
-sundials_cflags=""
-sundials_libs=""
-
-if command -v "$PKG_CONFIG" >/dev/null 2>&1 \
+if [ "$sundials_available" = "0" ] \
+    && command -v "$PKG_CONFIG" >/dev/null 2>&1 \
     && "$PKG_CONFIG" --exists sundials-cvodes 2>/dev/null; then
   sundials_cflags=$("$PKG_CONFIG" --cflags \
       sundials-cvodes sundials-nvecserial \
@@ -81,13 +90,20 @@ int main() {
   return 0;
 }
 '
-  trial_libs="-lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense"
-  if probe_compile "$snippet" "" "$trial_libs"; then
-    sundials_cflags=""
-    sundials_libs="$trial_libs"
-    sundials_available=1
-    log "SUNDIALS detected via compile probe (default include paths)"
-  fi
+  # SUNDIALS 7+ split out libsundials_core; older 6.x linked it into
+  # the per-algorithm libs and does NOT ship libsundials_core at all
+  # (the linker errors out instead of silently dropping it). Try the
+  # 6.x-style link first, then add -lsundials_core for 7+.
+  base_libs="-lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense"
+  for trial_libs in "$base_libs" "$base_libs -lsundials_core"; do
+    if probe_compile "$snippet" "" "$trial_libs"; then
+      sundials_cflags=""
+      sundials_libs="$trial_libs"
+      sundials_available=1
+      log "SUNDIALS detected via compile probe (default include paths, libs: $trial_libs)"
+      break
+    fi
+  done
 fi
 
 if [ "$sundials_available" = "0" ]; then
@@ -105,12 +121,8 @@ fi
 # ---------------------------------------------------------------------
 # SuiteSparse / KLU (needed by both CppODE() and CVODE() sparse paths)
 # ---------------------------------------------------------------------
-klu_available=0
-klu_cflags=""
-klu_libs=""
-
 # pkg-config — Debian ships an uppercase `KLU` package
-if command -v "$PKG_CONFIG" >/dev/null 2>&1; then
+if [ "$klu_available" = "0" ] && command -v "$PKG_CONFIG" >/dev/null 2>&1; then
   for name in KLU klu; do
     if "$PKG_CONFIG" --exists "$name" 2>/dev/null; then
       pc_cflags=$("$PKG_CONFIG" --cflags "$name" 2>/dev/null || true)

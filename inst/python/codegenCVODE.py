@@ -2022,7 +2022,13 @@ extern "C" SEXP solve_{modelname}(
     if (ctx) {{ SUNContext_Free(&ctx); ctx = nullptr; }}
   }};
 
+  // SUNContext_Create signature changed in SUNDIALS 7: void* -> SUNComm.
+  // SUN_COMM_NULL is defined in sundials_types.h on v7 only.
+#if SUNDIALS_VERSION_MAJOR >= 7
+  if (SUNContext_Create(SUN_COMM_NULL, &ctx) < 0)
+#else
   if (SUNContext_Create(nullptr, &ctx) < 0)
+#endif
     Rf_error("SUNContext_Create failed");
 
   y = N_VNew_Serial(NEQ, ctx);
