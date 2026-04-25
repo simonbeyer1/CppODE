@@ -39,37 +39,17 @@
 
 #include <fadbad++/fadiff.h>
 #include <cppode/cppode_fadiff_extensions.hpp>
+#include <cppode/cppode_ad_traits.hpp>
 
 namespace cppode {
 namespace detail {
 
-// less_eq_with_sign comparator for directional time stepping
-// (trivial comparator, will be reimplemented in Phase 1)
-
 // ============================================================================
-// Scalar value extraction
+// Scalar value extraction & AD type detection — from cppode_ad_traits.hpp
 // ============================================================================
 
-template<class T>
-inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
-scalar_value(const T& v) {
-  return static_cast<double>(v);
-}
-
-template<class T, unsigned int N>
-inline double scalar_value(const fadbad::F<T,N>& v) {
-  return scalar_value(const_cast<fadbad::F<T,N>&>(v).x());
-}
-
-// ============================================================================
-// AD type detection (C++17 SFINAE)
-// ============================================================================
-
-template<class T>
-struct is_ad_type : std::false_type {};
-
-template<class T, unsigned int N>
-struct is_ad_type<fadbad::F<T,N>> : std::true_type {};
+using cppode::ad_traits::scalar_value;
+template<class T> using is_ad_type = cppode::ad_traits::is_ad<T>;
 
 // ============================================================================
 // Diagnostics helpers — extract order and transfer counters from steppers

@@ -31,9 +31,14 @@ namespace ad_lu {
 //  Copies the CSC structure (Ap, Ai) and extracts value part of Ax.
 // ============================================================================
 
-template<class Inner, unsigned int N>
-inline csc_matrix<Inner> extract_csc_values(const csc_matrix<fadbad::F<Inner,N>>& W)
+// Generic over any AD type with the FADBAD-compatible accessor surface
+// (fadbad::F, cppode::dual, cppode::dual2nd).
+template<class AD,
+         std::enable_if_t<is_ad<AD>::value, int> = 0>
+inline csc_matrix<inner_type_t<AD>>
+extract_csc_values(const csc_matrix<AD>& W)
 {
+  using Inner = inner_type_t<AD>;
   csc_matrix<Inner> out;
   out.n   = W.n;
   out.nnz = W.nnz;
@@ -43,7 +48,7 @@ inline csc_matrix<Inner> extract_csc_values(const csc_matrix<fadbad::F<Inner,N>>
   out.pattern_built = W.pattern_built;
 
   for (int k = 0; k < W.nnz; ++k)
-    out.Ax[k] = const_cast<fadbad::F<Inner,N>&>(W.Ax[k]).x();
+    out.Ax[k] = const_cast<AD&>(W.Ax[k]).x();
 
   return out;
 }
@@ -133,10 +138,13 @@ private:
 //       over W_stored to determine the number of active derivatives.
 // ============================================================================
 
-template<class Inner, unsigned int N>
-class sparse_lu_solver<fadbad::F<Inner,N>>
+// Generic AD specialization: works for fadbad::F<Inner,N> and cppode::dual<Inner,N>.
+template<class AD_T>
+class sparse_lu_solver<AD_T, std::enable_if_t<is_ad<AD_T>::value>>
 {
-  using F = fadbad::F<Inner, N>;
+  using F = AD_T;
+  using Inner = inner_type_t<AD_T>;
+  static constexpr unsigned N = ad_traits::detail::ad_static_size<AD_T>::value;
 
 public:
 

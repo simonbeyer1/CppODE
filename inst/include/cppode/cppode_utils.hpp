@@ -20,22 +20,17 @@
 #include <vector>
 #include <fadbad++/fadiff.h>
 #include <cppode/cppode_types.hpp>
+#include <cppode/cppode_ad_traits.hpp>
 
 namespace odeint_utils {
 
 using fadbad::F;
 
 // =========================================================================================
-//  Scalar extraction — full recursive unwrapping of nested F<F<...>>
+//  Scalar extraction — pulled in from cppode_ad_traits.hpp
 // =========================================================================================
 
-inline double scalar_value(double v) { return v; }
-
-template<typename T, unsigned int N>
-inline double scalar_value(const F<T,N>& v)
-{
-  return scalar_value(const_cast<F<T,N>&>(v).x());
-}
+using cppode::ad_traits::scalar_value;
 
 // =========================================================================================
 //  Weighted infinity norm (includes AD-derivative components in the weighted max)
@@ -55,17 +50,19 @@ inline double weighted_sup_norm(
   return nrm;
 }
 
-template<typename T, unsigned int N>
+// Generic AD overload (works for fadbad::F, cppode::dual, cppode::dual2nd).
+template<class AD,
+         std::enable_if_t<cppode::ad_traits::is_ad<AD>::value, int> = 0>
 inline double weighted_sup_norm(
-    const std::vector<F<T,N>>& v,
-    const std::vector<F<T,N>>& x0,
+    const std::vector<AD>& v,
+    const std::vector<AD>& x0,
     double atol,
     double rtol)
 {
   double nrm = 0.0;
   for (std::size_t i = 0; i < v.size(); ++i) {
-    auto& vi = const_cast<F<T,N>&>(v[i]);
-    auto& yi = const_cast<F<T,N>&>(x0[i]);
+    auto& vi = const_cast<AD&>(v[i]);
+    auto& yi = const_cast<AD&>(x0[i]);
 
     double vi_val = std::abs(scalar_value(vi));
     double yi_val = std::abs(scalar_value(yi));
@@ -108,18 +105,19 @@ inline double weighted_rms_norm(
   return (n > 0) ? std::sqrt(sum / static_cast<double>(n)) : 0.0;
 }
 
-template<typename T, unsigned int N>
+template<class AD,
+         std::enable_if_t<cppode::ad_traits::is_ad<AD>::value, int> = 0>
 inline double weighted_rms_norm(
-    const std::vector<F<T,N>>& v,
-    const std::vector<F<T,N>>& x0,
+    const std::vector<AD>& v,
+    const std::vector<AD>& x0,
     double atol,
     double rtol)
 {
   double sum = 0.0;
   std::size_t count = 0;
   for (std::size_t i = 0; i < v.size(); ++i) {
-    auto& vi = const_cast<F<T,N>&>(v[i]);
-    auto& yi = const_cast<F<T,N>&>(x0[i]);
+    auto& vi = const_cast<AD&>(v[i]);
+    auto& yi = const_cast<AD&>(x0[i]);
 
     double vi_val = scalar_value(vi);
     double yi_val = std::abs(scalar_value(yi));
@@ -161,16 +159,17 @@ inline double cvhub_max_ratio(
   return m;
 }
 
-template<typename T, unsigned int N>
+template<class AD,
+         std::enable_if_t<cppode::ad_traits::is_ad<AD>::value, int> = 0>
 inline double cvhub_max_ratio(
-    const std::vector<F<T,N>>& f0,
-    const std::vector<F<T,N>>& x0,
+    const std::vector<AD>& f0,
+    const std::vector<AD>& x0,
     double hub_factor, double atol, double rtol)
 {
   double m = 0.0;
   for (std::size_t i = 0; i < x0.size(); ++i) {
-    auto& fi_ = const_cast<F<T,N>&>(f0[i]);
-    auto& yi_ = const_cast<F<T,N>&>(x0[i]);
+    auto& fi_ = const_cast<AD&>(f0[i]);
+    auto& yi_ = const_cast<AD&>(x0[i]);
     double yi = std::abs(scalar_value(yi_));
     double fi = std::abs(scalar_value(fi_));
     double denom = hub_factor * yi + atol + rtol * yi;

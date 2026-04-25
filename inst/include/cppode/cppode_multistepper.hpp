@@ -81,6 +81,7 @@
 #include <cppode/cppode_profiler.hpp>
 #include <cppode/cppode_step_trace.hpp>
 #include <cppode/cppode_ad_lu.hpp>          // ad_lu::is_ad — used by adams_pece_solve
+#include <cppode/cppode_ad_traits.hpp>
 
 // Note: cppode_multistepper_stiffness_detector.hpp is included further
 // down, AFTER the adams_constants namespace is defined, because the
@@ -90,20 +91,11 @@
 namespace cppode {
 
 // ============================================================================
-//  Scalar value extraction (AD-compatible)
+//  Scalar value extraction — pulled in from cppode_ad_traits.hpp
 // ============================================================================
 
 namespace ndf_detail {
-
-template<class T>
-inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
-scalar_value(const T& v) { return static_cast<double>(v); }
-
-template<class T, unsigned int N>
-inline double scalar_value(const fadbad::F<T,N>& v) {
-  return scalar_value(const_cast<fadbad::F<T,N>&>(v).x());
-}
-
+using cppode::ad_traits::scalar_value;
 } // namespace ndf_detail
 
 // ============================================================================

@@ -121,15 +121,36 @@ m_msoda_h   <- CppODE(rhs, modelname = "cascade_msoda_h",   method = "msoda",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
                       dynamic_ad = TRUE)
 
-m_cvode     <- CVODE( rhs, modelname = "cascade_cvode",     method = "bdf",
-                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
-m_cvode_klu <- CVODE( rhs, modelname = "cascade_cvode_klu", method = "bdf",
-                      outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE)
+# cppode::dual backend — same three width regimes (stack42, stack44, heap)
+# These compile from the same generator output but route std::* to cppode::*
+# and instantiate cppode::dual<double, N> instead of fadbad::F<double, N>.
+m_bdf_d     <- CppODE(rhs, modelname = "cascade_bdf_d",     method = "bdf",   useNDF = FALSE,
+                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
+                      ad_backend = "dual")
+m_bdf_sd    <- CppODE(rhs, modelname = "cascade_bdf_sd",    method = "bdf",   useNDF = FALSE,
+                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
+                      ntheta = .NTHETA, ad_backend = "dual")
+m_bdf_hd    <- CppODE(rhs, modelname = "cascade_bdf_hd",    method = "bdf",   useNDF = FALSE,
+                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
+                      dynamic_ad = TRUE, ad_backend = "dual")
+
+m_cvode       <- CVODE( rhs, modelname = "cascade_cvode",       method = "bdf",
+                        outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
+m_cvode_klu   <- CVODE( rhs, modelname = "cascade_cvode_klu",   method = "bdf",
+                        outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE)
+# Reparam variants (compile-time ntheta -> reparam sens_rhs1_fn with general Phi)
+m_cvode_r     <- CVODE( rhs, modelname = "cascade_cvode_r",     method = "bdf",
+                        outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
+                        ntheta = .NTHETA)
+m_cvode_klu_r <- CVODE( rhs, modelname = "cascade_cvode_klu_r", method = "bdf",
+                        outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE,
+                        ntheta = .NTHETA)
 
 CppODE:::compile(m_ndf,   m_bdf,   m_rb4,   m_tsit5,   m_msoda,
                  m_ndf_s, m_bdf_s, m_rb4_s, m_tsit5_s, m_msoda_s,
                  m_ndf_h, m_bdf_h, m_rb4_h, m_tsit5_h, m_msoda_h,
-                 m_cvode, m_cvode_klu, cores = 8)
+                 m_bdf_d, m_bdf_sd, m_bdf_hd,
+                 m_cvode, m_cvode_klu, m_cvode_r, m_cvode_klu_r, cores = 4)
 cat("Done.\n\n")
 
 # --- Build sens1ini for static-ntheta variants ---
@@ -164,9 +185,12 @@ parsC     <- params[setdiff(names(params), names(rhs))]
 .hdr("Benchmark  (10 evaluations each)")
 
 mb <- microbenchmark(
-  `CppODE BDF   (stack42)` = solveODE(m_bdf,       times, params, abstol = .abstol, reltol = .reltol),
-  `CppODE BDF   (stack44)` = solveODE(m_bdf_s,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
-  `CppODE BDF   (heap)`    = solveODE(m_bdf_h,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
+  `CppODE BDF   (stack42)`         = solveODE(m_bdf,    times, params, abstol = .abstol, reltol = .reltol),
+  `CppODE BDF   (stack44)`         = solveODE(m_bdf_s,  times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
+  `CppODE BDF   (heap)`            = solveODE(m_bdf_h,  times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
+  `CppODE BDF   (stack42 dual)`    = solveODE(m_bdf_d,  times, params, abstol = .abstol, reltol = .reltol),
+  `CppODE BDF   (stack44 dual)`    = solveODE(m_bdf_sd, times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
+  `CppODE BDF   (heap   dual)`     = solveODE(m_bdf_hd, times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
   `CppODE NDF   (stack42)` = solveODE(m_ndf,       times, params, abstol = .abstol, reltol = .reltol),
   `CppODE NDF   (stack44)` = solveODE(m_ndf_s,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
   `CppODE NDF   (heap)`    = solveODE(m_ndf_h,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
@@ -179,8 +203,10 @@ mb <- microbenchmark(
   `CppODE MSODA (stack42)` = solveODE(m_msoda,     times, params, abstol = .abstol, reltol = .reltol),
   `CppODE MSODA (stack44)` = solveODE(m_msoda_s,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
   `CppODE MSODA (heap)`    = solveODE(m_msoda_h,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
-  `CVODE  BDF   (dense)`   = solveODE(m_cvode,     times, params, abstol = .abstol, reltol = .reltol),
-  `CVODE  BDF   (KLU)`     = solveODE(m_cvode_klu, times, params, abstol = .abstol, reltol = .reltol),
+  `CVODE  BDF   (dense)`        = solveODE(m_cvode,       times, params, abstol = .abstol, reltol = .reltol),
+  `CVODE  BDF   (KLU)`          = solveODE(m_cvode_klu,   times, params, abstol = .abstol, reltol = .reltol),
+  `CVODE  BDF   (dense reparam)` = solveODE(m_cvode_r,    times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
+  `CVODE  BDF   (KLU   reparam)` = solveODE(m_cvode_klu_r,times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
   `deSolve LSODES`         = odeC(yini, times, m_cOde, parsC, method = "lsodes", atol = .abstol, rtol = .reltol),
   times = 10L
 )

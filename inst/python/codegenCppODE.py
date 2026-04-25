@@ -209,11 +209,30 @@ _MATH_MACRO_PATTERN = re.compile(
     "|".join(re.escape(k) for k in sorted(_MATH_MACRO_MAP.keys(), key=len, reverse=True))
 )
 
-# Precompiled regex for std:: -> fadbad:: replacement (single-pass)
+# Precompiled regex for std:: -> {prefix}:: replacement (single-pass).
+# {prefix} is "fadbad" (legacy backend) or "cppode" (dual backend), selected
+# per generate_* call via the module-level _AD_PREFIX variable.
 _FADBAD_FN_PATTERN = re.compile(
     r'\bstd::(sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|'
     r'asinh|acosh|atanh|exp|log|sqrt|pow|abs|min|max)\b'
 )
+
+# Selected by each top-level generate_* call (see _set_ad_backend below).
+# Module-global because passing ad_backend through every internal helper
+# would touch dozens of signatures; the module is invoked serially per
+# CppODE() compile via reticulate, so global state is safe here.
+_AD_PREFIX = "fadbad"
+
+def _set_ad_backend(ad_backend):
+    """Set the AD-namespace prefix used by std:: -> {prefix}:: substitutions.
+    Called at the start of every public generate_* function."""
+    global _AD_PREFIX
+    if ad_backend == "dual":
+        _AD_PREFIX = "cppode"
+    elif ad_backend == "fadbad":
+        _AD_PREFIX = "fadbad"
+    else:
+        raise ValueError(f"unknown ad_backend: {ad_backend!r} (expected 'dual' or 'fadbad')")
 
 # Precompiled whitespace collapse pattern
 _WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -228,7 +247,7 @@ def _optimize_pow2(cpp_str):
     Uses parenthesis-counting instead of regex to avoid catastrophic
     backtracking on deeply nested expressions.
     """
-    for prefix in ("std::pow(", "fadbad::pow("):
+    for prefix in ("std::pow(", "fadbad::pow(", "cppode::pow("):
         result = []
         i = 0
         plen = len(prefix)
@@ -334,9 +353,9 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
     # Single-pass math macro replacement (precompiled regex)
     cpp_code = _MATH_MACRO_PATTERN.sub(lambda m: _MATH_MACRO_MAP[m.group(0)], cpp_code)
     
-    # Single-pass std:: -> fadbad:: replacement for AD types (precompiled regex)
+    # Single-pass std:: -> {prefix}:: replacement for AD types (precompiled regex)
     if num_type in ("AD", "AD2"):
-        cpp_code = _FADBAD_FN_PATTERN.sub(lambda m: f'fadbad::{m.group(1)}', cpp_code)
+        cpp_code = _FADBAD_FN_PATTERN.sub(lambda m: f'{_AD_PREFIX}::{m.group(1)}', cpp_code)
     
     # Single-pass symbol replacement (cached regex)
     replacer = _get_replacer(
@@ -363,7 +382,9 @@ def generate_ode_cpp(
     forcings_list=None,
     sparse=None,
     skip_jacobian=False,
+    ad_backend="fadbad",
 ):
+    _set_ad_backend(ad_backend)
     """
     Generate C++ code for ODE system and Jacobian.
     
@@ -1126,7 +1147,7 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
         cpp = printer.doprint(sympy_expr).replace("\n", " ")
         cpp = _MATH_MACRO_PATTERN.sub(lambda m: _MATH_MACRO_MAP[m.group(0)], cpp)
         if num_type in ("AD", "AD2"):
-            cpp = _FADBAD_FN_PATTERN.sub(lambda m: f'fadbad::{m.group(1)}', cpp)
+            cpp = _FADBAD_FN_PATTERN.sub(lambda m: f'{_AD_PREFIX}::{m.group(1)}', cpp)
         return cpp
 
     template_cpp = {}  # canonical -> {rhs_cpp, jac_cpp: {j: str}, time_deriv_cpp}
@@ -1279,8 +1300,9 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
 # Forcing initialization code generation
 # =====================================================================
 
-def generate_forcing_init_code(n_forcings, num_type="AD"):
+def generate_forcing_init_code(n_forcings, num_type="AD", ad_backend="fadbad"):
     """Generate C++ code to initialize PchipForcing objects from R raw data."""
+    _set_ad_backend(ad_backend)
     return [
         "",
         "  // --- Initialize forcings (PCHIP interpolation) ---",
@@ -1566,8 +1588,10 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
         g_dot_dot_lines.append(f"    nullptr  // g_dot_dot (FD fallback)")
 
     return dg_dx_lines, dg_dt_lines, g_dot_dot_lines
-def generate_event_code(events_df, states_list, params_list, n_states, 
-                        num_type="AD", forcings_list=None, rhs_dict=None):
+def generate_event_code(events_df, states_list, params_list, n_states,
+                        num_type="AD", forcings_list=None, rhs_dict=None,
+                        ad_backend="fadbad"):
+    _set_ad_backend(ad_backend)
     """
     Generate C++ initialization lines for fixed-time and root events.
 
@@ -1786,7 +1810,9 @@ def generate_event_code(events_df, states_list, params_list, n_states,
 # =====================================================================
 
 def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
-                           num_type="AD", forcings_list=None):
+                           num_type="AD", forcings_list=None,
+                           ad_backend="fadbad"):
+    _set_ad_backend(ad_backend)
     """
     Generate C++ code for root function based termination.
     

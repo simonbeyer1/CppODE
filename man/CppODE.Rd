@@ -17,6 +17,7 @@ CppODE(
   deriv2 = FALSE,
   ntheta = NULL,
   dynamic_ad = FALSE,
+  ad_backend = c("dual", "fadbad"),
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
@@ -65,13 +66,28 @@ time as the full Jacobian \eqn{\Phi'(\theta)} of shape
 labelled as theta slots instead of model-parameter names. Requires
 \code{deriv = TRUE} and is incompatible with runtime \code{fixed}.}
 
-\item{dynamic_ad}{Logical. If \code{TRUE}, use the heap-allocated FADBAD spec
-\verb{F<double, 0>} instead of the default stack-allocated \verb{F<double, N>}. The
-AD width is determined at runtime from \code{ncol(sens1ini)} and the partial
-derivative arrays are sized via \code{diff(idx, n_sens)}. \code{sens1ini} is
-required at \code{solveODE()} time. Useful for benchmarking heap vs stack AD
-or when the parameter dimension is only known at runtime. Incompatible
-with explicit \code{ntheta}, with \code{deriv2 = TRUE}, and with runtime \code{fixed}.}
+\item{dynamic_ad}{Logical. If \code{TRUE}, use the heap-allocated AD spec
+(\verb{F<double, 0>} for FADBAD, \verb{cppode::dual<double, 0>} for \code{dual}) instead
+of the default stack-allocated \verb{F<double, N>}/\verb{dual<double, N>}. The AD
+width is determined at runtime from \code{ncol(sens1ini)}. \code{sens1ini} is
+required at \code{solveODE()} time. Useful when the parameter dimension is
+only known at runtime; \code{ad_backend = "dual"} makes this path much
+faster than the default FADBAD heap because intermediates are bumped
+from a per-call thread-local arena instead of allocated via \code{new[]}.
+Incompatible with explicit \code{ntheta}, with \code{deriv2 = TRUE}, and with
+runtime \code{fixed}.}
+
+\item{ad_backend}{Character string selecting the forward-AD library.
+\itemize{
+\item \code{"dual"} \emph{(default)} -- the in-tree \verb{cppode::dual<double, N>} /
+\verb{cppode::dual<double, 0>} backend. Uses a thread-local arena
+allocator for the dynamic-width path. Second-order
+(\code{deriv2 = TRUE}) uses nested \verb{cppode::dual<cppode::dual<double, N>, N>},
+analogous to FADBAD's nested layout but free of the FADBAD++
+dependency.
+\item \code{"fadbad"} -- the legacy \verb{fadbad::F<double, N>} /
+\verb{fadbad::F<fadbad::F<double, N>, N>} (nested) backend.
+}}
 
 \item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
 

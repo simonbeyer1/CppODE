@@ -17,6 +17,13 @@
 #include <type_traits>
 #include <cmath>
 
+// Forward declaration so this header can sit before cppode_dual.hpp in the
+// master include list while still providing a max_abs_all_levels overload
+// for cppode::dual.
+namespace cppode {
+  template<class T, unsigned N> class dual;
+}
+
 // =========================================================================================
 //  FADBAD namespace extensions
 // =========================================================================================
@@ -331,6 +338,20 @@ inline double max_abs_all_levels(const fadbad::F<T,N>& v)
     m = std::max(m, max_abs_all_levels(const_cast<fadbad::F<T,N>&>(v).d(i)));
   }
 
+  return m;
+}
+
+// Recursive case: cppode::dual<T,N> (parallel to FADBAD overload above).
+// Direct overload by class name avoids ambiguous SFINAE; dual2nd gets its
+// own overload added in Phase 6.
+template<class T, unsigned N>
+inline double max_abs_all_levels(const cppode::dual<T,N>& v)
+{
+  double m = max_abs_all_levels(const_cast<cppode::dual<T,N>&>(v).x());
+  unsigned nd = const_cast<cppode::dual<T,N>&>(v).size();
+  for (unsigned i = 0; i < nd; ++i) {
+    m = std::max(m, max_abs_all_levels(const_cast<cppode::dual<T,N>&>(v).d(i)));
+  }
   return m;
 }
 

@@ -22,6 +22,7 @@
 #include <cstdlib>
 
 #include <cppode/cppode_types.hpp>
+#include <cppode/cppode_ad_traits.hpp>
 #include <fadbad++/fadiff.h>
 
 // LAPACK declarations via R's headers (handles ILP64 automatically)
@@ -79,169 +80,22 @@ namespace cppode {
 namespace ad_lu {
 
 // ============================================================================
-//  AD type traits
+//  AD type traits / bulk helpers — pulled in from cppode_ad_traits.hpp.
+//  Re-exported here so existing consumers using `ad_lu::is_ad`,
+//  `ad_lu::scalar_value`, etc. compile unchanged.
 // ============================================================================
 
-template<class T> struct is_ad : std::false_type {};
-template<class T, unsigned int N> struct is_ad<fadbad::F<T,N>> : std::true_type {};
-
-template<class T> struct inner_type       { using type = T; };
-template<class T, unsigned int N> struct inner_type<fadbad::F<T,N>> { using type = T; };
-template<class T> using inner_type_t = typename inner_type<T>::type;
-
-/// Recursively unwrap F<F<...F<T>...>> to the innermost scalar type T.
-/// Used to derive time_type from value_type: time is always a plain scalar.
-///   scalar_type<double>::type            = double
-///   scalar_type<F<double,N>>::type       = double
-///   scalar_type<F<F<double,N>,M>>::type  = double
-template<class T> struct scalar_type       { using type = T; };
-template<class T, unsigned int N> struct scalar_type<fadbad::F<T,N>>
-: scalar_type<T> {};
-template<class T> using scalar_type_t = typename scalar_type<T>::type;
-
-/// Extract the innermost scalar value from any (nested) AD type.
-/// For double, returns the value unchanged. For F<T,N>, recursively
-/// unwraps to the base scalar. Used throughout the stepper/controller
-/// hierarchy to convert value_type time arguments to scalar time_type.
-template<class T>
-inline typename std::enable_if<std::is_arithmetic<T>::value, double>::type
-scalar_value(const T& v) { return static_cast<double>(v); }
-
-template<class T, unsigned int N>
-inline double scalar_value(const fadbad::F<T,N>& v) {
-  return scalar_value(const_cast<fadbad::F<T,N>&>(v).x());
-}
-
-// ============================================================================
-//  Value/derivative extraction helpers for std::vector<F<T>>
-// ============================================================================
-
-/// Extract value (.x()) from each element: vector<F<Inner>> → vector<Inner>
-template<class Inner, unsigned int N>
-inline std::vector<Inner> extract_values(const std::vector<fadbad::F<Inner,N>>& v)
-{
-  const size_t n = v.size();
-  std::vector<Inner> out(n);
-  for (size_t i = 0; i < n; ++i)
-    out[i] = const_cast<fadbad::F<Inner,N>&>(v[i]).x();
-  return out;
-}
-
-/// Extract value (.x()) from each element: dense_matrix<F<Inner>> → dense_matrix<Inner>
-template<class Inner, unsigned int N>
-inline dense_matrix<Inner> extract_values(const dense_matrix<fadbad::F<Inner,N>>& M)
-{
-  dense_matrix<Inner> out(M.rows(), M.cols());
-  const size_t sz = M.data.size();
-  for (size_t k = 0; k < sz; ++k)
-    out.data[k] = const_cast<fadbad::F<Inner,N>&>(M.data[k]).x();
-  return out;
-}
-
-/// Extract derivative d(j) from each element: vector<F<Inner>> → vector<Inner>
-template<class Inner, unsigned int N>
-inline std::vector<Inner> extract_derivs(const std::vector<fadbad::F<Inner,N>>& v, unsigned j)
-{
-  const size_t n = v.size();
-  std::vector<Inner> out(n);
-  for (size_t i = 0; i < n; ++i)
-    out[i] = const_cast<fadbad::F<Inner,N>&>(v[i]).d(j);
-  return out;
-}
-
-/// Extract derivative d(j) from each element: dense_matrix<F<Inner>> → dense_matrix<Inner>
-template<class Inner, unsigned int N>
-inline dense_matrix<Inner> extract_derivs(const dense_matrix<fadbad::F<Inner,N>>& M, unsigned j)
-{
-  dense_matrix<Inner> out(M.rows(), M.cols());
-  const size_t sz = M.data.size();
-  for (size_t k = 0; k < sz; ++k)
-    out.data[k] = const_cast<fadbad::F<Inner,N>&>(M.data[k]).d(j);
-  return out;
-}
-
-/// Max number of derivative directions in a vector
-template<class Inner, unsigned int N>
-inline unsigned max_deriv_size(const std::vector<fadbad::F<Inner,N>>& v)
-{
-  unsigned mx = 0;
-  for (size_t i = 0; i < v.size(); ++i) {
-    unsigned sz = const_cast<fadbad::F<Inner,N>&>(v[i]).size();
-    if (sz > mx) mx = sz;
-  }
-  return mx;
-}
-
-/// Max number of derivative directions in a dense_matrix
-template<class Inner, unsigned int N>
-inline unsigned max_deriv_size(const dense_matrix<fadbad::F<Inner,N>>& M)
-{
-  unsigned mx = 0;
-  for (size_t k = 0; k < M.data.size(); ++k) {
-    unsigned sz = const_cast<fadbad::F<Inner,N>&>(M.data[k]).size();
-    if (sz > mx) mx = sz;
-  }
-  return mx;
-}
-
-// ============================================================================
-//  Bulk extraction helpers — single-pass AoS→SoA
-//
-//  Instead of n_derivs separate passes calling extract_derivs(v, j),
-//  these extract ALL derivative directions in ONE pass over the vector,
-//  producing a column-major n × n_derivs matrix.
-// ============================================================================
-
-/// Bulk-extract all derivatives from vector<F<Inner,N>> into column-major
-/// Inner array of size n × n_derivs.  One pass over the source vector.
-template<class Inner, unsigned int N>
-inline void bulk_extract_derivs(
-    const std::vector<fadbad::F<Inner,N>>& v,
-    std::vector<Inner>& out,
-    int n, unsigned n_derivs)
-{
-  out.resize(static_cast<size_t>(n) * n_derivs);
-  for (int i = 0; i < n; ++i) {
-    auto& vi = const_cast<fadbad::F<Inner,N>&>(v[i]);
-    unsigned sz = vi.size();
-    for (unsigned j = 0; j < n_derivs; ++j) {
-      out[j * n + i] = (j < sz) ? vi.d(j) : Inner(0);
-    }
-  }
-}
-
-/// Bulk-inject all derivatives from column-major Inner array into vector<F<Inner,N>>.
-/// Also sets the value part.  One pass over the target vector.
-///
-/// IMPORTANT: For FADBAD++ F<T,N> with static N, writing to .d(j) only works
-/// when m_depend == true.  Otherwise .d(j) returns a reference to a static
-/// zero variable and the write is silently discarded.  We call .diff(0) first
-/// to activate the derivative slots (sets m_depend = true and initializes all
-/// slots), then overwrite ALL slots with the correct values.
-template<class Inner, unsigned int N>
-inline void bulk_inject_results(
-    std::vector<fadbad::F<Inner,N>>& b,
-    const std::vector<Inner>& b_val,
-    const std::vector<Inner>& dx_all,
-    int n, unsigned n_derivs)
-{
-  for (int i = 0; i < n; ++i) {
-    b[i].x() = b_val[i];
-    if (n_derivs > 0) {
-      // Activate derivative storage: sets m_depend = true.
-      // For static N > 0: diff(0) sets m_diff[0]=1, rest=0, m_depend=true.
-      // For dynamic N == 0: diff(0, n_derivs) allocates and sets m_diff[0]=1.
-      // We overwrite ALL slots below, so the initial values don't matter.
-      if constexpr (N > 0) {
-        if (!b[i].depend()) b[i].diff(0);
-      } else {
-        if (!b[i].depend()) b[i].diff(0, n_derivs);
-      }
-      for (unsigned j = 0; j < n_derivs; ++j)
-        b[i][j] = dx_all[j * n + i];   // use operator[] (direct array access)
-    }
-  }
-}
+using cppode::ad_traits::is_ad;
+using cppode::ad_traits::inner_type;
+using cppode::ad_traits::inner_type_t;
+using cppode::ad_traits::scalar_type;
+using cppode::ad_traits::scalar_type_t;
+using cppode::ad_traits::scalar_value;
+using cppode::ad_traits::extract_values;
+using cppode::ad_traits::extract_derivs;
+using cppode::ad_traits::max_deriv_size;
+using cppode::ad_traits::bulk_extract_derivs;
+using cppode::ad_traits::bulk_inject_results;
 
 // ============================================================================
 //  dense_lu_solver<double> — Base case: LAPACK dgetrf + dgetrs
@@ -352,10 +206,15 @@ private:
 //    6. BLAS-3 batched solve: dgetrs with nrhs = n_derivs (unchanged).
 // ============================================================================
 
-template<class Inner, unsigned int N>
-class dense_lu_solver<fadbad::F<Inner,N>>
+// Generic AD specialization: works for fadbad::F<Inner,N> and cppode::dual<Inner,N>.
+// The body uses only the FADBAD-compatible accessor surface (.x(), .d(j),
+// .size(), .diff(), operator[], .depend()) which both backends provide.
+template<class AD_T>
+class dense_lu_solver<AD_T, std::enable_if_t<is_ad<AD_T>::value>>
 {
-  using F = fadbad::F<Inner, N>;
+  using F = AD_T;
+  using Inner = inner_type_t<AD_T>;
+  static constexpr unsigned N = ad_traits::detail::ad_static_size<AD_T>::value;
 
 public:
 

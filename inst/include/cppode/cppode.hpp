@@ -23,7 +23,7 @@
 #include <functional>
 
 // ============================================================================
-//  FADBAD++
+//  FADBAD++ (legacy AD backend)
 // ============================================================================
 #include <fadbad++/fadiff.h>
 
@@ -31,6 +31,13 @@
 //  FADBAD++ extensions
 // ============================================================================
 #include <cppode/cppode_fadiff_extensions.hpp>
+
+// ============================================================================
+//  cppode::dual / cppode::dual2nd (custom forward AD backend)
+//  Selected at codegen time via the R-side `ad_backend` argument.
+// ============================================================================
+#include <cppode/cppode_dual_math.hpp>
+#include <cppode/cppode_dual_expr.hpp>
 
 // ============================================================================
 //  CppODE types and infrastructure
