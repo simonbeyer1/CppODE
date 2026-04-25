@@ -158,6 +158,7 @@ solveODE <- function(model, times, parms,
   deriv2        <- attr(model, "deriv2")
   all_sens      <- if (deriv) attr(model, "dim_names")$sens else character(0)
   has_reparam   <- isTRUE(attr(model, "has_reparam"))
+  dynamic_ad    <- isTRUE(attr(model, "dynamic_ad"))
   ntheta        <- attr(model, "ntheta")
 
   ## --- Runtime fixed: resolve early so sens1ini/sens2ini see the active set ---
@@ -195,7 +196,8 @@ solveODE <- function(model, times, parms,
   ## Under reparam, `ntheta` (model attr) is the compile-time upper bound on
   ## the AD width. `n_theta_active` is the per-call count read from
   ## ncol(sens1ini) and must satisfy 0 <= n_theta_active <= n_theta_max.
-  n_theta_max <- if (has_reparam) as.integer(ntheta) else n_active
+  n_theta_max <- if (dynamic_ad) .Machine$integer.max else
+                 if (has_reparam) as.integer(ntheta) else n_active
   n_theta_active <- if (has_reparam) {
     if (is.null(sens1ini))
       stop("'sens1ini' is required when the model was compiled with an explicit ntheta")
@@ -282,6 +284,7 @@ solveODE <- function(model, times, parms,
   ## the auto-generated names in attr(model, "dim_names")$sens (length n_theta_max).
   sens_col_names <- if (has_reparam) {
     if (!is.null(sens1ini) && !is.null(colnames(sens1ini))) colnames(sens1ini)
+    else if (dynamic_ad) sprintf("theta%d", seq_len(n_theta_active))
     else all_sens[seq_len(n_theta_active)]
   } else {
     active_sens

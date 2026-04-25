@@ -16,6 +16,7 @@ CppODE(
   deriv = TRUE,
   deriv2 = FALSE,
   ntheta = NULL,
+  dynamic_ad = FALSE,
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
@@ -63,6 +64,14 @@ time as the full Jacobian \eqn{\Phi'(\theta)} of shape
 \verb{[n_states + n_params, ntheta]}, and sensitivity output columns are
 labelled as theta slots instead of model-parameter names. Requires
 \code{deriv = TRUE} and is incompatible with runtime \code{fixed}.}
+
+\item{dynamic_ad}{Logical. If \code{TRUE}, use the heap-allocated FADBAD spec
+\verb{F<double, 0>} instead of the default stack-allocated \verb{F<double, N>}. The
+AD width is determined at runtime from \code{ncol(sens1ini)} and the partial
+derivative arrays are sized via \code{diff(idx, n_sens)}. \code{sens1ini} is
+required at \code{solveODE()} time. Useful for benchmarking heap vs stack AD
+or when the parameter dimension is only known at runtime. Incompatible
+with explicit \code{ntheta}, with \code{deriv2 = TRUE}, and with runtime \code{fixed}.}
 
 \item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
 
