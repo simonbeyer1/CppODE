@@ -189,6 +189,30 @@ public:
     if (depend_) for (unsigned i = 0; i < N; ++i) tan_[i] /= static_cast<T>(v);
     return *this;
   }
+
+  // -- expression-template assignment / construction --------------------------
+  // Materialises any CRTP Expr<D> tree directly into the inline tan_[N] slots:
+  //   1) val_ = root.val();                   (one scalar pass through tree)
+  //   2) for (i)  tan_[i] = root.tan(i);      (one fused chain-rule loop;
+  //                                            constant N → unrolled / vec'd)
+  // Definitions live in cppode_dual_expr.hpp (after Expr<D> is complete).
+  // The eager dual-to-dual / dual-to-scalar overloads above remain primary —
+  // template arg deduction against `const Expr<D>&` fails for non-Expr ops,
+  // so the two overload sets do not compete.
+  template<class D>
+  dual& operator=(const expr::Expr<D>& e);
+
+  template<class D>
+  dual(const expr::Expr<D>& e);
+
+  template<class D>
+  dual& operator+=(const expr::Expr<D>& e);
+  template<class D>
+  dual& operator-=(const expr::Expr<D>& e);
+  template<class D>
+  dual& operator*=(const expr::Expr<D>& e);
+  template<class D>
+  dual& operator/=(const expr::Expr<D>& e);
 };
 
 // =============================================================================
@@ -238,9 +262,18 @@ public:
   template<class U,
            std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
   dual& operator=(const U& v) {
-    val_  = static_cast<T>(v);
-    tan_  = nullptr;
-    size_ = 0;
+    val_ = static_cast<T>(v);
+    // Preserve any existing tan_ buffer (slab-bound or arena-bound) and just
+    // zero the tangent values. Without this, slab-bound duals would lose
+    // their binding on every `dual = scalar` assignment (e.g. codegen state
+    // re-seeding `x[i] = paramsSEXP[i]` after the slab has been primed).
+    // The semantic difference vs. setting size_=0 is negligible: a fully-
+    // zero tangent vector contributes 0 to downstream chain rules, same as
+    // a non-depend dual; subsequent ops do redundant zero-multiplies, but
+    // the slab-bound code paths take the BLAS / fused-loop fast path anyway.
+    if (size_ > 0) {
+      for (unsigned i = 0; i < size_; ++i) tan_[i] = T();
+    }
     return *this;
   }
 

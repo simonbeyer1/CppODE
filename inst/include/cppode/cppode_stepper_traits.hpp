@@ -36,13 +36,13 @@ namespace cppode {
 
 template<class Stepper, class = void>
 struct stepper_traits {
-  /// Single-step method: no history to manage
+  // Single-step method: no history to manage
   static constexpr bool is_multistep = false;
 
-  /// No restart needed after events — single-step methods are self-starting
+  // No restart needed after events — single-step methods are self-starting
   static constexpr bool needs_restart_after_event = false;
 
-  /// Fixed order (not applicable for single-step, but provided for uniformity)
+  // Fixed order (not applicable for single-step, but provided for uniformity)
   static constexpr int min_order = 0;
   static constexpr int max_order = 0;
 };
@@ -50,12 +50,12 @@ struct stepper_traits {
 //  Trait extraction helpers (for use in if-constexpr / enable_if)
 // ============================================================================
 
-/// True if the stepper is a multi-step method (NDF, BDF, Adams, etc.)
+// True if the stepper is a multi-step method (NDF, BDF, Adams, etc.)
 template<class Stepper>
 inline constexpr bool is_multistep_v = stepper_traits<Stepper>::is_multistep;
 
-/// True if the stepper needs a full restart (history discard + order 1)
-/// after a state discontinuity (event)
+// True if the stepper needs a full restart (history discard + order 1)
+// after a state discontinuity (event)
 template<class Stepper>
 inline constexpr bool needs_restart_after_event_v =
 stepper_traits<Stepper>::needs_restart_after_event;
@@ -68,7 +68,7 @@ stepper_traits<Stepper>::needs_restart_after_event;
 //  (bdf, adams, msoda).
 // ============================================================================
 
-/// SFINAE detector for the multistepper tag
+// SFINAE detector for the multistepper tag
 template<class T, class = void>
 struct has_multistepper_tag : std::false_type {};
 
@@ -76,7 +76,7 @@ template<class T>
 struct has_multistepper_tag<T, std::void_t<typename T::is_multistepper_tag>>
 : std::true_type {};
 
-/// Specialisation for any type carrying the multistepper tag
+// Specialisation for any type carrying the multistepper tag
 template<class Stepper>
 struct stepper_traits<Stepper,
                      std::enable_if_t<has_multistepper_tag<Stepper>::value>>
@@ -100,7 +100,7 @@ struct stepper_traits<Stepper,
 //  We detect the `stepper_type` typedef via SFINAE and forward traits.
 // ============================================================================
 
-/// SFINAE detector for nested stepper_type
+// SFINAE detector for nested stepper_type
 template<class T, class = void>
 struct has_inner_stepper_type : std::false_type {};
 
@@ -108,7 +108,7 @@ template<class T>
 struct has_inner_stepper_type<T, std::void_t<typename T::stepper_type>>
 : std::true_type {};
 
-/// Detector for multistepper tag on inner stepper (through wrapper chain)
+// Detector for multistepper tag on inner stepper (through wrapper chain)
 template<class T, class = void>
 struct inner_has_multistepper_tag : std::false_type {};
 
@@ -137,8 +137,8 @@ struct deep_has_multistepper_tag<T,
                           !std::is_same<T, typename T::stepper_type>::value>>
                           : deep_has_multistepper_tag<typename T::stepper_type> {};
 
-/// Propagated traits for wrapper types (controller, dense output)
-/// that wrap a multistepper somewhere in their chain
+// Propagated traits for wrapper types (controller, dense output)
+// that wrap a multistepper somewhere in their chain
 template<class Wrapper>
 struct stepper_traits<Wrapper,
                       std::enable_if_t<

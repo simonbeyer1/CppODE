@@ -150,59 +150,81 @@ public:
       ++m_n_fevals;
     }
 
-    // Use TimeArg (not time_type) so AD derivative components propagate.
-    const TimeArg h = dt;
+    // Use TimeArg (not time_type) so AD derivative components propagate
+    // through the deriv_func t arguments below.
+    const TimeArg h    = dt;
+    // Stage AXPY alphas extracted to scalar — matches rosenbrock4
+    // convention. AD-time propagation in stage assembly is dropped here
+    // (the deriv_func calls below still receive a TimeArg-typed t so AD
+    // tangents propagate where they matter).
+    const double h_s = static_cast<double>(ad_lu::scalar_value(dt));
 
-    // --- Stage 2 ---
-    for (size_t i = 0; i < n; ++i)
-      m_xtmp.m_v[i] = x[i] + h * (a21 * m_k1.m_v[i]);
+    // --- Stage 2:  xtmp = x + h*a21 * k1 ---
+    vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab,
+                       h_s * a21, m_k1.m_v, m_k1_slab);
     deriv_func(m_xtmp.m_v, m_k2.m_v, t + c2 * h);
     ++m_n_fevals;
 
-    // --- Stage 3 ---
-    for (size_t i = 0; i < n; ++i)
-      m_xtmp.m_v[i] = x[i] + h * (a31 * m_k1.m_v[i] + a32 * m_k2.m_v[i]);
+    // --- Stage 3:  xtmp = x + h*(a31*k1 + a32*k2) ---
+    vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a31, m_k1.m_v, m_k1_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a32, m_k2.m_v, m_k2_slab);
     deriv_func(m_xtmp.m_v, m_k3.m_v, t + c3 * h);
     ++m_n_fevals;
 
     // --- Stage 4 ---
-    for (size_t i = 0; i < n; ++i)
-      m_xtmp.m_v[i] = x[i] + h * (a41 * m_k1.m_v[i] + a42 * m_k2.m_v[i]
-                                  + a43 * m_k3.m_v[i]);
+    vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a41, m_k1.m_v, m_k1_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a42, m_k2.m_v, m_k2_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a43, m_k3.m_v, m_k3_slab);
     deriv_func(m_xtmp.m_v, m_k4.m_v, t + c4 * h);
     ++m_n_fevals;
 
     // --- Stage 5 ---
-    for (size_t i = 0; i < n; ++i)
-      m_xtmp.m_v[i] = x[i] + h * (a51 * m_k1.m_v[i] + a52 * m_k2.m_v[i]
-                                  + a53 * m_k3.m_v[i] + a54 * m_k4.m_v[i]);
+    vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a51, m_k1.m_v, m_k1_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a52, m_k2.m_v, m_k2_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a53, m_k3.m_v, m_k3_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a54, m_k4.m_v, m_k4_slab);
     deriv_func(m_xtmp.m_v, m_k5.m_v, t + c5 * h);
     ++m_n_fevals;
 
     // --- Stage 6 ---
-    for (size_t i = 0; i < n; ++i)
-      m_xtmp.m_v[i] = x[i] + h * (a61 * m_k1.m_v[i] + a62 * m_k2.m_v[i]
-                                  + a63 * m_k3.m_v[i] + a64 * m_k4.m_v[i]
-                                  + a65 * m_k5.m_v[i]);
+    vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a61, m_k1.m_v, m_k1_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a62, m_k2.m_v, m_k2_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a63, m_k3.m_v, m_k3_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a64, m_k4.m_v, m_k4_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a65, m_k5.m_v, m_k5_slab);
     deriv_func(m_xtmp.m_v, m_k6.m_v, t + c6 * h);
     ++m_n_fevals;
 
     // --- Solution (5th order) and Stage 7 (FSAL) ---
-    for (size_t i = 0; i < n; ++i)
-      xout[i] = x[i] + h * (b1 * m_k1.m_v[i] + b2 * m_k2.m_v[i]
-                            + b3 * m_k3.m_v[i] + b4 * m_k4.m_v[i]
-                            + b5 * m_k5.m_v[i] + b6 * m_k6.m_v[i]);
+    // xout is controller-owned (m_xnew) and not slab-bound — we use plain
+    // vec_copy / vec_axpy here. Each axpy iteration is a single ScalarLeaf *
+    // DualLeaf binop, which the ET path materialises as one fused N-element
+    // tangent loop without nested template depth.
+    vec_copy(xout, x);
+    vec_axpy(xout, h_s * b1, m_k1.m_v);
+    vec_axpy(xout, h_s * b2, m_k2.m_v);
+    vec_axpy(xout, h_s * b3, m_k3.m_v);
+    vec_axpy(xout, h_s * b4, m_k4.m_v);
+    vec_axpy(xout, h_s * b5, m_k5.m_v);
+    vec_axpy(xout, h_s * b6, m_k6.m_v);
 
     deriv_func(xout, m_k7.m_v, t + h);
     ++m_n_fevals;
 
-    // --- Error estimate: xerr = h * (b - bhat) * k ---
-    // Using e_i = b_i - bhat_i
-    for (size_t i = 0; i < n; ++i)
-      xerr[i] = h * (e1 * m_k1.m_v[i] + e2 * m_k2.m_v[i]
-                    + e3 * m_k3.m_v[i] + e4 * m_k4.m_v[i]
-                    + e5 * m_k5.m_v[i] + e6 * m_k6.m_v[i]
-                    + e7 * m_k7.m_v[i]);
+    // --- Error estimate: xerr = h * sum(e_i * k_i)  (e_i = bhat_i - b_i) ---
+    vec_zero(xerr);
+    vec_axpy(xerr, h_s * e1, m_k1.m_v);
+    vec_axpy(xerr, h_s * e2, m_k2.m_v);
+    vec_axpy(xerr, h_s * e3, m_k3.m_v);
+    vec_axpy(xerr, h_s * e4, m_k4.m_v);
+    vec_axpy(xerr, h_s * e5, m_k5.m_v);
+    vec_axpy(xerr, h_s * e6, m_k6.m_v);
+    vec_axpy(xerr, h_s * e7, m_k7.m_v);
 
     // FSAL: k7 becomes k1 for the next step (if accepted)
     m_fsal_valid = false;  // will be set by prepare_dense_output / accept
@@ -221,7 +243,18 @@ public:
     // After an accepted step, mark FSAL as valid:
     // k7 from this step becomes k1 for the next step.
     // We swap k7 → k1 so the next do_step picks it up.
+    //
+    // For the slab-aware heap path we must swap the slabs alongside the
+    // vectors. The dual elements keep their tan_ pointers under std::swap,
+    // so post-vector-swap m_k1.m_v[i].tan_ still points into m_k7_slab's
+    // storage. By also swapping the slabs themselves (which transfers the
+    // backing std::vector buffer pointer), m_k1_slab's storage now sits
+    // exactly where the swapped duals' tan_ pointers expect it — keeping
+    // vec_*_with_slab BLAS paths reading the correct memory.
     std::swap(m_k1.m_v, m_k7.m_v);
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      std::swap(m_k1_slab, m_k7_slab);
+    }
     m_fsal_valid = true;
 
     // Dense output coefficients are computed lazily in calc_state
@@ -353,6 +386,11 @@ private:
                                    m_k4_slab, m_k5_slab, m_k6_slab,
                                    m_k7_slab;
   detail::tangent_slab<value_type> m_xtmp_slab;
+  // Permanently-empty stub for the externally-owned input state x (controller
+  // owns it; it is not slab-bound here). vec_*_with_slab sees primed=false
+  // and falls through to the per-element loop. mutable so we can hand out
+  // non-const refs to the helper signature without lying about constness.
+  mutable detail::tangent_slab<value_type> m_x_in_unslabbed;
   unsigned m_n_sens = 0;
 
   int  m_n_fevals;

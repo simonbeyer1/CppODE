@@ -697,6 +697,30 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     externC <- c(externC, "")
   }
 
+  # --- Slab-bind state and parameter tangents -------------------------------
+  # For the heap-AD path (cppode::dual<S, 0>) we route every state and
+  # parameter dual's tan_ pointer into one contiguous [n_rows × n_sens] slab
+  # block per vector. Subsequent .diff(idx, n_sens) calls and codegen-emitted
+  # dxdt[i] = expr materialisations then write into the slab — SoA-friendly,
+  # zero per-RHS arena traffic, and the W-matrix factorise reads neighbouring
+  # tangents from one cache line. For non-dynamic-dual num types (static N
+  # dual<S, N!=0>, fadbad::F<>, double) the slab is the empty stub so the
+  # prime() calls compile to no-ops.
+  if (deriv) {
+    externC <- c(
+      externC,
+      sprintf("  cppode::detail::tangent_slab<%s> _x_slab;", numType),
+      sprintf("  cppode::detail::tangent_slab<%s> _full_params_slab;", numType),
+      "  if (n_sens > 0) {",
+      sprintf("    _x_slab.prime(x, static_cast<unsigned>(%d), static_cast<unsigned>(n_sens));",
+              n_variables),
+      sprintf("    _full_params_slab.prime(full_params, static_cast<unsigned>(%d), static_cast<unsigned>(n_sens));",
+              n_variables + n_params),
+      "  }",
+      ""
+    )
+  }
+
   # --- initialize states ---
   externC <- c(
     externC,

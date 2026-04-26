@@ -92,7 +92,7 @@ public:
   void solve(std::vector<Scalar>& b) const
   { m_solver.solve(b); }
 
-  /// Batched solve: B ← W⁻¹ B (column-major n × nrhs)
+  // Batched solve: B ← W⁻¹ B (column-major n × nrhs)
   void solve_batch(std::vector<Scalar>& B, int nrhs) const
   { m_solver.solve_batch(B.data(), nrhs); }
 
@@ -103,11 +103,10 @@ public:
     return x;
   }
 
-  /// Scalar-only solve (identity for base case — same as solve)
+  // Scalar-only solve (identity for base case — same as solve)
   void solve_scalar(std::vector<double>& b) const
   { m_solver.solve(b); }
 
-  bool pattern_analyzed() const { return m_solver.pattern_analyzed(); }
   void reset_pattern() { m_solver.reset_pattern(); }
 
 private:
@@ -298,7 +297,7 @@ public:
     bulk_inject_results(b, m_b_val, m_rhs_all, n, n_derivs);
   }
 
-  /// Batched solve for nrhs RHS vectors (column-major).
+  // Batched solve for nrhs RHS vectors (column-major).
   void solve_batch(std::vector<F>& B_flat, int nrhs) const
   {
     const int n = m_n;
@@ -312,10 +311,9 @@ public:
     }
   }
 
-  bool pattern_analyzed() const { return m_inner.pattern_analyzed(); }
   void reset_pattern() { m_inner.reset_pattern(); }
 
-  /// Scalar-only solve: forward to inner solver, no IFT
+  // Scalar-only solve: forward to inner solver, no IFT
   void solve_scalar(std::vector<double>& b) const
   {
     m_inner.solve_scalar(b);

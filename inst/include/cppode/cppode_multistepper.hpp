@@ -1,6 +1,5 @@
 /*
- CppODE Multistep Stepper — Nordsieck multistep implementation
- =============================================================
+ CppODE Multistep Stepper — Nordsieck multistep implementation.
 
  Unified variable-order, variable-step Nordsieck multistep stepper
  covering three method variants selected at compile time via the

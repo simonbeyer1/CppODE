@@ -26,16 +26,17 @@ namespace cppode {
 
 // =============================================================================
 // Eager-vs-ET routing helper. The expression-template overlay
-// (cppode_dual_expr.hpp) covers the (non-AD T, N == 0) slice where heap
-// allocations dominate cost. The eager operators below are SFINAE-gated to
-// avoid that slice so the two paths don't ambiguously overlap.
+// (cppode_dual_expr.hpp) covers all (non-AD T) duals — both the heap path
+// (N == 0, arena-backed) and the static-N stack path (N > 0, inline tan_).
+// Eager remains active only when T is itself an AD type (nested dual2nd:
+// outer layer needs eager; inner layer falls through to ET).
 //
 // Triggered as:    template<class T, unsigned N, EAGER_GATE(T, N)> ...
 // =============================================================================
 namespace detail {
-template<class T, unsigned N>
+template<class T, unsigned /*N*/>
 struct eager_dual_active
-  : std::bool_constant<(ad_traits::is_ad<T>::value || N != 0)> {};
+  : std::bool_constant<ad_traits::is_ad<T>::value> {};
 } // namespace detail
 
 #define CPPODE_EAGER_GATE(T, N) \

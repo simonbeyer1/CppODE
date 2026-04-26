@@ -24,6 +24,7 @@
 
 #include <utility>
 #include <type_traits>
+#include <cppode/cppode_dual_slab.hpp>
 #include <cppode/cppode_onestep_controller.hpp>
 
 namespace cppode {
@@ -72,6 +73,7 @@ public:
   typedef typename unwrapped_stepper::stepper_type       stepper_type;
   typedef typename unwrapped_stepper::state_type         state_type;
   typedef typename unwrapped_stepper::wrapped_state_type wrapped_state_type;
+  typedef typename stepper_type::value_type              value_type;
   typedef typename stepper_type::value_type              time_type;
   typedef typename stepper_type::resizer_type            resizer_type;
 
@@ -171,10 +173,23 @@ public:
   controlled_stepper_type&       controlled_stepper()       { return m_stepper; }
   const controlled_stepper_type& controlled_stepper() const { return m_stepper; }
 
-  // Slab-prime forwarder, mirroring the multistepper-side wrapper.
+  // Slab-prime forwarder, mirroring the multistepper-side wrapper. Also
+  // primes the dense wrapper's own m_x1 / m_x2 buffers (alternating state
+  // slots used by the stepper as in/out across steps). They may still be
+  // size 0 here — initialize() / resize_impl re-prime once they grow.
   void prepare_sensitivities(unsigned n_sens)
   {
+    m_n_sens = n_sens;
     m_stepper.prepare_sensitivities(n_sens);
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      if (n_sens == 0) return;
+      if (!m_x1.m_v.empty())
+        m_x1_slab.prime(m_x1.m_v,
+                        static_cast<unsigned>(m_x1.m_v.size()), n_sens);
+      if (!m_x2.m_v.empty())
+        m_x2_slab.prime(m_x2.m_v,
+                        static_cast<unsigned>(m_x2.m_v.size()), n_sens);
+    }
   }
 
   // Diagnostics (delegated to controller/stepper)
@@ -199,25 +214,27 @@ private:
     bool resized = false;
     resized |= adjust_size_by_resizeability(m_x1, x);
     resized |= adjust_size_by_resizeability(m_x2, x);
+    if (resized && m_n_sens != 0) {
+      if constexpr (detail::is_dynamic_dual<value_type>::value) {
+        m_x1_slab.prime(m_x1.m_v,
+                        static_cast<unsigned>(m_x1.m_v.size()), m_n_sens);
+        m_x2_slab.prime(m_x2.m_v,
+                        static_cast<unsigned>(m_x2.m_v.size()), m_n_sens);
+      }
+    }
     return resized;
   }
 
   controlled_stepper_type m_stepper;
   resizer_type            m_resizer;
   wrapped_state_type      m_x1, m_x2;
+  // SoA tangent slabs for the dynamic-dual heap path (empty stubs otherwise).
+  detail::tangent_slab<value_type> m_x1_slab;
+  detail::tangent_slab<value_type> m_x2_slab;
+  unsigned                m_n_sens = 0;
   bool                    m_current_state_x1;
   time_type               m_t, m_t_old, m_dt;
 };
-
-// Backward-compatible aliases
-template<class ControlledStepper>
-using rosenbrock4_dense_output = onestep_dense_output<ControlledStepper>;
-
-template<class ControlledStepper>
-using rosenbrock4_dense_output_pi = onestep_dense_output<ControlledStepper>;
-
-template<class ControlledStepper>
-using rosenbrock4_dense_output_pi_ad = onestep_dense_output<ControlledStepper>;
 
 } // namespace cppode
 

@@ -40,6 +40,7 @@
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_ad_lu.hpp>   // for ad_lu::is_ad
 #include <cppode/cppode_ad_traits.hpp>
+#include <cppode/cppode_dual_slab.hpp>
 #include <cppode/cppode_profiler.hpp>
 #include <cppode/cppode_step_trace.hpp>
 
@@ -91,22 +92,22 @@ public:
   using stepper_category = controlled_stepper_tag;
   using controller_type  = onestep_controller<Stepper>;
 
-  /// Error order from the embedded pair (drives PI gain defaults)
+  // Error order from the embedded pair (drives PI gain defaults)
   static constexpr double order = static_cast<double>(stepper_type::error_order);
 
-  /// Default proportional gain: alpha = 0.7 / (order + 1)
+  // Default proportional gain: alpha = 0.7 / (order + 1)
   static constexpr double default_alpha = 0.7 / (order + 1.0);
 
-  /// Default integral gain: beta = 0.4 / (order + 1)
+  // Default integral gain: beta = 0.4 / (order + 1)
   static constexpr double default_beta  = 0.4 / (order + 1.0);
 
-  /// Default safety factor for step-size selection
+  // Default safety factor for step-size selection
   static constexpr double default_safety = 0.9;
 
-  /// Default maximum step increase factor
+  // Default maximum step increase factor
   static constexpr double default_max_factor = 5.0;
 
-  /// Default minimum step decrease factor
+  // Default minimum step decrease factor
   static constexpr double default_min_factor = 0.2;
 
   // ====================================================================
@@ -148,6 +149,16 @@ public:
     , m_last_rejected(false)
     , m_n_accepted(0), m_n_rejected(0)
   {}
+
+  // Same move-only semantics as the multistep family: copying the slab
+  // members would build a fresh tangent block while the dual elements
+  // still point at the original — UB. Moves are safe because std::vector::
+  // move preserves data() for both the slab storage and the dual-element
+  // vectors, so embedded tan_ pointers stay valid.
+  onestep_controller(const onestep_controller&)            = delete;
+  onestep_controller& operator=(const onestep_controller&) = delete;
+  onestep_controller(onestep_controller&&)                 = default;
+  onestep_controller& operator=(onestep_controller&&)      = default;
 
   // ====================================================================
   //  Jacobian hint — SFINAE dispatch
@@ -340,9 +351,23 @@ public:
   // dynamic dual. Must run before the std::move into
   // onestep_dense_output downstream so the dense wrapper inherits a
   // primed slab.
+  //
+  // Also primes the controller's own m_xerr / m_xnew slabs. They may still
+  // be size 0 here (lazy resize via resize_m_xerr/m_xnew); the resize_*
+  // helpers below call prime again once the buffers grow.
   void prepare_sensitivities(unsigned n_sens)
   {
+    m_n_sens = n_sens;
     m_stepper.prepare_sensitivities(n_sens);
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      if (n_sens == 0) return;
+      if (!m_xerr.m_v.empty())
+        m_xerr_slab.prime(m_xerr.m_v,
+                          static_cast<unsigned>(m_xerr.m_v.size()), n_sens);
+      if (!m_xnew.m_v.empty())
+        m_xnew_slab.prime(m_xnew.m_v,
+                          static_cast<unsigned>(m_xnew.m_v.size()), n_sens);
+    }
   }
 
   template<class StateType>
@@ -450,11 +475,23 @@ private:
 
   template<class StateIn>
   bool resize_m_xerr(const StateIn& x)
-  { return adjust_size_by_resizeability(m_xerr, x); }
+  {
+    bool resized = adjust_size_by_resizeability(m_xerr, x);
+    if (resized && m_n_sens != 0)
+      m_xerr_slab.prime(m_xerr.m_v,
+                        static_cast<unsigned>(m_xerr.m_v.size()), m_n_sens);
+    return resized;
+  }
 
   template<class StateIn>
   bool resize_m_xnew(const StateIn& x)
-  { return adjust_size_by_resizeability(m_xnew, x); }
+  {
+    bool resized = adjust_size_by_resizeability(m_xnew, x);
+    if (resized && m_n_sens != 0)
+      m_xnew_slab.prime(m_xnew.m_v,
+                        static_cast<unsigned>(m_xnew.m_v.size()), m_n_sens);
+    return resized;
+  }
 
   // ====================================================================
   //  Members
@@ -465,6 +502,11 @@ private:
   resizer_type       m_xnew_resizer;
   wrapped_state_type m_xerr;
   wrapped_state_type m_xnew;
+
+  // SoA tangent slabs for the dynamic-dual heap path (empty stubs otherwise).
+  detail::tangent_slab<value_type> m_xerr_slab;
+  detail::tangent_slab<value_type> m_xnew_slab;
+  unsigned m_n_sens = 0;
 
   double m_atol, m_rtol;
   double m_max_dt;
@@ -491,10 +533,6 @@ public:
     m_prof.report(label ? label : "CppODE one-step");
   }
 };
-
-// Backward-compatible alias
-template<class Stepper>
-using rosenbrock4_controller = onestep_controller<Stepper>;
 
 } // namespace cppode
 

@@ -217,9 +217,6 @@ print(mb, unit = "ms")
 # res_tsit5     <- solveODE(m_tsit5,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
 # res_tsit5_s   <- solveODE(m_tsit5_s,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
 # res_tsit5_h   <- solveODE(m_tsit5_h,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
-# res_msoda     <- solveODE(m_msoda,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-# res_msoda_s   <- solveODE(m_msoda_s,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
-# res_msoda_h   <- solveODE(m_msoda_h,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
 # res_cvode     <- solveODE(m_cvode,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
 # res_cvode_klu <- solveODE(m_cvode_klu, times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
 #
@@ -227,7 +224,6 @@ print(mb, unit = "ms")
 #              "res_bdf","res_bdf_s","res_bdf_h",
 #              "res_rb4","res_rb4_s","res_rb4_h",
 #              "res_tsit5","res_tsit5_s","res_tsit5_h",
-#              "res_msoda","res_msoda_s","res_msoda_h",
 #              "res_cvode","res_cvode_klu")) {
 #   cat("\n>> ", nm, "\n", sep = "")
 #   diagnostics(get(nm))

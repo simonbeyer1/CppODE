@@ -168,8 +168,6 @@ public:
               const_cast<klu_common*>(&m_common));
   }
 
-  bool pattern_analyzed() const { return m_pattern_analyzed; }
-
   void report_fillin() const {
     if (m_numeric) {
       std::fprintf(stderr, "  KLU fill-in: L_nnz = %d, U_nnz = %d (ratio vs original: %.1fx)\n",

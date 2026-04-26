@@ -275,22 +275,6 @@ std::function<bool(const State&, const Time&)> make_steady_state_termination(Sys
   };
 }
 
-// Kept for backward compatibility
-template<class System, class State, class Time>
-auto make_steady_state_root_func(System& sys, double tol) {
-  auto first = std::make_shared<bool>(true);
-  return [&sys, tol, first](const State& x, const Time& t) -> typename State::value_type {
-    if (*first) {
-      *first = false;
-      return typename State::value_type(1.0);
-    }
-    State dxdt(x.size());
-    sys(x, dxdt, t);
-    double max_rate = cppode::max_abs_all_levels_vec(dxdt);
-    return typename State::value_type(max_rate - tol);
-  };
-}
-
 // ============================================================================
 // Plain event action (no saltation) — works for any value_type
 // ============================================================================
@@ -1296,7 +1280,6 @@ using detail::RootEvent;
 using detail::EventMethod;
 using detail::integrate_times;
 using detail::integrate_times_dense;
-using detail::make_steady_state_root_func;
 using detail::make_steady_state_termination;
 
 } // namespace cppode

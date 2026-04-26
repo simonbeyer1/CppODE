@@ -152,28 +152,28 @@ struct csc_matrix
 //  All operate element-wise on std::vector<T>.
 // ============================================================================
 
-/// v = 0
+// v = 0
 template<class T>
 inline void vec_zero(std::vector<T>& v)
 {
   std::fill(v.begin(), v.end(), T(0));
 }
 
-/// dst = src (resize dst if needed)
+// dst = src (resize dst if needed)
 template<class T>
 inline void vec_copy(std::vector<T>& dst, const std::vector<T>& src)
 {
   dst = src;
 }
 
-/// v *= scalar
+// v *= scalar
 template<class T, class S>
 inline void vec_scale(std::vector<T>& v, S alpha)
 {
   for (auto& x : v) x *= alpha;
 }
 
-/// v *= scalar — BLAS specialization for double
+// v *= scalar — BLAS specialization for double
 inline void vec_scale(std::vector<double>& v, double alpha)
 {
   int n = static_cast<int>(v.size());
@@ -181,7 +181,7 @@ inline void vec_scale(std::vector<double>& v, double alpha)
   F77_CALL(dscal)(&n, &alpha, v.data(), &inc);
 }
 
-/// y += alpha * x  (AXPY)
+// y += alpha * x  (AXPY)
 template<class T, class S>
 inline void vec_axpy(std::vector<T>& y, S alpha, const std::vector<T>& x)
 {
@@ -190,7 +190,7 @@ inline void vec_axpy(std::vector<T>& y, S alpha, const std::vector<T>& x)
     y[i] += alpha * x[i];
 }
 
-/// y += alpha * x — BLAS specialization for double
+// y += alpha * x — BLAS specialization for double
 inline void vec_axpy(std::vector<double>& y, double alpha, const std::vector<double>& x)
 {
   int n = static_cast<int>(y.size());
@@ -217,7 +217,7 @@ inline void matvec(const dense_matrix<T>& A,
   }
 }
 
-/// y = A * x — BLAS dgemv specialization for double
+// y = A * x — BLAS dgemv specialization for double
 inline void matvec(const dense_matrix<double>& A,
                    const std::vector<double>& x,
                    std::vector<double>& y)

@@ -1,6 +1,5 @@
 /*
- CppODE LU — unified Dense/Sparse iteration matrix solver
- ==========================================================
+ CppODE LU — unified Dense/Sparse iteration matrix solver.
 
  Single class lu_W<Value, is_sparse> that encapsulates:
  - Jacobian storage (dense_matrix or csc_matrix)
@@ -48,7 +47,6 @@ struct detail_null_sparse_lu {
   template<class W> void factorize(const W&) {}
   template<class B> void solve(B&) const {}
   void solve_scalar(std::vector<double>&) const {}
-  bool pattern_analyzed() const { return false; }
   void reset_pattern() {}
 };
 } // namespace ad_lu

@@ -120,10 +120,10 @@ public:
     F77_CALL(dgetrf)(&m_n, &m_n, m_lu_data.data(), &m_n, m_ipiv.data(), &info);
   }
 
-  /// Factorize by MOVING the data out of the source matrix (zero-copy).
-  /// The source matrix is left in a valid but unspecified state.
-  /// Use when the caller no longer needs the original W (e.g. m_W_temp
-  /// which gets rebuilt from scratch on every factorize_W call).
+  // Factorize by MOVING the data out of the source matrix (zero-copy).
+  // The source matrix is left in a valid but unspecified state.
+  // Use when the caller no longer needs the original W (e.g. m_W_temp
+  // which gets rebuilt from scratch on every factorize_W call).
   void factorize_move(dense_matrix<Scalar>& W)
   {
     detail::ensure_single_thread_blas();
@@ -136,7 +136,7 @@ public:
     F77_CALL(dgetrf)(&m_n, &m_n, m_lu_data.data(), &m_n, m_ipiv.data(), &info);
   }
 
-  /// Solve in-place: b ← W⁻¹ b
+  // Solve in-place: b ← W⁻¹ b
   void solve(std::vector<Scalar>& b) const
   {
     char trans = 'N';
@@ -149,11 +149,11 @@ public:
                        FCONE);
   }
 
-  /// Batched solve: B ← W⁻¹ B  (B is column-major n × nrhs)
-  ///
-  /// Uses BLAS-3 internally (dtrsm) via dgetrs with nrhs > 1.
-  /// This is the key optimization: cache-blocked triangular solves
-  /// instead of nrhs separate memory-bound triangular back-subs.
+  // Batched solve: B ← W⁻¹ B  (B is column-major n × nrhs)
+  //
+  // Uses BLAS-3 internally (dtrsm) via dgetrs with nrhs > 1.
+  // This is the key optimization: cache-blocked triangular solves
+  // instead of nrhs separate memory-bound triangular back-subs.
   void solve_batch(std::vector<Scalar>& B, int nrhs) const
   {
     if (nrhs <= 0) return;
@@ -166,7 +166,7 @@ public:
                        FCONE);
   }
 
-  /// Solve with separate output
+  // Solve with separate output
   std::vector<Scalar> solve_copy(const std::vector<Scalar>& b) const
   {
     std::vector<Scalar> x = b;
@@ -174,7 +174,7 @@ public:
     return x;
   }
 
-  /// Scalar-only solve (identity for base case — same as solve)
+  // Scalar-only solve (identity for base case — same as solve)
   void solve_scalar(std::vector<double>& b) const
   { solve(b); }
 
@@ -340,7 +340,7 @@ public:
     bulk_inject_results(b, m_b_val, m_rhs_all, n, n_derivs);
   }
 
-  /// Batched solve for nrhs RHS vectors stored column-major.
+  // Batched solve for nrhs RHS vectors stored column-major.
   void solve_batch(std::vector<F>& B_flat, int nrhs) const
   {
     const int n = m_n;
@@ -354,8 +354,8 @@ public:
     }
   }
 
-  /// Scalar-only solve: use the value-level factorization on plain doubles.
-  /// No IFT, no derivative propagation — just the base-case LAPACK solve.
+  // Scalar-only solve: use the value-level factorization on plain doubles.
+  // No IFT, no derivative propagation — just the base-case LAPACK solve.
   void solve_scalar(std::vector<double>& b) const
   {
     m_inner.solve_scalar(b);

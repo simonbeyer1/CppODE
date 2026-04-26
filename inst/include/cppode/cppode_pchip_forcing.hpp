@@ -220,9 +220,9 @@ struct PchipForcing {
   }
 
 private:
-  /// Extract double value from numeric type (for interval search).
-  /// Base case for double is exact; the template handles any AD-like
-  /// type with an .x() accessor (F<T>, F<F<T>>, etc.) recursively.
+  // Extract double value from numeric type (for interval search).
+  // Base case for double is exact; the template handles any AD-like
+  // type with an .x() accessor (F<T>, F<F<T>>, etc.) recursively.
   static double extract_double(double x) { return x; }
 
   template<typename U>

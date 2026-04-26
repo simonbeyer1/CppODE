@@ -1,32 +1,37 @@
 /*
- Expression Templates for cppode::dual<T, 0> (dynamic-N, arena-backed).
+ Expression Templates for cppode::dual<T, N>  (any N, T non-AD).
 
- Eliminates intermediate arena allocations in deep RHS expressions like
+ Eliminates intermediate temporaries / allocations in deep RHS expressions like
    dxdt[i] = a*b + c*d - e/f;
  by making operators return tiny CRTP proxy nodes (BinExpr, UnaryExpr, ...).
  The whole tree is materialized once on assignment into the LHS:
-   1. lhs.val_ = root.val();              // single value-pass (cached during
-                                          //   ctor of each composite node)
-   2. lhs.set_depend_size(root.tan_size())// one arena alloc, or in-place reuse
-   3. for (i)  lhs.tan_[i] = root.tan(i); // one tangent loop, fused chain rule
+   1. lhs.val_ = root.val();                 // single value-pass (cached
+                                             //   during ctor of each node)
+   2. (N == 0) lhs.set_depend_size(...);     // one arena alloc, or in-place
+      (N >  0) lhs.depend_ = true;           // (statically-sized; no alloc)
+   3. for (i)  lhs.tan_[i] = root.tan(i);    // one fused chain-rule loop
 
- Why only `dual<T, 0>` and only non-AD T:
-   - Static-N (N > 0) has inline storage; the optimiser already collapses
-     temporaries into stack slots, so ETs add complexity for marginal gain.
-   - Nested AD (T = dual<U, M>) propagates per-tangent operations recursively;
-     ETs for that path require recursive node specialisation. Out of scope.
+ Coverage:
+   - dual<T, 0> (heap, arena-backed) — eliminates the per-binary-op arena
+     bump + the per-element `*this = *this + o` synthesis-temp leak.
+   - dual<T, N> with N > 0 (stack, inline tan_[N]) — eliminates per-binary-op
+     352-byte temp duals and replaces N separate eager tangent loops with one
+     fused, compile-time-bounded loop the optimiser unrolls / vectorises.
+   - Nested AD (T = dual<U, M>): SKIPPED. The eager_dual_active gate
+     (cppode_dual_math.hpp) keeps eager active when T itself is AD, so the
+     outer layer of dual2nd uses the recursive eager path while the inner
+     layer (T = double) routes through ETs.
 
  Aliasing safety in compound assignment:
    The pattern `*this = *this + o;` (cppode_dual_math.hpp operator+= path) binds
    `*this + o` to an Expr that holds a const-ref to *this. Two layers protect
    against aliasing during materialisation:
      (1) DualLeaf snapshots `.x()` and the `tan_` pointer at construction so a
-         later set_depend_size() on the LHS (which allocates a fresh tan_
-         buffer when transitioning from non-depend to depend) doesn't make the
-         leaf observe the freshly-allocated, uninitialised arena memory. Before
-         this snapshot, calls 2..N drifted vs call 1 because the arena memory
-         re-served on call 2 happened to contain stale data, while on call 1
-         the same address was zero-initialised by malloc.
+         later set_depend_size() on the LHS (N==0 case, which allocates a
+         fresh tan_ buffer when transitioning from non-depend to depend)
+         doesn't make the leaf observe freshly-allocated, uninitialised arena
+         memory. For N>0 there is no allocation, but the snapshot is still
+         valid: the inline tan_[N] address is stable for the assignment.
      (2) BinExpr/UnaryExpr cache `y_` (and `fp_` for unary) at ctor, so
          val_ = root.val() in the materialiser uses the OLD value of *this.
    Tangent writes still happen at index i AFTER the read of leaf.tan(i) for
@@ -72,48 +77,75 @@ struct is_dual_expr<X, std::void_t<typename std::enable_if<
 template<class X>
 constexpr bool is_dual_expr_v = is_dual_expr<X>::value;
 
+// Always-inline marker for ET hot methods. Deep BinExpr trees (e.g. TSIT5's
+// 7-term error-estimate axpy) bottom out as 10+ nested template calls per
+// tan(i); without this hint, gcc -O2's inlining budget can back off and emit
+// real call/return on inner nodes, which destroys the fused-loop win.
+#if defined(__GNUC__) || defined(__clang__)
+  #define CPPODE_ET_INLINE __attribute__((always_inline)) inline
+#else
+  #define CPPODE_ET_INLINE inline
+#endif
+
 // =============================================================================
-// Trait: is X a dual<T, 0> with non-AD T (= ET-eligible operand)?
+// Trait: is X a dual<T, N> with non-AD T (= ET-eligible operand)?
 // =============================================================================
-template<class X> struct is_dual_dyn_nonad : std::false_type {};
-template<class T> struct is_dual_dyn_nonad<dual<T, 0>>
+template<class X> struct is_dual_nonad : std::false_type {};
+template<class T, unsigned N> struct is_dual_nonad<dual<T, N>>
   : std::bool_constant<!ad_traits::is_ad<T>::value> {};
 
 // =============================================================================
 // Trait: does X trigger the ET path? (operand is an Expr or an eligible dual)
 // =============================================================================
 template<class X> struct is_et_operand
-  : std::bool_constant<is_dual_expr_v<X> || is_dual_dyn_nonad<X>::value> {};
+  : std::bool_constant<is_dual_expr_v<X> || is_dual_nonad<X>::value> {};
 
 // =============================================================================
-// Leaf: dual<T, 0> reference. Snapshots .x() and the tan_ pointer at ctor so
+// Leaf: dual<T, N> reference. Snapshots .x() and the tan_ pointer at ctor so
 // compound assignments like  *this = *this + o  see the OLD val/tan even after
-// materialisation has set this->val_ and (re)allocated this->tan_ via
-// set_depend_size. Without this cache, leaf.tan(i) would query *p_->size() at
-// materialisation time, observe the freshly-allocated buffer (size_ == N) and
-// read uninitialised memory — manifesting as a "first call OK, calls 2..N
-// drift" bug because the arena memory happened to be zeros only on the very
-// first call.
+// materialisation has set this->val_. For N == 0 the snapshot also pins the
+// pre-allocation tan_ pointer (so leaf.tan(i) reads the OLD arena buffer
+// even after set_depend_size has swapped *this->tan_ to a fresh allocation —
+// without this, the bug was "first call OK, calls 2..N drift" because arena
+// memory served on call ≥ 2 contained stale data while call 1 saw zeros from
+// the very first malloc). For N > 0 there is no reallocation, but pinning
+// the pointer at ctor lets the same code path serve both regimes.
 // =============================================================================
+template<class T, unsigned N = 0>
+struct DualLeaf : Expr<DualLeaf<T, N>> {
+  using value_type = T;
+  T        val_;
+  const T* tan_;     // nullptr if the source dual was non-depend at ctor
+
+  CPPODE_ET_INLINE explicit DualLeaf(const dual<T, N>& d)
+    : val_(d.x()),
+      tan_(d.depend() ? &d[0] : nullptr)
+  {}
+
+  CPPODE_ET_INLINE T val() const { return val_; }
+  static constexpr unsigned tan_size() { return N; }
+  CPPODE_ET_INLINE bool depends() const { return tan_ != nullptr; }
+  CPPODE_ET_INLINE T tan(unsigned i) const { return tan_ ? tan_[i] : T(); }
+};
+
+// Partial specialisation for N == 0: tan_size is runtime, captured at ctor.
 template<class T>
-struct DualLeaf : Expr<DualLeaf<T>> {
+struct DualLeaf<T, 0> : Expr<DualLeaf<T, 0>> {
   using value_type = T;
   T        val_;
   const T* tan_;     // nullptr if the source dual was non-depend at ctor
   unsigned sz_;
 
-  explicit DualLeaf(const dual<T, 0>& d)
+  CPPODE_ET_INLINE explicit DualLeaf(const dual<T, 0>& d)
     : val_(d.x()),
       tan_(d.size() > 0 ? &d[0] : nullptr),
       sz_(d.size())
   {}
 
-  T val() const { return val_; }
-  unsigned tan_size() const { return sz_; }
-  bool depends() const { return sz_ > 0; }
-  T tan(unsigned i) const {
-    return tan_ ? tan_[i] : T();
-  }
+  CPPODE_ET_INLINE T val() const { return val_; }
+  CPPODE_ET_INLINE unsigned tan_size() const { return sz_; }
+  CPPODE_ET_INLINE bool depends() const { return sz_ > 0; }
+  CPPODE_ET_INLINE T tan(unsigned i) const { return tan_ ? tan_[i] : T(); }
 };
 
 // =============================================================================
@@ -124,12 +156,12 @@ struct ScalarLeaf : Expr<ScalarLeaf<T>> {
   using value_type = T;
   T s_;
 
-  explicit ScalarLeaf(T s) : s_(s) {}
+  CPPODE_ET_INLINE explicit ScalarLeaf(T s) : s_(s) {}
 
-  T val() const { return s_; }
-  unsigned tan_size() const { return 0u; }
-  bool depends() const { return false; }
-  T tan(unsigned) const { return T(0); }
+  CPPODE_ET_INLINE T val() const { return s_; }
+  static constexpr unsigned tan_size() { return 0u; }
+  static constexpr bool depends() { return false; }
+  CPPODE_ET_INLINE T tan(unsigned) const { return T(0); }
 };
 
 // =============================================================================
@@ -182,17 +214,17 @@ struct BinExpr : Expr<BinExpr<L, R, Op>> {
   unsigned   sz_;
   bool       dep_;
 
-  BinExpr(L l, R r)
+  CPPODE_ET_INLINE BinExpr(L l, R r)
     : l_(std::move(l)), r_(std::move(r)),
       y_(Op::value(l_.val(), r_.val())),
       sz_(std::max(l_.tan_size(), r_.tan_size())),
       dep_(l_.depends() || r_.depends())
   {}
 
-  value_type val()      const { return y_; }
-  unsigned   tan_size() const { return sz_; }
-  bool       depends()  const { return dep_; }
-  value_type tan(unsigned i) const {
+  CPPODE_ET_INLINE value_type val()      const { return y_; }
+  CPPODE_ET_INLINE unsigned   tan_size() const { return sz_; }
+  CPPODE_ET_INLINE bool       depends()  const { return dep_; }
+  CPPODE_ET_INLINE value_type tan(unsigned i) const {
     return Op::tangent(l_.val(), r_.val(), l_.tan(i), r_.tan(i), y_);
   }
 };
@@ -210,14 +242,14 @@ struct UnaryExpr : Expr<UnaryExpr<X, Op>> {
   value_type y_;
   value_type fp_;
 
-  explicit UnaryExpr(X x) : x_(std::move(x)) {
+  CPPODE_ET_INLINE explicit UnaryExpr(X x) : x_(std::move(x)) {
     Op::compute(x_.val(), y_, fp_);
   }
 
-  value_type val()      const { return y_; }
-  unsigned   tan_size() const { return x_.tan_size(); }
-  bool       depends()  const { return x_.depends(); }
-  value_type tan(unsigned i) const { return fp_ * x_.tan(i); }
+  CPPODE_ET_INLINE value_type val()      const { return y_; }
+  CPPODE_ET_INLINE unsigned   tan_size() const { return x_.tan_size(); }
+  CPPODE_ET_INLINE bool       depends()  const { return x_.depends(); }
+  CPPODE_ET_INLINE value_type tan(unsigned i) const { return fp_ * x_.tan(i); }
 };
 
 // =============================================================================
@@ -364,10 +396,11 @@ struct PowExprSD : Expr<PowExprSD<R>> {
 template<class D>
 inline auto to_expr(const Expr<D>& e) -> D { return e.self(); }
 
-// dual<T, 0> with non-AD T -> DualLeaf<T>.
-template<class T,
+// dual<T, N> with non-AD T -> DualLeaf<T, N>.  Covers both heap (N == 0) and
+// the static-N stack path through the unified leaf template above.
+template<class T, unsigned N,
          std::enable_if_t<!ad_traits::is_ad<T>::value, int> = 0>
-inline DualLeaf<T> to_expr(const dual<T, 0>& d) { return DualLeaf<T>(d); }
+inline DualLeaf<T, N> to_expr(const dual<T, N>& d) { return DualLeaf<T, N>(d); }
 
 // Arithmetic scalar -> ScalarLeaf<S>.
 template<class S,
@@ -386,8 +419,8 @@ struct expr_value_type<X, std::enable_if_t<is_dual_expr_v<X>>> {
   using type = typename X::value_type;
 };
 
-template<class T>
-struct expr_value_type<dual<T, 0>> { using type = T; };
+template<class T, unsigned N>
+struct expr_value_type<dual<T, N>> { using type = T; };
 
 template<class S>
 struct expr_value_type<S, std::enable_if_t<std::is_arithmetic<S>::value>> {
@@ -401,7 +434,8 @@ template<class X> using expr_value_type_t = typename expr_value_type<X>::type;
 // =============================================================================
 template<class X> struct to_expr_t_helper;
 template<class D> struct to_expr_t_helper<Expr<D>> { using type = D; };
-template<class T> struct to_expr_t_helper<dual<T, 0>> { using type = DualLeaf<T>; };
+template<class T, unsigned N>
+struct to_expr_t_helper<dual<T, N>> { using type = DualLeaf<T, N>; };
 // scalar: caller picks ScalarLeaf<T> directly with the dual operand's T.
 
 // Convenience: wrap a non-Expr operand in a leaf with a TARGET T (so the
@@ -411,9 +445,9 @@ template<class TT, class X,
          std::enable_if_t<is_dual_expr_v<X>, int> = 0>
 inline X make_leaf(const X& x, TT* /*target_tag*/ = nullptr) { return x; }
 
-template<class TT, class T>
-inline DualLeaf<T> make_leaf(const dual<T, 0>& d, TT* /*tag*/ = nullptr) {
-  return DualLeaf<T>(d);
+template<class TT, class T, unsigned N>
+inline DualLeaf<T, N> make_leaf(const dual<T, N>& d, TT* /*tag*/ = nullptr) {
+  return DualLeaf<T, N>(d);
 }
 
 template<class TT, class S,
@@ -699,6 +733,107 @@ inline dual<T, 0>& dual<T, 0>::operator/=(const expr::Expr<D>& e) {
   } else if (d.depends()) {
     set_depend_size(d.tan_size());
     for (unsigned i = 0; i < size_; ++i) tan_[i] = -new_val * d.tan(i) * inv;
+  }
+  val_ = new_val;
+  return *this;
+}
+
+// =============================================================================
+// Out-of-line definitions for the static-N dual<T, N> (N > 0) ET assignment /
+// ctor / compound-assignment templates (declared in cppode_dual.hpp).
+//
+// Loop bound is the compile-time constant N — the optimiser unrolls and SIMD-
+// vectorises this for the typical n_sens = 32..64 stack widths. No allocation,
+// no temp dual: the entire RHS Expr<D> tree materialises directly into the
+// inline tan_[N] slots.
+// =============================================================================
+
+template<class T, unsigned N>
+template<class D>
+inline dual<T, N>& dual<T, N>::operator=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  val_ = d.val();
+  if (d.depends()) {
+    depend_ = true;
+    for (unsigned i = 0; i < N; ++i) tan_[i] = d.tan(i);
+  } else {
+    depend_ = false;
+  }
+  return *this;
+}
+
+template<class T, unsigned N>
+template<class D>
+inline dual<T, N>::dual(const expr::Expr<D>& e) : val_(), depend_(false) {
+  *this = e;
+}
+
+template<class T, unsigned N>
+template<class D>
+inline dual<T, N>& dual<T, N>::operator+=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  val_ += d.val();
+  if (d.depends()) {
+    if (depend_) {
+      for (unsigned i = 0; i < N; ++i) tan_[i] += d.tan(i);
+    } else {
+      depend_ = true;
+      for (unsigned i = 0; i < N; ++i) tan_[i] = d.tan(i);
+    }
+  }
+  return *this;
+}
+
+template<class T, unsigned N>
+template<class D>
+inline dual<T, N>& dual<T, N>::operator-=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  val_ -= d.val();
+  if (d.depends()) {
+    if (depend_) {
+      for (unsigned i = 0; i < N; ++i) tan_[i] -= d.tan(i);
+    } else {
+      depend_ = true;
+      for (unsigned i = 0; i < N; ++i) tan_[i] = -d.tan(i);
+    }
+  }
+  return *this;
+}
+
+template<class T, unsigned N>
+template<class D>
+inline dual<T, N>& dual<T, N>::operator*=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  const T new_val = val_ * d.val();
+  if (depend_ && d.depends()) {
+    // (a*b)' = a'*b + a*b'  — uses CURRENT val_ in tan_, then update val_.
+    for (unsigned i = 0; i < N; ++i)
+      tan_[i] = tan_[i] * d.val() + val_ * d.tan(i);
+  } else if (depend_) {
+    for (unsigned i = 0; i < N; ++i) tan_[i] *= d.val();
+  } else if (d.depends()) {
+    depend_ = true;
+    for (unsigned i = 0; i < N; ++i) tan_[i] = val_ * d.tan(i);
+  }
+  val_ = new_val;
+  return *this;
+}
+
+template<class T, unsigned N>
+template<class D>
+inline dual<T, N>& dual<T, N>::operator/=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  const T inv = T(1) / d.val();
+  const T new_val = val_ * inv;
+  if (depend_ && d.depends()) {
+    // (a/b)' = (a' - (a/b)*b') / b
+    for (unsigned i = 0; i < N; ++i)
+      tan_[i] = (tan_[i] - new_val * d.tan(i)) * inv;
+  } else if (depend_) {
+    for (unsigned i = 0; i < N; ++i) tan_[i] *= inv;
+  } else if (d.depends()) {
+    depend_ = true;
+    for (unsigned i = 0; i < N; ++i) tan_[i] = -new_val * d.tan(i) * inv;
   }
   val_ = new_val;
   return *this;

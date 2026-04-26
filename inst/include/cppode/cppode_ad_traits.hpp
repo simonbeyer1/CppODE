@@ -83,7 +83,7 @@ inline double scalar_value(const cppode::dual<T, N>& v) {
 //  FADBAD-compatible accessor surface). All previously FADBAD-only.
 // ============================================================================
 
-/// Extract value (.x()) from each element: vector<AD> -> vector<inner>
+// Extract value (.x()) from each element: vector<AD> -> vector<inner>
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline std::vector<inner_type_t<AD>>
@@ -97,7 +97,7 @@ extract_values(const std::vector<AD>& v)
   return out;
 }
 
-/// Extract value (.x()) from each element: dense_matrix<AD> -> dense_matrix<inner>
+// Extract value (.x()) from each element: dense_matrix<AD> -> dense_matrix<inner>
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline dense_matrix<inner_type_t<AD>>
@@ -111,7 +111,7 @@ extract_values(const dense_matrix<AD>& M)
   return out;
 }
 
-/// Extract derivative .d(j) from each element of a vector
+// Extract derivative .d(j) from each element of a vector
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline std::vector<inner_type_t<AD>>
@@ -125,7 +125,7 @@ extract_derivs(const std::vector<AD>& v, unsigned j)
   return out;
 }
 
-/// Extract derivative .d(j) from each element of a dense_matrix
+// Extract derivative .d(j) from each element of a dense_matrix
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline dense_matrix<inner_type_t<AD>>
@@ -139,7 +139,7 @@ extract_derivs(const dense_matrix<AD>& M, unsigned j)
   return out;
 }
 
-/// Max number of active derivative directions in a vector
+// Max number of active derivative directions in a vector
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline unsigned max_deriv_size(const std::vector<AD>& v)
@@ -152,7 +152,7 @@ inline unsigned max_deriv_size(const std::vector<AD>& v)
   return mx;
 }
 
-/// Max number of active derivative directions in a dense_matrix
+// Max number of active derivative directions in a dense_matrix
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline unsigned max_deriv_size(const dense_matrix<AD>& M)

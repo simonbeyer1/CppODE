@@ -960,8 +960,48 @@ def _generate_noop_jacobian(n_states, num_type):
 # ODE and Jacobian code generation
 # =====================================================================
 
+# =====================================================================
+# Common subexpression elimination
+#
+# sp.cse identifies subexpressions that appear multiple times across a
+# group of expressions and lifts them to named temporaries. For typical
+# Michaelis–Menten / Hill-type ODE systems the same denominator (e.g.
+# Km + KKK) appears in numerator and denominator of multiple equations;
+# without CSE every occurrence drives a fresh dual ET tree. With CSE
+# the temp materialises once into a num_type local — the ET engine then
+# substitutes the temp by reference in subsequent expressions.
+#
+# Skipped when there's nothing to gain (few exprs, or no common subs):
+#   - len(exprs) < 4: too small to amortise the temp overhead
+#   - len(temps) == 0: sympy found no shared structure
+# =====================================================================
+
+def _cse_temps(exprs, prefix='_cse_t'):
+    """Apply sympy CSE; return (temps, simplified_exprs) or ([], exprs)."""
+    if len(exprs) < 4:
+        return [], list(exprs)
+    syms = sp.numbered_symbols(prefix=prefix, cls=sp.Symbol)
+    temps, simplified = sp.cse(list(exprs), symbols=syms, optimizations='basic')
+    if len(temps) == 0:
+        return [], simplified
+    return temps, simplified
+
+
+def _emit_cse_temps(temps, states_list, params_list, n_states, num_type, forcings_list):
+    """Emit `const num_type _cse_tN = expr;` lines from sp.cse temps.
+
+    Materialising into num_type (rather than `auto`) forces ET evaluation at
+    the temp boundary so subsequent references are scalar dual loads instead
+    of re-walks of the ET tree."""
+    lines = []
+    for sym, sub in temps:
+        sub_cpp = _to_cpp(sub, states_list, params_list, n_states, num_type, forcings_list)
+        lines.append(f"    const {num_type} {sym.name} = {sub_cpp};")
+    return lines
+
+
 def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type, forcings_list):
-    """Generate ODE system C++ code."""
+    """Generate ODE system C++ code (with CSE)."""
     ode_cpp_lines = [
         "// ODE system",
         "struct ode_system {",
@@ -976,7 +1016,11 @@ def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type
         f"                  std::vector<{num_type}>& dxdt,",
         f"                  const {num_type}& t) {{",
     ]
-    for i, expr in enumerate(exprs):
+    cse_temps, simplified = _cse_temps(exprs)
+    ode_cpp_lines += _emit_cse_temps(
+        cse_temps, states_list, params_list, n_states, num_type, forcings_list
+    )
+    for i, expr in enumerate(simplified):
         cpp = _to_cpp(expr, states_list, params_list, n_states, num_type, forcings_list)
         ode_cpp_lines.append(f"    dxdt[{i}] = {cpp};")
     ode_cpp_lines += ["  }", "};"]
@@ -1025,8 +1069,17 @@ def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forci
         jac_cpp_lines.append(f"    static const int _dc[{n_dirty}] = {{{','.join(dirty_cols)}}};")
         jac_cpp_lines.append(f"    for (int _k = 0; _k < {n_dirty}; ++_k) J(_dr[_k], _dc[_k]) = {num_type}(0);")
 
+    # CSE across all non-zero Jacobian entries: in MM/Hill kinetics, the same
+    # denominator (Km + x_j) often shows up in many df/dx_k entries — CSE lifts
+    # those into _cse_t* temps materialised once per call.
+    jac_exprs = [e for _, _, e in jac_entries_plain]
+    jac_temps, jac_simplified = _cse_temps(jac_exprs, prefix='_cse_jt')
+    jac_cpp_lines += _emit_cse_temps(
+        jac_temps, states_list, params_list, n_states, num_type, []
+    )
+
     # fill NEGATED entries
-    for i, j, e in jac_entries_plain:
+    for (i, j, _), e in zip(jac_entries_plain, jac_simplified):
         cpp = _to_cpp(e, states_list, params_list, n_states, num_type, [])
         neg_cpp = _negate_cpp_expr(cpp)
         jac_cpp_lines.append(f"    J({i},{j}) = {neg_cpp};")

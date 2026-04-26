@@ -70,7 +70,7 @@ struct newton_result {
 
 namespace newton_detail {
 
-/// WRMS norm on plain double vectors.  Used in the scalar Newton phase.
+// WRMS norm on plain double vectors.  Used in the scalar Newton phase.
 inline double wrms_norm_scalar(const std::vector<double>& b,
                                const std::vector<double>& y,
                                size_t n, double atol, double rtol)
@@ -85,8 +85,8 @@ inline double wrms_norm_scalar(const std::vector<double>& b,
   return (n > 0) ? std::sqrt(sumsq / n) : 0.0;
 }
 
-/// WRMS norm of correction b, weighted against iterate y — SCALAR ONLY.
-/// Used for Newton convergence test (del, crate, dcon).
+// WRMS norm of correction b, weighted against iterate y — SCALAR ONLY.
+// Used for Newton convergence test (del, crate, dcon).
 template<class T>
 double wrms_norm_correction(const std::vector<T>& b,
                             const std::vector<T>& y,
@@ -103,14 +103,14 @@ double wrms_norm_correction(const std::vector<T>& b,
   return (n > 0) ? std::sqrt(sumsq / n) : 0.0;
 }
 
-/// WRMS norm of vector v, weighted against reference y0 — AD-AWARE.
-/// Returns max(state_wrms, max_j sens_wrms[j]) over the state and
-/// each sensitivity-parameter slice.  This matches CVODES's
-/// `cvSensUpdateNorm` (CV_STAGGERED) convention: every sensitivity
-/// vector is held individually below tolerance, rather than letting
-/// large per-parameter errors hide inside an averaged WRMS.
-/// For non-AD types the sens loop compiles to nothing → returns the
-/// pure state WRMS.
+// WRMS norm of vector v, weighted against reference y0 — AD-AWARE.
+// Returns max(state_wrms, max_j sens_wrms[j]) over the state and
+// each sensitivity-parameter slice.  This matches CVODES's
+// `cvSensUpdateNorm` (CV_STAGGERED) convention: every sensitivity
+// vector is held individually below tolerance, rather than letting
+// large per-parameter errors hide inside an averaged WRMS.
+// For non-AD types the sens loop compiles to nothing → returns the
+// pure state WRMS.
 template<class T>
 double wrms_norm(const std::vector<T>& v,
                  const std::vector<T>& y0,

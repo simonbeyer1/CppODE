@@ -135,51 +135,51 @@ public:
 
   // --- Diagnostics ---
 
-  /// Return code using the CVODE flag scheme (see cppode_return_codes.hpp):
-  ///    0 = RC_SUCCESS
-  ///   -1 = RC_TOO_MUCH_WORK        (max steps)
-  ///   -4 = RC_CONV_FAILURE         (no-progress / repeated conv failures)
-  ///   -6 = RC_LSETUP_FAIL          (linear-solver setup failed)
-  ///   -8 = RC_RHSFUNC_FAIL         (RHS function returned unrecoverable error)
-  ///  -99 = RC_UNRECOGNIZED_ERR     (unclassified C++ exception)
+  // Return code using the CVODE flag scheme (see cppode_return_codes.hpp):
+  //    0 = RC_SUCCESS
+  //   -1 = RC_TOO_MUCH_WORK        (max steps)
+  //   -4 = RC_CONV_FAILURE         (no-progress / repeated conv failures)
+  //   -6 = RC_LSETUP_FAIL          (linear-solver setup failed)
+  //   -8 = RC_RHSFUNC_FAIL         (RHS function returned unrecoverable error)
+  //  -99 = RC_UNRECOGNIZED_ERR     (unclassified C++ exception)
   int return_code() const { return m_return_code; }
   void set_return_code(int rc) { m_return_code = rc; }
 
-  /// Number of accepted steps
+  // Number of accepted steps
   int n_accepted() const { return m_n_accepted; }
   void add_accepted() { ++m_n_accepted; }
   void add_accepted(int n) { m_n_accepted += n; }
 
-  /// Number of rejected steps
+  // Number of rejected steps
   int n_rejected() const { return m_n_rejected; }
   void add_rejected() { ++m_n_rejected; }
   void add_rejected(int n) { m_n_rejected += n; }
 
-  /// Number of RHS function evaluations
+  // Number of RHS function evaluations
   int n_fevals() const { return m_n_fevals; }
   void add_fevals(int n = 1) { m_n_fevals += n; }
 
-  /// Number of Jacobian evaluations (and LU decompositions)
+  // Number of Jacobian evaluations (and LU decompositions)
   int n_jevals() const { return m_n_jevals; }
   void add_jevals(int n = 1) { m_n_jevals += n; }
 
-  /// Number of linear solver setups (LU factorizations / refactorizations)
+  // Number of linear solver setups (LU factorizations / refactorizations)
   int n_setups() const { return m_n_setups; }
   void add_setups(int n = 1) { m_n_setups += n; }
 
-  /// Last successful step size
+  // Last successful step size
   double last_dt() const { return m_last_dt; }
   void set_last_dt(double dt) { m_last_dt = dt; }
 
-  /// Last method order used (successfully)
+  // Last method order used (successfully)
   int last_order() const { return m_last_order; }
   void set_last_order(int o) { m_last_order = o; }
 
-  /// Method order to be attempted on the next step
+  // Method order to be attempted on the next step
   int next_order() const { return m_next_order; }
   void set_next_order(int o) { m_next_order = o; }
 
-  /// Time reached by the solver
+  // Time reached by the solver
   double t_reached() const { return m_t_reached; }
   void set_t_reached(double t) { m_t_reached = t; }
 
