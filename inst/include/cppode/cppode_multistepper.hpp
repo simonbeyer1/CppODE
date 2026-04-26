@@ -82,6 +82,7 @@
 #include <cppode/cppode_step_trace.hpp>
 #include <cppode/cppode_ad_lu.hpp>          // ad_lu::is_ad — used by adams_pece_solve
 #include <cppode/cppode_ad_traits.hpp>
+#include <cppode/cppode_dual_slab.hpp>
 
 // Note: cppode_multistepper_stiffness_detector.hpp is included further
 // down, AFTER the adams_constants namespace is defined, because the
@@ -678,6 +679,62 @@ public:
     m_tq.fill(0.0);
     m_tau.fill(time_type(0));
   }
+
+  // The slab members embed pointers to their own storage_.data() into the
+  // dual elements of the slab-bound vectors (m_zn[j].m_v, m_acor.m_v, …).
+  // Copying would build a separate buffer with the same address-bound
+  // duals — UB. Moves are safe: std::vector::move preserves data() for
+  // both the slab storage and the dual-element vectors, so embedded tan_
+  // pointers keep pointing at valid memory in the moved-to instance.
+  multistepper(const multistepper&)            = delete;
+  multistepper& operator=(const multistepper&) = delete;
+  multistepper(multistepper&&)                 = default;
+  multistepper& operator=(multistepper&&)      = default;
+
+  // ====================================================================
+  //  Sensitivity slab priming
+  //
+  //  Stores n_sens and primes every internal state-vector slab. Idempotent
+  //  and cheap; called from the codegen glue before integrate_times() and
+  //  re-called from resize_impl() / prepare_dense_output() whenever any
+  //  internal vector may have been reallocated.
+  //
+  //  No-op for non-dynamic-dual value_type (the slab classes are stubs).
+  // ====================================================================
+
+  void prepare_sensitivities(unsigned n_sens)
+  {
+    m_n_sens = n_sens;
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      if (n_sens == 0) return;
+      for (int j = 0; j <= max_order + 1; ++j) {
+        if (!m_zn[j].m_v.empty())
+          m_zn_slab[j].prime(m_zn[j].m_v,
+                             static_cast<unsigned>(m_zn[j].m_v.size()),
+                             n_sens);
+      }
+      for (int j = 0; j <= max_order; ++j) {
+        if (!m_zn_dense[j].m_v.empty())
+          m_zn_dense_slab[j].prime(m_zn_dense[j].m_v,
+                                   static_cast<unsigned>(m_zn_dense[j].m_v.size()),
+                                   n_sens);
+      }
+      if (!m_acor.m_v.empty())
+        m_acor_slab.prime(m_acor.m_v,
+                          static_cast<unsigned>(m_acor.m_v.size()), n_sens);
+      if (!m_y.m_v.empty())
+        m_y_slab.prime(m_y.m_v,
+                       static_cast<unsigned>(m_y.m_v.size()), n_sens);
+      if (!m_tempv.m_v.empty())
+        m_tempv_slab.prime(m_tempv.m_v,
+                           static_cast<unsigned>(m_tempv.m_v.size()), n_sens);
+      if (!m_ftemp.m_v.empty())
+        m_ftemp_slab.prime(m_ftemp.m_v,
+                           static_cast<unsigned>(m_ftemp.m_v.size()), n_sens);
+    }
+  }
+
+  unsigned n_sens() const noexcept { return m_n_sens; }
 
   // ====================================================================
   //  NDF kappa control (runtime)
@@ -1708,9 +1765,19 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   {
     auto _tp = m_prof.timer(prof_cat::dense_snapshot);
     const size_t n = m_zn[0].m_v.size();
+    // m_zn_dense is sized lazily per-order. If any slot was just resized,
+    // its new dual elements have size_=0 and the subsequent vector copy at
+    // m_v = m_zn[j].m_v would arena-allocate per element. Re-prime first.
+    bool dense_resized = false;
     for (int j = 0; j <= m_q; ++j) {
-      if (m_zn_dense[j].m_v.size() != n)
+      if (m_zn_dense[j].m_v.size() != n) {
         m_zn_dense[j].m_v.resize(n);
+        dense_resized = true;
+      }
+    }
+    if (dense_resized && m_n_sens != 0)
+      prepare_sensitivities(m_n_sens);
+    for (int j = 0; j <= m_q; ++j) {
       m_zn_dense[j].m_v = m_zn[j].m_v;
     }
     m_q_dense = m_q;
@@ -2211,6 +2278,11 @@ private:
     if (m_ewt.size() != x.size()) m_ewt.resize(x.size());
     resized |= m_lu.resize(x);
     if (resized) m_lu.invalidate();
+    // After any resize, re-prime the sensitivity slabs so each slab-bound
+    // dual.tan_ points into the (possibly reallocated) vector's element row.
+    // No-op when value_type isn't a dynamic dual or n_sens hasn't been set.
+    if (resized && m_n_sens != 0)
+      prepare_sensitivities(m_n_sens);
   }
 
   // ====================================================================
@@ -2229,6 +2301,15 @@ private:
   wrapped_state_type m_acor, m_y, m_tempv;
   wrapped_deriv_type m_ftemp;
   std::vector<double> m_ewt;  // CVODE-style error weights from pre-prediction zn[0]
+
+  // SoA tangent slabs for the dynamic-dual heap path (empty stubs otherwise).
+  // Each slab owns a contiguous [n_states × n_sens] block; the corresponding
+  // wrapped_*_type's dual elements have their tan_ pointers bound into one
+  // row each. Sized once per solve via prepare_sensitivities(); never grown.
+  std::array<detail::tangent_slab<value_type>, max_order + 2> m_zn_slab;
+  std::array<detail::tangent_slab<value_type>, max_order + 1> m_zn_dense_slab;
+  detail::tangent_slab<value_type> m_acor_slab, m_y_slab, m_tempv_slab, m_ftemp_slab;
+  unsigned m_n_sens = 0;
 
   std::array<time_type, L_MAX + 1> m_l;
   std::array<double, 6> m_tq;

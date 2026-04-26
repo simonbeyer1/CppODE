@@ -18,9 +18,20 @@
 
  Aliasing safety in compound assignment:
    The pattern `*this = *this + o;` (cppode_dual_math.hpp operator+= path) binds
-   `*this + o` to an Expr that holds a const-ref to *this. Materialisation
-   reads tan(i) and writes tan_[i] for the same index i. Since forward-mode-AD
-   tangents are index-independent (no cross-index reads), this is safe.
+   `*this + o` to an Expr that holds a const-ref to *this. Two layers protect
+   against aliasing during materialisation:
+     (1) DualLeaf snapshots `.x()` and the `tan_` pointer at construction so a
+         later set_depend_size() on the LHS (which allocates a fresh tan_
+         buffer when transitioning from non-depend to depend) doesn't make the
+         leaf observe the freshly-allocated, uninitialised arena memory. Before
+         this snapshot, calls 2..N drifted vs call 1 because the arena memory
+         re-served on call 2 happened to contain stale data, while on call 1
+         the same address was zero-initialised by malloc.
+     (2) BinExpr/UnaryExpr cache `y_` (and `fp_` for unary) at ctor, so
+         val_ = root.val() in the materialiser uses the OLD value of *this.
+   Tangent writes still happen at index i AFTER the read of leaf.tan(i) for
+   the same i, so per-i in-place writes remain safe (forward-mode tangents
+   are index-independent).
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -75,20 +86,33 @@ template<class X> struct is_et_operand
   : std::bool_constant<is_dual_expr_v<X> || is_dual_dyn_nonad<X>::value> {};
 
 // =============================================================================
-// Leaf: dual<T, 0> reference
+// Leaf: dual<T, 0> reference. Snapshots .x() and the tan_ pointer at ctor so
+// compound assignments like  *this = *this + o  see the OLD val/tan even after
+// materialisation has set this->val_ and (re)allocated this->tan_ via
+// set_depend_size. Without this cache, leaf.tan(i) would query *p_->size() at
+// materialisation time, observe the freshly-allocated buffer (size_ == N) and
+// read uninitialised memory — manifesting as a "first call OK, calls 2..N
+// drift" bug because the arena memory happened to be zeros only on the very
+// first call.
 // =============================================================================
 template<class T>
 struct DualLeaf : Expr<DualLeaf<T>> {
   using value_type = T;
-  const dual<T, 0>* p_;
+  T        val_;
+  const T* tan_;     // nullptr if the source dual was non-depend at ctor
+  unsigned sz_;
 
-  explicit DualLeaf(const dual<T, 0>& d) : p_(&d) {}
+  explicit DualLeaf(const dual<T, 0>& d)
+    : val_(d.x()),
+      tan_(d.size() > 0 ? &d[0] : nullptr),
+      sz_(d.size())
+  {}
 
-  T val() const { return p_->x(); }
-  unsigned tan_size() const { return p_->size(); }
-  bool depends() const { return p_->depend(); }
+  T val() const { return val_; }
+  unsigned tan_size() const { return sz_; }
+  bool depends() const { return sz_ > 0; }
   T tan(unsigned i) const {
-    return (p_->size() > 0) ? (*p_)[i] : T();
+    return tan_ ? tan_[i] : T();
   }
 };
 

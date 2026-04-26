@@ -47,6 +47,7 @@
 #include <utility>
 #include <cppode/cppode_multistepper.hpp>
 #include <cppode/cppode_utils.hpp>
+#include <cppode/cppode_dual_slab.hpp>
 
 namespace cppode {
 
@@ -134,6 +135,38 @@ public:
     , m_n_accepted(0)
     , m_n_rejected(0)
   {}
+
+  // Slab-bound dual.tan_ pointers reference our own buffer storage. Copying
+  // would build a separate buffer with the same address-bound duals — UB.
+  // Moves are safe: std::vector::move preserves data() for both the slab
+  // storage and the dual-element vectors, so embedded tan_ pointers keep
+  // pointing at valid memory in the moved-to instance.
+  multistepper_controller(const multistepper_controller&)            = delete;
+  multistepper_controller& operator=(const multistepper_controller&) = delete;
+  multistepper_controller(multistepper_controller&&)                 = default;
+  multistepper_controller& operator=(multistepper_controller&&)      = default;
+
+  // Stores n_sens, primes the inner stepper's slabs, and primes our own
+  // m_xerr/m_xnew/m_ftemp slabs (they may still be size 0 here — the
+  // resize_* helpers call prime again once the buffers grow). No-op for
+  // non-dynamic-dual value_type.
+  void prepare_sensitivities(unsigned n_sens)
+  {
+    m_n_sens = n_sens;
+    m_stepper.prepare_sensitivities(n_sens);
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      if (n_sens == 0) return;
+      if (!m_xerr.m_v.empty())
+        m_xerr_slab.prime(m_xerr.m_v,
+                          static_cast<unsigned>(m_xerr.m_v.size()), n_sens);
+      if (!m_xnew.m_v.empty())
+        m_xnew_slab.prime(m_xnew.m_v,
+                          static_cast<unsigned>(m_xnew.m_v.size()), n_sens);
+      if (!m_ftemp.m_v.empty())
+        m_ftemp_slab.prime(m_ftemp.m_v,
+                           static_cast<unsigned>(m_ftemp.m_v.size()), n_sens);
+    }
+  }
 
   // ====================================================================
   //  PID step-size control modes
@@ -882,22 +915,31 @@ private:
   template<class StateIn>
   bool resize_xerr(const StateIn& x)
   {
-    return adjust_size_by_resizeability(
-      m_xerr, x);
+    bool resized = adjust_size_by_resizeability(m_xerr, x);
+    if (resized && m_n_sens != 0)
+      m_xerr_slab.prime(m_xerr.m_v,
+                        static_cast<unsigned>(m_xerr.m_v.size()), m_n_sens);
+    return resized;
   }
 
   template<class StateIn>
   bool resize_xnew(const StateIn& x)
   {
-    return adjust_size_by_resizeability(
-      m_xnew, x);
+    bool resized = adjust_size_by_resizeability(m_xnew, x);
+    if (resized && m_n_sens != 0)
+      m_xnew_slab.prime(m_xnew.m_v,
+                        static_cast<unsigned>(m_xnew.m_v.size()), m_n_sens);
+    return resized;
   }
 
   template<class StateIn>
   bool resize_ftemp(const StateIn& x)
   {
-    return adjust_size_by_resizeability(
-      m_ftemp, x);
+    bool resized = adjust_size_by_resizeability(m_ftemp, x);
+    if (resized && m_n_sens != 0)
+      m_ftemp_slab.prime(m_ftemp.m_v,
+                         static_cast<unsigned>(m_ftemp.m_v.size()), m_n_sens);
+    return resized;
   }
   // ====================================================================
   //  Members
@@ -910,6 +952,12 @@ private:
   wrapped_state_type m_xerr;
   wrapped_state_type m_xnew;
   wrapped_state_type m_ftemp;   // for initial f evaluation
+
+  // SoA tangent slabs for the dynamic-dual heap path (empty stubs otherwise).
+  detail::tangent_slab<value_type> m_xerr_slab;
+  detail::tangent_slab<value_type> m_xnew_slab;
+  detail::tangent_slab<value_type> m_ftemp_slab;
+  unsigned m_n_sens = 0;
 
   double m_atol, m_rtol;
 

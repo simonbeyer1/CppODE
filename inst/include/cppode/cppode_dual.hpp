@@ -346,6 +346,16 @@ public:
       assert(size_ == n && "dual<T,0>: tangent size mismatch");
     }
   }
+
+  // Non-allocating bind: point tan_ at an externally-owned buffer of length n
+  // (typically a row of cppode::detail::tangent_slab). The dual does not own
+  // the buffer (just like the arena-backed case — it never frees tan_), so
+  // rebinding is safe as long as the external owner keeps the buffer alive
+  // for the dual's remaining lifetime.
+  void rebind_storage(T* p, unsigned n) noexcept {
+    tan_  = p;
+    size_ = n;
+  }
   void set_depend_from(const dual& a) {
     set_depend_size(a.size_);
   }

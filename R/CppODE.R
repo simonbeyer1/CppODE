@@ -1159,6 +1159,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     )
   }
 
+  # Slab-prime the multistepper's heap-dual tangent buffers once per solve.
+  # No-op for non-dynamic-dual instantiations; controller-side method only
+  # exists for the multistep family, so guard on is_multistep too.
+  prep_sens_line <- if (isTRUE(dynamic_ad) && is_multistep(method)) {
+    "    controlledStepper.prepare_sensitivities(static_cast<unsigned>(n_sens));"
+  } else {
+    character()
+  }
+
   externC <- c(externC,
                stepper_line, "",
                estimate_dt_block,
@@ -1167,6 +1176,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                "  // --- Integration (catch recoverable errors for partial results) ---",
                "  std::string solver_message;",
                "  try {",
+               prep_sens_line,
                paste0("    ", integrate_line),
                "  } catch (const cppode::no_progress_error& e) {",
                "    // StepChecker sets RC_TOO_MUCH_WORK / RC_CONV_FAILURE before",
