@@ -24,6 +24,7 @@
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_odeint_compat.hpp>
 #include <cppode/cppode_ad_lu.hpp>       // for ad_lu::scalar_type_t
+#include <cppode/cppode_dual_slab.hpp>
 #include <cppode/cppode_profiler.hpp>
 
 namespace cppode {
@@ -64,6 +65,14 @@ public:
     , m_fsal_valid(false)
   {}
 
+  // Same move-only semantics as the multistep family: copying the slab
+  // members would build a fresh tangent block while the dual elements
+  // still point at the original — UB.
+  tsit5(const tsit5&)            = delete;
+  tsit5& operator=(const tsit5&) = delete;
+  tsit5(tsit5&&)                 = default;
+  tsit5& operator=(tsit5&&)      = default;
+
   order_type order() const { return stepper_order; }
 
   int n_fevals() const { return m_n_fevals; }
@@ -77,6 +86,38 @@ public:
   double last_factorized_dt() const { return 0.0; }
 
   // ====================================================================
+  //  prepare_sensitivities
+  //
+  //  Primes the SoA tangent slabs for the heap-AD path so the per-stage
+  //  ET assignments hit the in-place reuse branch from the very first
+  //  step instead of arena-allocating each m_k*[i].tan_ on first write.
+  //  No-op for non-dynamic-dual value_type.
+  // ====================================================================
+
+  void prepare_sensitivities(unsigned n_sens)
+  {
+    m_n_sens = n_sens;
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      if (n_sens == 0) return;
+      auto prime = [n_sens](auto& wrapped, auto& slab) {
+        if (!wrapped.m_v.empty())
+          slab.prime(wrapped.m_v,
+                     static_cast<unsigned>(wrapped.m_v.size()), n_sens);
+      };
+      prime(m_k1,   m_k1_slab);
+      prime(m_k2,   m_k2_slab);
+      prime(m_k3,   m_k3_slab);
+      prime(m_k4,   m_k4_slab);
+      prime(m_k5,   m_k5_slab);
+      prime(m_k6,   m_k6_slab);
+      prime(m_k7,   m_k7_slab);
+      prime(m_xtmp, m_xtmp_slab);
+    }
+  }
+
+  unsigned n_sens() const noexcept { return m_n_sens; }
+
+  // ====================================================================
   //  do_step (with error output)
   //
   //  Computes one Tsit5 step from (x, t) to (xout, t+dt) and fills
@@ -88,7 +129,7 @@ public:
 
   template<class Sys, class TimeArg>
   void do_step(
-      Sys system,
+      Sys& system,
       const state_type& x, TimeArg t,
       state_type& xout, TimeArg dt, state_type& xerr,
       jacobian_hint /*hint*/ = jacobian_hint::recompute_all)
@@ -289,8 +330,9 @@ private:
 
   void resize_if_needed(size_t n)
   {
-    auto resize_one = [n](wrapped_deriv_type& w) {
-      if (w.m_v.size() != n) w.m_v.resize(n);
+    bool resized = false;
+    auto resize_one = [n, &resized](wrapped_deriv_type& w) {
+      if (w.m_v.size() != n) { w.m_v.resize(n); resized = true; }
     };
     resize_one(m_k1);
     resize_one(m_k2);
@@ -300,10 +342,18 @@ private:
     resize_one(m_k6);
     resize_one(m_k7);
     resize_one(m_xtmp);
+    if (resized && m_n_sens != 0) prepare_sensitivities(m_n_sens);
   }
 
   wrapped_deriv_type m_k1, m_k2, m_k3, m_k4, m_k5, m_k6, m_k7;
   wrapped_deriv_type m_xtmp;   // scratch for stage evaluation
+
+  // SoA tangent slabs for the dynamic-dual heap path.
+  detail::tangent_slab<value_type> m_k1_slab, m_k2_slab, m_k3_slab,
+                                   m_k4_slab, m_k5_slab, m_k6_slab,
+                                   m_k7_slab;
+  detail::tangent_slab<value_type> m_xtmp_slab;
+  unsigned m_n_sens = 0;
 
   int  m_n_fevals;
   bool m_fsal_valid;

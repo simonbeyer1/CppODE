@@ -84,8 +84,6 @@ m_rb4       <- CppODE(rhs, modelname = "cascade_rb4",       method = "rb4",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
 m_tsit5     <- CppODE(rhs, modelname = "cascade_tsit5",     method = "tsit5",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
-m_msoda     <- CppODE(rhs, modelname = "cascade_msoda",     method = "msoda",
-                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
 
 # Static-ntheta variants -- AD width fixed to .NTHETA at compile time (stack)
 m_ndf_s     <- CppODE(rhs, modelname = "cascade_ndf_s",     method = "bdf",   useNDF = TRUE,
@@ -100,9 +98,6 @@ m_rb4_s     <- CppODE(rhs, modelname = "cascade_rb4_s",     method = "rb4",
 m_tsit5_s   <- CppODE(rhs, modelname = "cascade_tsit5_s",   method = "tsit5",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
                       ntheta = .NTHETA)
-m_msoda_s   <- CppODE(rhs, modelname = "cascade_msoda_s",   method = "msoda",
-                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      ntheta = .NTHETA)
 
 # Heap variants -- F<double, 0> with runtime-sized m_diff (= new T[n_sens]).
 m_ndf_h     <- CppODE(rhs, modelname = "cascade_ndf_h",     method = "bdf",   useNDF = TRUE,
@@ -115,9 +110,6 @@ m_rb4_h     <- CppODE(rhs, modelname = "cascade_rb4_h",     method = "rb4",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
                       dynamic_ad = TRUE)
 m_tsit5_h   <- CppODE(rhs, modelname = "cascade_tsit5_h",   method = "tsit5",
-                      outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      dynamic_ad = TRUE)
-m_msoda_h   <- CppODE(rhs, modelname = "cascade_msoda_h",   method = "msoda",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
                       dynamic_ad = TRUE)
 
@@ -146,11 +138,11 @@ m_cvode_klu_r <- CVODE( rhs, modelname = "cascade_cvode_klu_r", method = "bdf",
                         outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE,
                         ntheta = .NTHETA)
 
-CppODE:::compile(m_ndf,   m_bdf,   m_rb4,   m_tsit5,   m_msoda,
-                 m_ndf_s, m_bdf_s, m_rb4_s, m_tsit5_s, m_msoda_s,
-                 m_ndf_h, m_bdf_h, m_rb4_h, m_tsit5_h, m_msoda_h,
+CppODE:::compile(m_ndf,   m_bdf,   m_tsit5, m_rb4,
+                 m_ndf_s, m_bdf_s, m_tsit5_s, m_rb4_s,
+                 m_ndf_h, m_bdf_h, m_tsit5_h, m_rb4_h,
                  m_bdf_d, m_bdf_sd, m_bdf_hd,
-                 m_cvode, m_cvode_klu, m_cvode_r, m_cvode_klu_r, cores = 4)
+                 m_cvode, m_cvode_klu, m_cvode_r, m_cvode_klu_r, cores = 10)
 cat("Done.\n\n")
 
 # --- Build sens1ini for static-ntheta variants ---
@@ -200,15 +192,12 @@ mb <- microbenchmark(
   `CppODE TSIT5 (stack42)` = solveODE(m_tsit5,     times, params, abstol = .abstol, reltol = .reltol),
   `CppODE TSIT5 (stack44)` = solveODE(m_tsit5_s,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
   `CppODE TSIT5 (heap)`    = solveODE(m_tsit5_h,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
-  `CppODE MSODA (stack42)` = solveODE(m_msoda,     times, params, abstol = .abstol, reltol = .reltol),
-  `CppODE MSODA (stack44)` = solveODE(m_msoda_s,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
-  `CppODE MSODA (heap)`    = solveODE(m_msoda_h,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h),
   `CVODE  BDF   (dense)`        = solveODE(m_cvode,       times, params, abstol = .abstol, reltol = .reltol),
   `CVODE  BDF   (KLU)`          = solveODE(m_cvode_klu,   times, params, abstol = .abstol, reltol = .reltol),
   `CVODE  BDF   (dense reparam)` = solveODE(m_cvode_r,    times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
   `CVODE  BDF   (KLU   reparam)` = solveODE(m_cvode_klu_r,times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1),
   `deSolve LSODES`         = odeC(yini, times, m_cOde, parsC, method = "lsodes", atol = .abstol, rtol = .reltol),
-  times = 10L
+  times = 100L
 )
 print(mb, unit = "ms")
 
@@ -253,24 +242,21 @@ print(mb, unit = "ms")
 .hdr("Solution accuracy  (infinity norm vs. reference)")
 
 # Recompute solver results here (diagnostics block above is commented out).
-res_ndf       <- solveODE(m_ndf,       times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_ndf_s     <- solveODE(m_ndf_s,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
-res_ndf_h     <- solveODE(m_ndf_h,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
-res_bdf       <- solveODE(m_bdf,       times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_bdf_s     <- solveODE(m_bdf_s,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
-res_bdf_h     <- solveODE(m_bdf_h,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
-res_rb4       <- solveODE(m_rb4,       times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_rb4_s     <- solveODE(m_rb4_s,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
-res_rb4_h     <- solveODE(m_rb4_h,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
-res_tsit5     <- solveODE(m_tsit5,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_tsit5_s   <- solveODE(m_tsit5_s,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
-res_tsit5_h   <- solveODE(m_tsit5_h,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
-res_msoda     <- solveODE(m_msoda,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_msoda_s   <- solveODE(m_msoda_s,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1)
-res_msoda_h   <- solveODE(m_msoda_h,   times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12, sens1ini = S1_h)
-res_cvode     <- solveODE(m_cvode,     times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_cvode_klu <- solveODE(m_cvode_klu, times, params, abstol = .abstol, reltol = .reltol, hini = 1e-12)
-res_vode      <- odeC(yini, times, m_cOde, parsC, method = "vode", atol = .abstol, rtol = .reltol, hini = 1e-12)
+res_ndf       <- solveODE(m_ndf,       times, params, abstol = .abstol, reltol = .reltol)
+res_ndf_s     <- solveODE(m_ndf_s,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1)
+res_ndf_h     <- solveODE(m_ndf_h,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h)
+res_bdf       <- solveODE(m_bdf,       times, params, abstol = .abstol, reltol = .reltol)
+res_bdf_s     <- solveODE(m_bdf_s,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1)
+res_bdf_h     <- solveODE(m_bdf_h,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h)
+res_rb4       <- solveODE(m_rb4,       times, params, abstol = .abstol, reltol = .reltol)
+res_rb4_s     <- solveODE(m_rb4_s,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1)
+res_rb4_h     <- solveODE(m_rb4_h,     times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h)
+res_tsit5     <- solveODE(m_tsit5,     times, params, abstol = .abstol, reltol = .reltol)
+res_tsit5_s   <- solveODE(m_tsit5_s,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1)
+res_tsit5_h   <- solveODE(m_tsit5_h,   times, params, abstol = .abstol, reltol = .reltol, sens1ini = S1_h)
+res_cvode     <- solveODE(m_cvode,     times, params, abstol = .abstol, reltol = .reltol)
+res_cvode_klu <- solveODE(m_cvode_klu, times, params, abstol = .abstol, reltol = .reltol)
+res_vode      <- odeC(yini, times, m_cOde, parsC, method = "vode", atol = .abstol, rtol = .reltol)
 
 # Convert solveODE result to a wide matrix matching cOde column order. For
 # static-ntheta variants we drop the (.NTHETA - n_phi_rows) zero pad columns
@@ -309,9 +295,6 @@ norms <- list(
   `CppODE TSIT5 (stack42) vs deSolve VODE` = norm(align(toWide(res_tsit5))     - wide_ref, type = "I"),
   `CppODE TSIT5 (stack44) vs deSolve VODE` = norm(align(toWide(res_tsit5_s))   - wide_ref, type = "I"),
   `CppODE TSIT5 (heap)    vs deSolve VODE` = norm(align(toWide(res_tsit5_h))   - wide_ref, type = "I"),
-  `CppODE MSODA (stack42) vs deSolve VODE` = norm(align(toWide(res_msoda))     - wide_ref, type = "I"),
-  `CppODE MSODA (stack44) vs deSolve VODE` = norm(align(toWide(res_msoda_s))   - wide_ref, type = "I"),
-  `CppODE MSODA (heap)    vs deSolve VODE` = norm(align(toWide(res_msoda_h))   - wide_ref, type = "I"),
   `CVODE  BDF   (dense)   vs deSolve VODE` = norm(align(toWide(res_cvode))     - wide_ref, type = "I"),
   `CVODE  BDF   (KLU)     vs deSolve VODE` = norm(align(toWide(res_cvode_klu)) - wide_ref, type = "I")
 )
@@ -330,9 +313,7 @@ parity <- list(
   `CppODE RB4   stack44`  = norm(align(toWide(res_rb4_s))   - align(toWide(res_rb4)),   type = "I"),
   `CppODE RB4   heap`     = norm(align(toWide(res_rb4_h))   - align(toWide(res_rb4)),   type = "I"),
   `CppODE TSIT5 stack44`  = norm(align(toWide(res_tsit5_s)) - align(toWide(res_tsit5)), type = "I"),
-  `CppODE TSIT5 heap`     = norm(align(toWide(res_tsit5_h)) - align(toWide(res_tsit5)), type = "I"),
-  `CppODE MSODA stack44`  = norm(align(toWide(res_msoda_s)) - align(toWide(res_msoda)), type = "I"),
-  `CppODE MSODA heap`     = norm(align(toWide(res_msoda_h)) - align(toWide(res_msoda)), type = "I")
+  `CppODE TSIT5 heap`     = norm(align(toWide(res_tsit5_h)) - align(toWide(res_tsit5)), type = "I")
 )
 for (nm in names(parity))
   cat(sprintf("  %-32s  %.3e\n", nm, parity[[nm]]))

@@ -624,6 +624,86 @@ inline dual<T, 0>::dual(const expr::Expr<D>& e)
   *this = e;
 }
 
+// -- compound assignment from Expr -------------------------------------------
+// Update val_ and tan_ in place; no temporary dual, no arena allocation.
+// If *this has no tangent yet (size_==0) but the rhs depends on tangents,
+// allocate once via set_depend_size; subsequent calls hit the in-place path.
+
+template<class T>
+template<class D>
+inline dual<T, 0>& dual<T, 0>::operator+=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  val_ += d.val();
+  if (d.depends()) {
+    if (size_ == 0) {
+      set_depend_size(d.tan_size());
+      for (unsigned i = 0; i < size_; ++i) tan_[i] = d.tan(i);
+    } else {
+      assert(size_ == d.tan_size() && "dual<T,0>::operator+=(Expr): tan size mismatch");
+      for (unsigned i = 0; i < size_; ++i) tan_[i] += d.tan(i);
+    }
+  }
+  return *this;
+}
+
+template<class T>
+template<class D>
+inline dual<T, 0>& dual<T, 0>::operator-=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  val_ -= d.val();
+  if (d.depends()) {
+    if (size_ == 0) {
+      set_depend_size(d.tan_size());
+      for (unsigned i = 0; i < size_; ++i) tan_[i] = -d.tan(i);
+    } else {
+      assert(size_ == d.tan_size() && "dual<T,0>::operator-=(Expr): tan size mismatch");
+      for (unsigned i = 0; i < size_; ++i) tan_[i] -= d.tan(i);
+    }
+  }
+  return *this;
+}
+
+template<class T>
+template<class D>
+inline dual<T, 0>& dual<T, 0>::operator*=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  const T new_val = val_ * d.val();
+  if (size_ > 0 && d.depends()) {
+    assert(size_ == d.tan_size() && "dual<T,0>::operator*=(Expr): tan size mismatch");
+    // (a*b)' = a'*b + a*b'  — uses CURRENT val_ in tan_, then update val_.
+    for (unsigned i = 0; i < size_; ++i)
+      tan_[i] = tan_[i] * d.val() + val_ * d.tan(i);
+  } else if (size_ > 0) {
+    for (unsigned i = 0; i < size_; ++i) tan_[i] *= d.val();
+  } else if (d.depends()) {
+    set_depend_size(d.tan_size());
+    for (unsigned i = 0; i < size_; ++i) tan_[i] = val_ * d.tan(i);
+  }
+  val_ = new_val;
+  return *this;
+}
+
+template<class T>
+template<class D>
+inline dual<T, 0>& dual<T, 0>::operator/=(const expr::Expr<D>& e) {
+  const D& d = e.self();
+  const T inv = T(1) / d.val();
+  const T new_val = val_ * inv;
+  if (size_ > 0 && d.depends()) {
+    assert(size_ == d.tan_size() && "dual<T,0>::operator/=(Expr): tan size mismatch");
+    // (a/b)' = (a' - (a/b)*b') / b
+    for (unsigned i = 0; i < size_; ++i)
+      tan_[i] = (tan_[i] - new_val * d.tan(i)) * inv;
+  } else if (size_ > 0) {
+    for (unsigned i = 0; i < size_; ++i) tan_[i] *= inv;
+  } else if (d.depends()) {
+    set_depend_size(d.tan_size());
+    for (unsigned i = 0; i < size_; ++i) tan_[i] = -new_val * d.tan(i) * inv;
+  }
+  val_ = new_val;
+  return *this;
+}
+
 } // namespace cppode
 
 #endif // CPPODE_DUAL_EXPR_HPP

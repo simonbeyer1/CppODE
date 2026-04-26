@@ -234,7 +234,7 @@ public:
 
   template<class System>
   controlled_step_result
-  try_step(System sys, state_type& x, time_type& t, time_type& dt)
+  try_step(System& sys, state_type& x, time_type& t, time_type& dt)
   {
     m_xnew_resizer.adjust_size(x, [this](const state_type& s){ return this->resize_m_xnew(s); });
     controlled_step_result res = try_step(sys, x, t, m_xnew.m_v, dt);
@@ -250,7 +250,7 @@ public:
 
   template<class System>
   controlled_step_result
-  try_step(System sys, const state_type& x, time_type& t, state_type& xout, time_type& dt)
+  try_step(System& sys, const state_type& x, time_type& t, state_type& xout, time_type& dt)
   {
     if (m_max_dt != 0.0) {
       double dt_val = controller_detail::scalar_value(dt);
@@ -310,7 +310,7 @@ public:
 
   template<class System>
   controlled_step_result
-  try_step(System sys, state_type& x_in, time_type& t, state_type& x_out, time_type& dt)
+  try_step(System& sys, state_type& x_in, time_type& t, state_type& x_out, time_type& dt)
   {
     return try_step(sys, static_cast<const state_type&>(x_in), t, x_out, dt);
   }
@@ -334,6 +334,16 @@ public:
 
   stepper_type&       stepper()       { return m_stepper; }
   const stepper_type& stepper() const { return m_stepper; }
+
+  // Slab-prime forwarder. Both rosenbrock4 and tsit5 expose
+  // prepare_sensitivities() — a no-op when the value_type isn't a
+  // dynamic dual. Must run before the std::move into
+  // onestep_dense_output downstream so the dense wrapper inherits a
+  // primed slab.
+  void prepare_sensitivities(unsigned n_sens)
+  {
+    m_stepper.prepare_sensitivities(n_sens);
+  }
 
   template<class StateType>
   void adjust_size(const StateType& x)

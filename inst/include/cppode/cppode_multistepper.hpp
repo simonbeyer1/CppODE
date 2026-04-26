@@ -731,6 +731,10 @@ public:
       if (!m_ftemp.m_v.empty())
         m_ftemp_slab.prime(m_ftemp.m_v,
                            static_cast<unsigned>(m_ftemp.m_v.size()), n_sens);
+      if (!m_dense_x_scratch.m_v.empty())
+        m_dense_x_scratch_slab.prime(m_dense_x_scratch.m_v,
+                                     static_cast<unsigned>(m_dense_x_scratch.m_v.size()),
+                                     n_sens);
     }
   }
 
@@ -802,7 +806,7 @@ public:
 
   template<class System, class TimeArg>
   void do_step(
-      System system,
+      System& system,
       const state_type& x,
       TimeArg t,
       state_type& x_out,
@@ -844,7 +848,7 @@ public:
   // ====================================================================
 
   template<class System, class TimeArg>
-  void on_step_accepted(System system, TimeArg /*t*/)
+  void on_step_accepted(System& system, TimeArg /*t*/)
   {
     using ndf_detail::scalar_value;
 
@@ -1022,7 +1026,7 @@ public:
 
   template<class System, class TimeArg>
   void step_bdf_family(
-      System system,
+      System& system,
       const state_type& x,
       TimeArg t,
       state_type& x_out,
@@ -1313,7 +1317,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
 
   template<class System, class TimeArg>
   void step_adams(
-      System system,
+      System& system,
       const state_type& x,
       TimeArg t,
       state_type& x_out,
@@ -1645,7 +1649,9 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     m_tau[1] = m_h;
 
     for (int j = 0; j <= m_q; ++j)
-      vec_axpy(m_zn[j].m_v, m_l[j], m_acor.m_v);
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+                         static_cast<double>(m_l[j]),
+                         m_acor.m_v, m_acor_slab);
 
     m_qwait--;
     if (m_qwait == 1 && m_q != q_max_current()) {
@@ -1778,7 +1784,8 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     if (dense_resized && m_n_sens != 0)
       prepare_sensitivities(m_n_sens);
     for (int j = 0; j <= m_q; ++j) {
-      m_zn_dense[j].m_v = m_zn[j].m_v;
+      vec_copy_with_slab(m_zn_dense[j].m_v, m_zn_dense_slab[j],
+                         m_zn[j].m_v,       m_zn_slab[j]);
     }
     m_q_dense = m_q;
     m_h_dense = m_h;
@@ -2007,6 +2014,115 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   time_type dense_tn() const { return m_tn_dense; }
   const state_type& dense_zn(int j) const { return m_zn_dense[j].m_v; }
 
+  // ====================================================================
+  //  eval_dense_into
+  //
+  //  Slab-aware Horner evaluation of the Nordsieck dense-output polynomial:
+  //
+  //      x(t) = sum_{j=0}^{q_dense} zn_dense[j] * s^j,   s = (t - t_n) / h
+  //
+  //  evaluated bottom-up:
+  //      x = zn[q]
+  //      for j = q-1 .. 0:  x = x * s + zn[j]
+  //
+  //  For dual<S, 0> with primed slabs (the heap-AD path), the Horner runs
+  //  on a slab-bound scratch buffer so the tangent half is a single tight
+  //  loop over the contiguous [n × n_sens] block instead of n separate
+  //  per-element ET materialisations whose MulOp.tangent path computes
+  //  the symmetric `bv*at + av*bt` even when the scalar side has zero
+  //  tangent. The scratch is then copied into the caller-supplied
+  //  StateOut& x in one pass.
+  //
+  //  For non-dual / static-N value types (no slab) the routine collapses
+  //  to the same per-element Horner the previous calc_state had — no
+  //  scratch copy, no overhead.
+  // ====================================================================
+
+  template<class TimeArg, class StateOut>
+  void eval_dense_into(TimeArg t, StateOut& x)
+  {
+    using ndf_detail::scalar_value;
+    assert(m_dense_valid && "dense output snapshot not available");
+
+    const int    q  = m_q_dense;
+    const auto   h  = m_h_dense;
+    const auto   tn = m_tn_dense;
+    const auto   s  = (static_cast<time_type>(scalar_value(t)) - tn) / h;
+    const size_t n  = m_zn_dense[0].m_v.size();
+
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      using S = typename value_type::value_type;
+
+      const bool slab_path = m_dense_x_scratch_slab.primed()
+                          && m_zn_dense_slab[0].primed();
+
+      if (slab_path) {
+        // --- Values: scalar Horner directly into scratch.x() ---
+        const auto& zq_v = m_zn_dense[q].m_v;
+        for (size_t i = 0; i < n; ++i)
+          m_dense_x_scratch.m_v[i].x() = zq_v[i].x();
+        for (int j = q - 1; j >= 0; --j) {
+          const auto& zj_v = m_zn_dense[j].m_v;
+          for (size_t i = 0; i < n; ++i) {
+            S& xv = m_dense_x_scratch.m_v[i].x();
+            xv = xv * static_cast<S>(s) + zj_v[i].x();
+          }
+        }
+
+        // --- Tangents: SoA on the contiguous slab. ---
+        S* xp = m_dense_x_scratch_slab.tangent_data();
+        const std::size_t total = m_dense_x_scratch_slab.tangent_size();
+        if (total > 0) {
+          if constexpr (std::is_same_v<S, double>) {
+            // x_slab = zq_slab
+            int len = static_cast<int>(total);
+            int inc = 1;
+            F77_CALL(dcopy)(&len,
+                            const_cast<double*>(m_zn_dense_slab[q].tangent_data()), &inc,
+                            xp, &inc);
+            // for j: x_slab = x_slab * s + zj_slab
+            const double s_d = static_cast<double>(s);
+            const double one = 1.0;
+            for (int j = q - 1; j >= 0; --j) {
+              double a = s_d;
+              F77_CALL(dscal)(&len, &a, xp, &inc);
+              F77_CALL(daxpy)(&len, const_cast<double*>(&one),
+                              const_cast<double*>(m_zn_dense_slab[j].tangent_data()),
+                              &inc, xp, &inc);
+            }
+          } else {
+            const S* zp = m_zn_dense_slab[q].tangent_data();
+            for (std::size_t k = 0; k < total; ++k) xp[k] = zp[k];
+            const S s_v = static_cast<S>(s);
+            for (int j = q - 1; j >= 0; --j) {
+              const S* zjp = m_zn_dense_slab[j].tangent_data();
+              for (std::size_t k = 0; k < total; ++k)
+                xp[k] = xp[k] * s_v + zjp[k];
+            }
+          }
+        }
+
+        // --- Copy scratch -> caller's x (per-element dual = dual; in-place
+        //     tangent copy when x[i] already has a buffer of size n_sens). ---
+        for (size_t i = 0; i < n; ++i)
+          x[i] = m_dense_x_scratch.m_v[i];
+        return;
+      }
+      // Slab-less path falls through to the generic Horner below.
+    }
+
+    // Generic (per-element ET) Horner — used for non-dual value types
+    // and for the dynamic-dual case before slabs are primed.
+    const auto& zq = m_zn_dense[q].m_v;
+    for (size_t i = 0; i < n; ++i)
+      x[i] = zq[i];
+    for (int j = q - 1; j >= 0; --j) {
+      const auto& zj = m_zn_dense[j].m_v;
+      for (size_t i = 0; i < n; ++i)
+        x[i] = x[i] * s + zj[i];
+    }
+  }
+
   // Direct LU access (for advanced use / testing)
   lu_type& lu() { return m_lu; }
   const lu_type& lu() const { return m_lu; }
@@ -2021,14 +2137,18 @@ private:
   {
     for (int k = 1; k <= m_q; ++k)
       for (int j = m_q; j >= k; --j)
-        vec_axpy(m_zn[j - 1].m_v, value_type(1), m_zn[j].m_v);
+        vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_slab[j - 1],
+                           1.0,
+                           m_zn[j].m_v, m_zn_slab[j]);
   }
 
   void ndfRestore(size_t n)
   {
     for (int k = 1; k <= m_q; ++k)
       for (int j = m_q; j >= k; --j)
-        vec_axpy(m_zn[j - 1].m_v, value_type(-1), m_zn[j].m_v);
+        vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_slab[j - 1],
+                           -1.0,
+                           m_zn[j].m_v, m_zn_slab[j]);
   }
 
   // ====================================================================
@@ -2156,7 +2276,8 @@ private:
   {
     time_type factor = m_eta;
     for (int j = 1; j <= m_q; ++j) {
-      vec_scale(m_zn[j].m_v, factor);
+      vec_scale_with_slab(m_zn[j].m_v, m_zn_slab[j],
+                          static_cast<double>(factor));
       factor *= m_eta;
     }
     m_h = m_hscale * m_eta;
@@ -2188,7 +2309,9 @@ private:
     for (size_t i = 0; i < n; ++i)
       m_zn[m_L].m_v[i] = value_type(A1) * m_zn[max_order].m_v[i];
     for (int j = 2; j <= m_q; ++j)
-      vec_axpy(m_zn[j].m_v, ll[j], m_zn[m_L].m_v);
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+                         static_cast<double>(ll[j]),
+                         m_zn[m_L].m_v, m_zn_slab[m_L]);
   }
 
   void ndfDecreaseOrder()
@@ -2205,7 +2328,9 @@ private:
         ll[i] = ll[i] * xi + ll[i - 1];
     }
     for (int j = 2; j < m_q; ++j)
-      vec_axpy(m_zn[j].m_v, -ll[j], m_zn[m_q].m_v);
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+                         -static_cast<double>(ll[j]),
+                         m_zn[m_q].m_v, m_zn_slab[m_q]);
   }
 
   // ====================================================================
@@ -2256,7 +2381,9 @@ private:
       m_l[j + 1] = time_type(m_q) * (m_l[j] / time_type(j + 1));
 
     for (int j = 2; j < m_q; ++j)
-      vec_axpy(m_zn[j].m_v, -m_l[j], m_zn[m_q].m_v);
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+                         -static_cast<double>(m_l[j]),
+                         m_zn[m_q].m_v, m_zn_slab[m_q]);
   }
 
   // ====================================================================
@@ -2275,6 +2402,7 @@ private:
     resized |= adjust_size_by_resizeability(m_y, x);
     resized |= adjust_size_by_resizeability(m_tempv, x);
     resized |= adjust_size_by_resizeability(m_ftemp, x);
+    resized |= adjust_size_by_resizeability(m_dense_x_scratch, x);
     if (m_ewt.size() != x.size()) m_ewt.resize(x.size());
     resized |= m_lu.resize(x);
     if (resized) m_lu.invalidate();
@@ -2300,6 +2428,10 @@ private:
 
   wrapped_state_type m_acor, m_y, m_tempv;
   wrapped_deriv_type m_ftemp;
+  // Scratch used by eval_dense_into() for slab-aware Horner evaluation. The
+  // user's StateOut x is arena-backed (per-element tangent buffers), so we
+  // run the Horner on the slab-bound scratch first and copy out at the end.
+  wrapped_state_type m_dense_x_scratch;
   std::vector<double> m_ewt;  // CVODE-style error weights from pre-prediction zn[0]
 
   // SoA tangent slabs for the dynamic-dual heap path (empty stubs otherwise).
@@ -2309,6 +2441,7 @@ private:
   std::array<detail::tangent_slab<value_type>, max_order + 2> m_zn_slab;
   std::array<detail::tangent_slab<value_type>, max_order + 1> m_zn_dense_slab;
   detail::tangent_slab<value_type> m_acor_slab, m_y_slab, m_tempv_slab, m_ftemp_slab;
+  detail::tangent_slab<value_type> m_dense_x_scratch_slab;
   unsigned m_n_sens = 0;
 
   std::array<time_type, L_MAX + 1> m_l;

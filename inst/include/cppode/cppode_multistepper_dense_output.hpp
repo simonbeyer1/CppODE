@@ -109,7 +109,7 @@ public:
   // ====================================================================
 
   template<class System>
-  std::pair<time_type, time_type> do_step(System system)
+  std::pair<time_type, time_type> do_step(System& system)
   {
     failed_step_checker fail_checker;
     controlled_step_result result = fail;
@@ -152,31 +152,11 @@ public:
   void calc_state(time_type t, StateOut& x)
   {
     auto _tp = m_stepper.stepper().m_prof.timer(cppode::prof_cat::dense_interp);
-    // Nordsieck polynomial evaluation from the dense output snapshot.
-    // x(t) = sum_{j=0}^{q} zn_dense[j] * s^j
-    // where s = (t - tn_dense) / h_dense
-    //
-    // Evaluated via Horner's method for numerical stability.
-
-    auto& stp = m_stepper.stepper();
-    assert(stp.has_dense_output() && "dense output snapshot not available");
-
-    const int    q  = stp.dense_order();
-    const auto   h  = stp.dense_h();
-    const auto   tn = stp.dense_tn();
-    const auto   s  = (t - tn) / h;
-    const size_t n  = stp.dense_zn(0).size();
-
-    // Horner: x = zn[q]*s + zn[q-1],  then x = x*s + zn[q-2], ...
-    const auto& zq = stp.dense_zn(q);
-    for (size_t i = 0; i < n; ++i)
-      x[i] = zq[i];
-
-    for (int j = q - 1; j >= 0; --j) {
-      const auto& zj = stp.dense_zn(j);
-      for (size_t i = 0; i < n; ++i)
-        x[i] = x[i] * s + zj[i];
-    }
+    // Nordsieck polynomial evaluation from the dense output snapshot —
+    // delegates to multistepper::eval_dense_into which knows about the
+    // sensitivity slab layout and uses a slab-bound scratch buffer for
+    // the dynamic-dual heap path.
+    m_stepper.stepper().eval_dense_into(t, x);
   }
   // ====================================================================
   //  reinitialize_at_event

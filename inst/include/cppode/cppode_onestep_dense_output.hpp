@@ -109,7 +109,7 @@ public:
   }
 
   template<class System>
-  std::pair<time_type, time_type> do_step(System system)
+  std::pair<time_type, time_type> do_step(System& system)
   {
     unwrapped_stepper &cs = m_stepper;
     failed_step_checker fail_checker;
@@ -170,6 +170,12 @@ public:
 
   controlled_stepper_type&       controlled_stepper()       { return m_stepper; }
   const controlled_stepper_type& controlled_stepper() const { return m_stepper; }
+
+  // Slab-prime forwarder, mirroring the multistepper-side wrapper.
+  void prepare_sensitivities(unsigned n_sens)
+  {
+    m_stepper.prepare_sensitivities(n_sens);
+  }
 
   // Diagnostics (delegated to controller/stepper)
   int n_accepted() const { return m_stepper.n_accepted(); }

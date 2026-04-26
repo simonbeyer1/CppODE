@@ -985,7 +985,15 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
               ms_type),
       "  controlledStepper.set_pid_mode(pid_mode);",
       sprintf("  controlledStepper.stepper().set_use_ndf_kappa(%s);",
-              if (useNDF) "true" else "false")
+              if (useNDF) "true" else "false"),
+      # Heap-dual slab priming. Must happen BEFORE the std::move into
+      # denseStepper below — otherwise the call lands on a moved-from object
+      # and the slab inside denseStepper stays unprimed for the whole solve.
+      if (isTRUE(dynamic_ad)) {
+        "  controlledStepper.prepare_sensitivities(static_cast<unsigned>(n_sens));"
+      } else {
+        character()
+      }
     )
     # Termination argument for equilibrate (empty string when not used)
     is_equilibrate <- identical(tolower(rootfunc), "equilibrate")
@@ -1027,19 +1035,31 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     is_equilibrate <- identical(tolower(rootfunc), "equilibrate")
     termination_arg <- if (is_equilibrate) ", cppode::detail::no_dt_estimator{}, ss_termination" else ""
 
+    # Heap-dual slab priming for the single-step path. Mirrors the
+    # multistep branch: the call lands on controlledStepper BEFORE the
+    # std::move into denseStepper so the slabs reachable via denseStepper
+    # are primed for the whole solve.
+    onestep_prep_line <- if (isTRUE(dynamic_ad)) {
+      "  controlledStepper.prepare_sensitivities(static_cast<unsigned>(n_sens));"
+    } else {
+      character()
+    }
+
     if (useDenseOutput) {
       stepper_line <- paste(
-        sprintf("  auto controlledStepper = cppode::onestep_controller<%s>(abstol, reltol);", os_type),
-        pid_silencer,
-        "  auto denseStepper = cppode::onestep_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));",
-        sep = "\n"
+        c(sprintf("  auto controlledStepper = cppode::onestep_controller<%s>(abstol, reltol);", os_type),
+          pid_silencer,
+          onestep_prep_line,
+          "  auto denseStepper = cppode::onestep_dense_output<decltype(controlledStepper)>(std::move(controlledStepper));"),
+        collapse = "\n"
       )
       integrate_line <- sprintf("  integrate_times_dense(denseStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot%s);", termination_arg)
     } else {
       stepper_line <- paste(
-        sprintf("  auto controlledStepper = cppode::onestep_controller<%s>(abstol, reltol);", os_type),
-        pid_silencer,
-        sep = "\n"
+        c(sprintf("  auto controlledStepper = cppode::onestep_controller<%s>(abstol, reltol);", os_type),
+          pid_silencer,
+          onestep_prep_line),
+        collapse = "\n"
       )
       integrate_line <- sprintf("  integrate_times(controlledStepper, std::make_pair(sys, jac), x, times.begin(), times.end(), dt, obs, fixed_events, root_events, checker, root_tol, maxroot%s);", termination_arg)
     }
@@ -1159,14 +1179,9 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     )
   }
 
-  # Slab-prime the multistepper's heap-dual tangent buffers once per solve.
-  # No-op for non-dynamic-dual instantiations; controller-side method only
-  # exists for the multistep family, so guard on is_multistep too.
-  prep_sens_line <- if (isTRUE(dynamic_ad) && is_multistep(method)) {
-    "    controlledStepper.prepare_sensitivities(static_cast<unsigned>(n_sens));"
-  } else {
-    character()
-  }
+  # The heap-dual slab priming used to live here, but had to move into
+  # pid_setup_lines so it runs before the std::move(controlledStepper)
+  # into denseStepper. See is_multistep branch above.
 
   externC <- c(externC,
                stepper_line, "",
@@ -1176,7 +1191,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                "  // --- Integration (catch recoverable errors for partial results) ---",
                "  std::string solver_message;",
                "  try {",
-               prep_sens_line,
                paste0("    ", integrate_line),
                "  } catch (const cppode::no_progress_error& e) {",
                "    // StepChecker sets RC_TOO_MUCH_WORK / RC_CONV_FAILURE before",

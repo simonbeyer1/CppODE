@@ -290,6 +290,21 @@ public:
   template<class D>
   dual(const expr::Expr<D>& e);
 
+  // In-place compound assignment from any Expr<D>. Without these the
+  // compiler picks operator+=(const dual&) etc. and synthesises a
+  // BinExpr→dual temporary via the Expr ctor above — that temp allocates
+  // a fresh tan_ buffer from the arena per element, which is the dominant
+  // per-step leak in `vec_axpy(y, alpha, x)` style kernels (y[i] += alpha*x[i]).
+  // These overloads update val_ and tan_ in place; no temp dual, no alloc.
+  template<class D>
+  dual& operator+=(const expr::Expr<D>& e);
+  template<class D>
+  dual& operator-=(const expr::Expr<D>& e);
+  template<class D>
+  dual& operator*=(const expr::Expr<D>& e);
+  template<class D>
+  dual& operator/=(const expr::Expr<D>& e);
+
   // -- accessors --------------------------------------------------------------
   const T& x()   const { return val_; }
   T&       x()         { return val_; }

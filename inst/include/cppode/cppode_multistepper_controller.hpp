@@ -231,7 +231,7 @@ public:
 
   template<class System>
   controlled_step_result try_step(
-      System system,
+      System& system,
       state_type& x,
       time_type& t,
       time_type& dt)
@@ -264,7 +264,7 @@ public:
 
   template<class System>
   controlled_step_result try_step(
-      System system,
+      System& system,
       const state_type& x,
       time_type& t,
       state_type& x_out,
