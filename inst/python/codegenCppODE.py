@@ -677,6 +677,10 @@ def generate_ode_cpp(
         sparse_jac_lines.append(f"                  cppode::csc_matrix<{num}>& W,")
         sparse_jac_lines.append(f"                  const {num}& t,")
         sparse_jac_lines.append(f"                  std::vector<{num}>& dfdt) {{")
+        # No per-Jacobian arena scope: W entries (csc_matrix<T>) and dfdt
+        # are NOT slab-bound, so their tan_ pointers come from the arena.
+        # The LU solver consumes them after this call returns; rolling back
+        # the arena at scope exit would dangle those pointers.
         # Gate constant-entry init on W (pattern-built) so that callers which pass
         # a fresh csc_matrix (e.g. estimate_initial_dt allocating its own W) get
         # constants applied; subsequent calls with the same W skip them.
@@ -1000,6 +1004,33 @@ def _emit_cse_temps(temps, states_list, params_list, n_states, num_type, forcing
     return lines
 
 
+def _arena_scope_lines(num_type):
+    """Per-RHS dual_arena::scope guard for the (non-nested) AD code path.
+
+    Bounds the arena working set during a solve: every dual temporary
+    (CSE locals, ET assignment buffers) bumps the thread-local arena;
+    the scope rolls back to baseline when the RHS functor returns.
+
+    Only safe for num_type == "AD" (single-level dual<double, N>): in that
+    mode dxdt is slab-bound (is_dynamic_dual<dual<double, N>> = true), so
+    write-to-slab uses the COPY-into-bound-buffer branch of move-assign,
+    not the STEAL branch. Arena rollback then frees only CSE temps.
+
+    NOT safe for num_type == "AD2" (nested dual<dual<double, N>, N>): the
+    nested predicate is_dynamic_dual<dual<dual<double,N>,N>> is FALSE,
+    so dxdt is NOT slab-bound. dxdt[i].tan_ starts at nullptr; an ET
+    assignment from a temporary STEALS the rvalue's arena pointer. After
+    scope rollback that pointer dangles, segfaulting the next read.
+    Nested-AD therefore relies on the outer solveODE-level arena scope
+    only — working-set growth is bounded by total RHS calls × per-RHS
+    temps, but no per-call scope is safe.
+
+    Non-AD (num_type == "double"): no arena involvement, no scope needed."""
+    if num_type == "AD":
+        return ["    cppode::dual_arena::scope _rhs_arena_scope;"]
+    return []
+
+
 def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type, forcings_list):
     """Generate ODE system C++ code (with CSE)."""
     ode_cpp_lines = [
@@ -1016,6 +1047,7 @@ def _generate_ode_code_plain(exprs, states_list, params_list, n_states, num_type
         f"                  std::vector<{num_type}>& dxdt,",
         f"                  const {num_type}& t) {{",
     ]
+    ode_cpp_lines += _arena_scope_lines(num_type)
     cse_temps, simplified = _cse_temps(exprs)
     ode_cpp_lines += _emit_cse_temps(
         cse_temps, states_list, params_list, n_states, num_type, forcings_list
@@ -1051,6 +1083,11 @@ def _generate_jac_code_plain(jac_matrix, time_derivs, exprs, forcing_syms, forci
         f"                  std::vector<{num_type}>& dfdt) {{",
         f"    J.set_zero();",
     ]
+    # No per-Jacobian arena scope: J entries (dense_matrix<T>) and dfdt are
+    # NOT slab-bound, so their tan_ pointers come from the arena. The LU
+    # solver consumes them after this call returns; rolling back the arena
+    # at scope exit would dangle those pointers. The outer solveODE-level
+    # scope (R/CppODE.R) catches the arena growth at solve end.
     # Collect non-zero (i,j) positions first for dirty-index clearing
     jac_entries_plain = []
     for i in range(n_states):
@@ -1251,6 +1288,7 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
         f"                  std::vector<{num_type}>& dxdt,",
         f"                  const {num_type}& t) {{",
     ]
+    ode_cpp_lines += _arena_scope_lines(num_type)
     for key, members in groups.items():
         rhs_tmpl = template_cpp[key]['rhs']
         for expr_idx, dep_names in members:
@@ -1274,6 +1312,7 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
         f"                  const {num_type}& t,",
         f"                  std::vector<{num_type}>& dfdt) {{",
     ]
+    # No per-Jacobian arena scope (see _generate_jac_code_plain comment).
 
     jac_nnz_rows = []
     jac_nnz_cols = []

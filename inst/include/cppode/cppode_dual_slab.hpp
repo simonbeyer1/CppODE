@@ -35,17 +35,22 @@ namespace detail {
 // =============================================================================
 //  is_dynamic_dual<T>
 //
-//  True when T is dual<S, 0> with S a non-AD scalar (the heap path that
-//  needs slabbing). Nested duals (dual<dual<...,0>,0>) are intentionally
-//  excluded — heap deriv2 is forbidden upstream and the inner duals would
-//  still need their own per-row buffers.
+//  True when T is cppode::dual<S, N> (any N >= 0) with S a non-AD scalar
+//  (i.e. the slab-eligible dual specs — both heap dual<S, 0> and static-N
+//  dual<S, N>). Nested duals (dual<dual<...>,...>) are intentionally
+//  excluded — deriv2 inner-tangent slabs would need per-outer-tangent
+//  buffers, which the current slab layout doesn't model.
+//
+//  Name is historical (originally only the dynamic-N path needed slabbing);
+//  after the static-N migration to pointer storage the predicate covers all
+//  non-nested dual specs uniformly.
 // =============================================================================
 
 template<class T>
 struct is_dynamic_dual : std::false_type {};
 
-template<class S>
-struct is_dynamic_dual<cppode::dual<S, 0>>
+template<class S, unsigned N>
+struct is_dynamic_dual<cppode::dual<S, N>>
   : std::bool_constant<!std::is_class_v<S> || std::is_arithmetic_v<S>>
 {};
 
@@ -84,9 +89,19 @@ public:
 
   // Size the slab and rebind every v[i].tan_ into row i. Idempotent: if the
   // (n_rows, n_cols) shape already matches, only the rebind step runs.
+  //
+  // For static-N duals (T::static_size > 0): pin n_cols to N. Stepper-side
+  // calls pass the *active* sensitivity width (n_sens, which under reparam
+  // or runtime-fixed can be < N), but each dual must always span N tangent
+  // slots — eager / ET loops bound on loop_size() = N, and reading past
+  // the slab row otherwise lands on the next row's tangents (UB). Inactive
+  // slots remain zero, contribute nothing to chain rules.
   void prime(std::vector<T>& v, unsigned n_rows, unsigned n_cols) {
     assert(static_cast<unsigned>(v.size()) == n_rows
            && "tangent_slab::prime: vector size mismatch");
+    if constexpr (T::static_size > 0) {
+      n_cols = T::static_size;
+    }
     if (n_rows == n_rows_ && n_cols == n_cols_) {
       rebind_only(v);
       return;
@@ -155,11 +170,11 @@ inline void vec_axpy_with_slab(
   if constexpr (detail::is_dynamic_dual<T>::value) {
     using S = typename T::value_type;
     const std::size_t n = y.size();
-    // 1. Scalar AXPY on the values (small, n ≈ states).
-    for (std::size_t i = 0; i < n; ++i)
-      y[i].x() += static_cast<S>(alpha) * x[i].x();
-    // 2. One pass over the contiguous tangent block.
     if (y_slab.primed() && x_slab.primed()) {
+      // BLAS hot path: per-element val + one BLAS pass over tangent block.
+      // The two passes are disjoint (val ≠ tangents), no double-counting.
+      for (std::size_t i = 0; i < n; ++i)
+        y[i].x() += static_cast<S>(alpha) * x[i].x();
       assert(y_slab.tangent_size() == x_slab.tangent_size()
              && "vec_axpy_with_slab: slab size mismatch");
       const std::size_t total = y_slab.tangent_size();
@@ -180,15 +195,14 @@ inline void vec_axpy_with_slab(
         }
       }
     } else {
-      // Slab unprimed (sensitivities-off solve): wrap alpha in a dual so
-      // the eager `dual *= U` / dual<>::operator= overloads compile, then
-      // fall through to the per-element ET path. Cold path — the codegen
-      // primes slabs once per solve when sensitivities are requested.
+      // Slab unprimed (sensitivities-off solve, e.g. M=0 reparam path):
+      // per-element ET handles val AND tangents in one shot. Wrap alpha
+      // in a dual so dual::operator+=(Expr<>) fires.
       const T a_t = T(static_cast<S>(alpha));
       for (std::size_t i = 0; i < n; ++i) y[i] += a_t * x[i];
     }
   } else {
-    // Non-dual scalar (double) or static-N dual: ordinary vec_axpy.
+    // Non-dual scalar (double): ordinary vec_axpy.
     vec_axpy(y, alpha, x);
   }
 }
@@ -262,9 +276,10 @@ inline void vec_scale_with_slab(
   if constexpr (detail::is_dynamic_dual<T>::value) {
     using S = typename T::value_type;
     const std::size_t n = y.size();
-    for (std::size_t i = 0; i < n; ++i)
-      y[i].x() *= static_cast<S>(alpha);
     if (y_slab.primed()) {
+      // BLAS hot path: per-element val * scalar + BLAS dscal on tangent block.
+      for (std::size_t i = 0; i < n; ++i)
+        y[i].x() *= static_cast<S>(alpha);
       const std::size_t total = y_slab.tangent_size();
       if (total > 0) {
         if constexpr (std::is_same_v<S, double>) {

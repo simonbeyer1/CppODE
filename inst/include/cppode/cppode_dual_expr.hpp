@@ -754,9 +754,11 @@ inline dual<T, N>& dual<T, N>::operator=(const expr::Expr<D>& e) {
   const D& d = e.self();
   val_ = d.val();
   if (d.depends()) {
-    depend_ = true;
+    set_depend_size();   // alloc tan_ if not yet bound; sets depend_ = true
     for (unsigned i = 0; i < N; ++i) tan_[i] = d.tan(i);
-  } else {
+  } else if (depend_) {
+    // tan_ is bound (slab or arena); preserve binding, zero tangents.
+    for (unsigned i = 0; i < N; ++i) tan_[i] = T();
     depend_ = false;
   }
   return *this;
@@ -764,7 +766,9 @@ inline dual<T, N>& dual<T, N>::operator=(const expr::Expr<D>& e) {
 
 template<class T, unsigned N>
 template<class D>
-inline dual<T, N>::dual(const expr::Expr<D>& e) : val_(), depend_(false) {
+inline dual<T, N>::dual(const expr::Expr<D>& e)
+  : val_(), tan_(nullptr), depend_(false)
+{
   *this = e;
 }
 
@@ -777,7 +781,7 @@ inline dual<T, N>& dual<T, N>::operator+=(const expr::Expr<D>& e) {
     if (depend_) {
       for (unsigned i = 0; i < N; ++i) tan_[i] += d.tan(i);
     } else {
-      depend_ = true;
+      set_depend_size();
       for (unsigned i = 0; i < N; ++i) tan_[i] = d.tan(i);
     }
   }
@@ -793,7 +797,7 @@ inline dual<T, N>& dual<T, N>::operator-=(const expr::Expr<D>& e) {
     if (depend_) {
       for (unsigned i = 0; i < N; ++i) tan_[i] -= d.tan(i);
     } else {
-      depend_ = true;
+      set_depend_size();
       for (unsigned i = 0; i < N; ++i) tan_[i] = -d.tan(i);
     }
   }
@@ -812,7 +816,7 @@ inline dual<T, N>& dual<T, N>::operator*=(const expr::Expr<D>& e) {
   } else if (depend_) {
     for (unsigned i = 0; i < N; ++i) tan_[i] *= d.val();
   } else if (d.depends()) {
-    depend_ = true;
+    set_depend_size();
     for (unsigned i = 0; i < N; ++i) tan_[i] = val_ * d.tan(i);
   }
   val_ = new_val;
@@ -832,7 +836,7 @@ inline dual<T, N>& dual<T, N>::operator/=(const expr::Expr<D>& e) {
   } else if (depend_) {
     for (unsigned i = 0; i < N; ++i) tan_[i] *= inv;
   } else if (d.depends()) {
-    depend_ = true;
+    set_depend_size();
     for (unsigned i = 0; i < N; ++i) tan_[i] = -new_val * d.tan(i) * inv;
   }
   val_ = new_val;

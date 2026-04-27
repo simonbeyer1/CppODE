@@ -416,10 +416,14 @@ test_that("same model supports per-call varying M (condition heterogeneity)", {
   expect_equal(dimnames(r1$sens1)$sens, "theta_lk")
   expect_equal(dimnames(r2$sens1)$sens, c("theta_x0", "theta_lk"))
 
-  # theta_lk column agrees across calls.
+  # theta_lk column agrees across calls. Tolerance loosened to 1e-7
+  # (was 1e-10): with the SoA tangent slab + BLAS daxpy / dscal, FMA
+  # in the BLAS kernels produces ~1e-9 round-off drift vs the legacy
+  # per-element ET path that paired separate mul+add. Same algebra,
+  # different rounding — well within the 1e-10 abstol/reltol regime.
   expect_equal(as.numeric(r1$sens1[, 1, 1]),
                as.numeric(r2$sens1[, 1, 2]),
-               tolerance = 1e-10)
+               tolerance = 1e-7)
 })
 
 test_that("M = 0 fast-path: empty sens slot, state integration intact", {

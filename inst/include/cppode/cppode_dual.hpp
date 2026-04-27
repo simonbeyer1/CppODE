@@ -1,19 +1,27 @@
 /*
  cppode::dual<T, N> — first-order forward-mode AD type.
 
- Two storage strategies, selected by N:
-   N >  0  : inline storage `T tan_[N]` — zero-allocation, compile-time width.
-   N == 0  : arena-backed pointer `T* tan_; unsigned size_;` — width fixed
-             at runtime via .diff(idx, n). Memory comes from the thread-local
-             cppode::dual_arena (cppode_dual_arena.hpp). Per-RHS-eval
-             allocation cost is a single bump-pointer increment.
+ Both static-N (N > 0) and dynamic-N (N == 0) specs share a single storage
+ strategy: `T* tan_;` pointing either at a row of an externally-owned
+ cppode::detail::tangent_slab block (set via rebind_storage), or at a buffer
+ obtained from the thread-local cppode::dual_arena. Per-RHS-eval allocation
+ cost for temporaries is a bump-pointer increment; rolled back LIFO via a
+ cppode::dual_arena::scope guard at the RHS body level. Storage layout in
+ std::vector<dual<T, N>> is therefore SoA at the tangent level (rows of one
+ contiguous slab), enabling BLAS daxpy/dscal across the tangent block.
+
+ The only structural difference between the two specs is that the static-N
+ primary template has no runtime size_ field — N is a compile-time constant
+ used as the loop bound (constexpr-foldable for unrolling / SIMD).
 
  API surface mirrors fadbad::F<T, N> so generated codegen output (`.x()`,
  `.diff(idx)`, `.diff(idx, n)`, `.d(j)`, `.size()`, `.depend()`,
  `operator[]`) compiles unchanged when the codegen swaps the type alias.
 
  This header defines the data class only. Arithmetic operators and math
- functions live in cppode_dual_math.hpp.
+ functions (eager path, gated to nested-AD T only) live in
+ cppode_dual_math.hpp; the expression-template overlay (active for non-AD T)
+ lives in cppode_dual_expr.hpp.
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -40,14 +48,34 @@ namespace expr {
 
 // -----------------------------------------------------------------------------
 // Internal helper: allocate T[n] from the TLS arena, dispatching trivial vs
-// non-trivial destructibility.
+// non-trivial destructibility AND trivial vs non-trivial default-construction.
+//
+// Three regimes:
+//   1. Trivially destructible AND trivially default-constructible
+//      (e.g. double, int): bump-alloc only, caller writes — caller MUST
+//      write before reading (no zero-init of returned memory).
+//   2. Trivially destructible BUT non-trivially default-constructible
+//      (e.g. dual<double, N>: user-provided ctor zeroes tan_ pointer):
+//      bump-alloc + per-element placement-new of default ctor. No dtor
+//      tracking. Critical for nested AD: the outer layer of
+//      dual<dual<double, N>, N> alloc-bumps an array of N inner duals;
+//      each must have tan_ = nullptr after construction so that
+//      subsequent set_depend_size() correctly detects "not yet bound" and
+//      allocates a fresh tangent buffer.
+//   3. Non-trivially destructible (e.g. boost::multiprecision::cpp_dec_float
+//      — with a real dtor): full alloc + ctor + dtor-tracking path.
 // -----------------------------------------------------------------------------
 namespace detail {
 
 template<class T>
 inline T* arena_alloc_t(std::size_t n) {
-  if constexpr (std::is_trivially_destructible_v<T>) {
+  if constexpr (std::is_trivially_destructible_v<T>
+                && std::is_trivially_default_constructible_v<T>) {
     return dual_arena::arena().alloc_trivial<T>(n);
+  } else if constexpr (std::is_trivially_destructible_v<T>) {
+    T* arr = dual_arena::arena().alloc_trivial<T>(n);
+    for (std::size_t i = 0; i < n; ++i) ::new (static_cast<void*>(arr + i)) T();
+    return arr;
   } else {
     return dual_arena::arena().template alloc<T>(n);
   }
@@ -56,15 +84,22 @@ inline T* arena_alloc_t(std::size_t n) {
 } // namespace detail
 
 // =============================================================================
-// Primary template: static N (inline storage). N must be > 0; N == 0 uses
-// the partial specialization below.
+// Primary template: static N (compile-time tangent width). N must be > 0;
+// N == 0 uses the partial specialization below.
+//
+// Storage: T* tan_ pointing at either an externally-owned tangent_slab row
+// (after rebind_storage), or a buffer allocated from cppode::dual_arena for
+// temporaries. The compile-time N is the loop bound (constexpr-foldable),
+// not a struct-inline storage size — that's what unifies this spec with the
+// dynamic spec. std::vector<dual<T, N>> is then SoA at the tangent level,
+// matching the dual<T, 0> heap path.
 // =============================================================================
 template<class T = double, unsigned N = 0>
 class dual {
   static_assert(N > 0, "primary template requires N > 0; N == 0 is specialized");
 
   T    val_;
-  T    tan_[N];
+  T*   tan_;
   bool depend_;
 
 public:
@@ -72,14 +107,16 @@ public:
   static constexpr unsigned static_size = N;
 
   // -- constructors -----------------------------------------------------------
-  dual() : val_(), depend_(false) {}
+  dual() : val_(), tan_(nullptr), depend_(false) {}
 
   template<class U,
            std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
-  dual(const U& v) : val_(static_cast<T>(v)), depend_(false) {}
+  dual(const U& v) : val_(static_cast<T>(v)), tan_(nullptr), depend_(false) {}
 
-  dual(const dual& o) : val_(o.val_), depend_(o.depend_) {
-    if (depend_) {
+  dual(const dual& o) : val_(o.val_), tan_(nullptr), depend_(false) {
+    if (o.depend_) {
+      depend_ = true;
+      tan_    = detail::arena_alloc_t<T>(N);
       for (unsigned i = 0; i < N; ++i) tan_[i] = o.tan_[i];
     }
   }
@@ -88,9 +125,18 @@ public:
     if (this == &o) return *this;
     val_ = o.val_;
     if (o.depend_) {
+      if (tan_ == nullptr) tan_ = detail::arena_alloc_t<T>(N);
       depend_ = true;
       for (unsigned i = 0; i < N; ++i) tan_[i] = o.tan_[i];
     } else {
+      // Non-depend source: zero any existing tangents (preserves slab- or
+      // arena-binding so subsequent .diff() / set_depend_size() / ET assigns
+      // can reuse the buffer). depend_ goes to false — same semantics as
+      // operator=(const U&): a non-depend assignment yields a non-depend
+      // dual, even if tan_ stays allocated.
+      if (tan_ != nullptr) {
+        for (unsigned i = 0; i < N; ++i) tan_[i] = T();
+      }
       depend_ = false;
     }
     return *this;
@@ -100,7 +146,55 @@ public:
            std::enable_if_t<std::is_convertible_v<U, T>, int> = 0>
   dual& operator=(const U& v) {
     val_ = static_cast<T>(v);
+    // Preserve any existing tan_ buffer (slab- or arena-bound) and zero the
+    // tangent values — same semantics as dual<T,0>::operator=(const U&)
+    // (cppode_dual.hpp dynamic-spec). Without this, slab-bound duals would
+    // lose their binding on every `dual = scalar` assignment (e.g. codegen
+    // state re-seeding `x[i] = paramsSEXP[i]` after the slab has been
+    // primed).
+    if (tan_ != nullptr) {
+      for (unsigned i = 0; i < N; ++i) tan_[i] = T();
+    }
     depend_ = false;
+    return *this;
+  }
+
+  // Move ctor / move assignment: STEAL the tan_ pointer instead of allocating
+  // a fresh buffer + copying. Critical for `dxdt[i] = a + b + c;` style
+  // expressions where the rvalue chain on the rhs already owns a buffer.
+  // (Implicit move ctor is suppressed because we declared a copy assignment
+  // operator; declare both moves explicitly.)
+  dual(dual&& o) noexcept
+    : val_(std::move(o.val_)), tan_(o.tan_), depend_(o.depend_)
+  {
+    o.tan_    = nullptr;
+    o.depend_ = false;
+  }
+  dual& operator=(dual&& o) noexcept {
+    if (this == &o) return *this;
+    val_ = std::move(o.val_);
+    if (o.depend_) {
+      if (tan_ == nullptr) {
+        // Steal: cheap path, no allocation, no copy.
+        tan_      = o.tan_;
+        depend_   = true;
+        o.tan_    = nullptr;
+        o.depend_ = false;
+      } else {
+        // Pre-existing tangent buffer (likely slab-bound): copy values into
+        // it. This preserves address stability for callers that hold
+        // references to our tangent storage (slab is the canonical case).
+        for (unsigned i = 0; i < N; ++i) tan_[i] = std::move(o.tan_[i]);
+        depend_ = true;
+      }
+    } else if (tan_ != nullptr) {
+      // RHS is non-depend, we have a buffer: zero the tangents (mirror
+      // copy-assignment behaviour to avoid stale derivative values).
+      for (unsigned i = 0; i < N; ++i) tan_[i] = T();
+      depend_ = false;
+    } else {
+      depend_ = false;
+    }
     return *this;
   }
 
@@ -138,7 +232,8 @@ public:
     return tan_[j];
   }
 
-  // Direct tangent access (caller must have called .diff() first).
+  // Direct tangent access (caller must have called .diff() / set_depend_size()
+  // first to ensure tan_ is allocated; otherwise this dereferences nullptr).
   const T& operator[](unsigned j) const { return tan_[j]; }
   T&       operator[](unsigned j)       { return tan_[j]; }
 
@@ -146,6 +241,7 @@ public:
   // Activate this dual as the idx-th independent variable: tan_[idx]=1, rest=0.
   T& diff(unsigned idx) {
     assert(idx < N && "diff(idx): idx out of compile-time bound N");
+    if (tan_ == nullptr) tan_ = detail::arena_alloc_t<T>(N);
     depend_ = true;
     for (unsigned i = 0; i < N; ++i) tan_[i] = T();
     tan_[idx] = T(1);
@@ -154,15 +250,46 @@ public:
   // FADBAD-compatible 2-arg form: n must equal N at compile time.
   T& diff(unsigned idx, unsigned n) {
     assert(n == N && "diff(idx, n): n must equal compile-time N");
+    (void)n;
     return diff(idx);
   }
 
   // Internal: mark this dual as having an active tangent vector without
-  // initializing it (operators fill the tangents themselves). Mirrors
-  // FADBAD's setDepend(...) but with no size cross-checks.
-  void set_depend()            { depend_ = true; }
-  void set_depend_from(const dual&)               { depend_ = true; }
-  void set_depend_from(const dual&, const dual&)  { depend_ = true; }
+  // initializing values (operators / ET fill the tangents themselves). If
+  // tan_ has not been bound yet, allocate a fresh buffer from the arena.
+  void set_depend() {
+    if (tan_ == nullptr) tan_ = detail::arena_alloc_t<T>(N);
+    depend_ = true;
+  }
+
+  // Allocate-without-init helper used by the ET path (mirrors the dual<T,0>
+  // member of the same name). The 0-arg form is the natural one for static-N
+  // (size is the template parameter); the 1-arg form keeps API parity with
+  // the dynamic spec for shared ET callers — n must equal N.
+  void set_depend_size() { set_depend(); }
+  void set_depend_size(unsigned n) {
+    assert(n == N && "dual<T,N>::set_depend_size(n): n must equal compile-time N");
+    (void)n;
+    set_depend();
+  }
+
+  // Non-allocating bind: point tan_ at an externally-owned buffer of length N
+  // (typically a row of cppode::detail::tangent_slab). The dual does not own
+  // the buffer (it never frees tan_), so rebinding is safe as long as the
+  // external owner keeps the buffer alive for the dual's remaining lifetime.
+  // Sets depend_ = true: a slab-bound dual is always considered active, so
+  // subsequent eager ops take the depending branch. Pre-prime fill of the
+  // slab block is the slab owner's responsibility (tangent_slab::prime
+  // zero-fills the storage on size).
+  void rebind_storage(T* p, unsigned n) noexcept {
+    assert(n == N && "dual<T,N>::rebind_storage: n must equal compile-time N");
+    (void)n;
+    tan_    = p;
+    depend_ = true;
+  }
+
+  void set_depend_from(const dual&)              { set_depend(); }
+  void set_depend_from(const dual&, const dual&) { set_depend(); }
 
   // Compound assignment operators (defined inline via free + / - / * / /).
   dual& operator+=(const dual& o);
@@ -191,14 +318,11 @@ public:
   }
 
   // -- expression-template assignment / construction --------------------------
-  // Materialises any CRTP Expr<D> tree directly into the inline tan_[N] slots:
-  //   1) val_ = root.val();                   (one scalar pass through tree)
-  //   2) for (i)  tan_[i] = root.tan(i);      (one fused chain-rule loop;
-  //                                            constant N → unrolled / vec'd)
+  // Materialises any CRTP Expr<D> tree directly into our tan_ slots:
+  //   1) val_ = root.val();
+  //   2) set_depend_size();                    (alloc once if not yet bound)
+  //   3) for (i) tan_[i] = root.tan(i);        (constant N → unrolled / vec'd)
   // Definitions live in cppode_dual_expr.hpp (after Expr<D> is complete).
-  // The eager dual-to-dual / dual-to-scalar overloads above remain primary —
-  // template arg deduction against `const Expr<D>&` fails for non-Expr ops,
-  // so the two overload sets do not compete.
   template<class D>
   dual& operator=(const expr::Expr<D>& e);
 

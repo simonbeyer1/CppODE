@@ -1010,10 +1010,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "  controlledStepper.set_pid_mode(pid_mode);",
       sprintf("  controlledStepper.stepper().set_use_ndf_kappa(%s);",
               if (useNDF) "true" else "false"),
-      # Heap-dual slab priming. Must happen BEFORE the std::move into
-      # denseStepper below — otherwise the call lands on a moved-from object
-      # and the slab inside denseStepper stays unprimed for the whole solve.
-      if (isTRUE(dynamic_ad)) {
+      # Slab priming for any AD path (heap dual<T,0> or static-N dual<T,N>).
+      # The stepper's prepare_sensitivities is `if constexpr` -gated on
+      # is_dynamic_dual<value_type>, so this is a no-op for non-AD and
+      # nested-AD types. Must happen BEFORE the std::move into denseStepper
+      # below — otherwise the call lands on a moved-from object and the slab
+      # inside denseStepper stays unprimed for the whole solve.
+      if (deriv) {
         "  controlledStepper.prepare_sensitivities(static_cast<unsigned>(n_sens));"
       } else {
         character()
@@ -1059,11 +1062,14 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     is_equilibrate <- identical(tolower(rootfunc), "equilibrate")
     termination_arg <- if (is_equilibrate) ", cppode::detail::no_dt_estimator{}, ss_termination" else ""
 
-    # Heap-dual slab priming for the single-step path. Mirrors the
-    # multistep branch: the call lands on controlledStepper BEFORE the
-    # std::move into denseStepper so the slabs reachable via denseStepper
-    # are primed for the whole solve.
-    onestep_prep_line <- if (isTRUE(dynamic_ad)) {
+    # Slab priming for the single-step path (any AD level — heap dual<T,0>
+    # or static-N dual<T,N>). Mirrors the multistep branch: the call lands
+    # on controlledStepper BEFORE the std::move into denseStepper so the
+    # slabs reachable via denseStepper are primed for the whole solve.
+    # The stepper's prepare_sensitivities is `if constexpr`-gated on
+    # is_dynamic_dual<value_type>, so this is a no-op for non-AD and
+    # nested-AD types.
+    onestep_prep_line <- if (deriv) {
       "  controlledStepper.prepare_sensitivities(static_cast<unsigned>(n_sens));"
     } else {
       character()
