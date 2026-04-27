@@ -15,8 +15,7 @@ CppODE(
   outdir = tempdir(),
   deriv = TRUE,
   deriv2 = FALSE,
-  ntheta = NULL,
-  dynamic_ad = FALSE,
+  nStack = NULL,
   ad_backend = c("dual", "fadbad"),
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
@@ -55,27 +54,29 @@ If \code{NULL}, a random identifier is used.}
 \item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers;
 requires \code{deriv = TRUE}.}
 
-\item{ntheta}{Optional integer giving the compile-time theta dimension for
-parameter reparametrization \eqn{p = \Phi(\theta)}. When \code{NULL} (default),
-the AD width equals the number of non-fixed (state + parameter) slots and
-\code{sens1ini} is interpreted in legacy \verb{[n_states, n_active]} shape (or
-omitted for identity seeding). When set to an explicit integer, the AD
-width is fixed to \code{ntheta}, \code{sens1ini} must be supplied at \code{solveODE()}
-time as the full Jacobian \eqn{\Phi'(\theta)} of shape
-\verb{[n_states + n_params, ntheta]}, and sensitivity output columns are
-labelled as theta slots instead of model-parameter names. Requires
-\code{deriv = TRUE} and is incompatible with runtime \code{fixed}.}
+\item{nStack}{Controls the compile-time AD slab width.
+\itemize{
+\item \code{NULL} \emph{(default)} -- the AD width equals the number of non-fixed
+(state + parameter) slots (\code{n_total_sens}); stack-allocated.
+\item positive integer \code{K} -- AD width is fixed to \code{K} at compile time
+(stack-allocated \verb{dual<double, K>} / \verb{F<double, K>}). Suitable
+when integrating with respect to a reparametrization
+\eqn{p = \Phi(\theta)} of known compile-time upper bound \code{K}. At
+\code{solveODE()} time, \code{sens1ini} may be supplied with up to \code{K}
+columns; \code{M = ncol(sens1ini) <= K} per call.
+\item \code{Inf} -- heap-allocated AD (\verb{dual<double, 0>} / \verb{F<double, 0>}).
+The AD width is determined at runtime from \code{ncol(sens1ini)}. Useful
+when the parameter / theta dimension is only known at runtime;
+\code{ad_backend = "dual"} makes this path much faster than the default
+FADBAD heap because intermediates are bumped from a per-call
+thread-local arena instead of allocated via \code{new[]}. Incompatible
+with \code{deriv2 = TRUE}.
+}
 
-\item{dynamic_ad}{Logical. If \code{TRUE}, use the heap-allocated AD spec
-(\verb{F<double, 0>} for FADBAD, \verb{cppode::dual<double, 0>} for \code{dual}) instead
-of the default stack-allocated \verb{F<double, N>}/\verb{dual<double, N>}. The AD
-width is determined at runtime from \code{ncol(sens1ini)}. \code{sens1ini} is
-required at \code{solveODE()} time. Useful when the parameter dimension is
-only known at runtime; \code{ad_backend = "dual"} makes this path much
-faster than the default FADBAD heap because intermediates are bumped
-from a per-call thread-local arena instead of allocated via \code{new[]}.
-Incompatible with explicit \code{ntheta}, with \code{deriv2 = TRUE}, and with
-runtime \code{fixed}.}
+The choice between legacy sens1ini shape \verb{[n_states, n_active]} and
+full shape \verb{[n_states + n_params, M]} is per-call at \code{solveODE()}
+time, independent of \code{nStack}. Requires \code{deriv = TRUE} for any
+non-default value.}
 
 \item{ad_backend}{Character string selecting the forward-AD library.
 \itemize{

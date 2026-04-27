@@ -146,26 +146,27 @@
 #' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
 #' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers;
 #'   requires `deriv = TRUE`.
-#' @param ntheta Optional integer giving the compile-time theta dimension for
-#'   parameter reparametrization \eqn{p = \Phi(\theta)}. When `NULL` (default),
-#'   the AD width equals the number of non-fixed (state + parameter) slots and
-#'   `sens1ini` is interpreted in legacy `[n_states, n_active]` shape (or
-#'   omitted for identity seeding). When set to an explicit integer, the AD
-#'   width is fixed to `ntheta`, `sens1ini` must be supplied at `solveODE()`
-#'   time as the full Jacobian \eqn{\Phi'(\theta)} of shape
-#'   `[n_states + n_params, ntheta]`, and sensitivity output columns are
-#'   labelled as theta slots instead of model-parameter names. Requires
-#'   `deriv = TRUE` and is incompatible with runtime `fixed`.
-#' @param dynamic_ad Logical. If `TRUE`, use the heap-allocated AD spec
-#'   (`F<double, 0>` for FADBAD, `cppode::dual<double, 0>` for `dual`) instead
-#'   of the default stack-allocated `F<double, N>`/`dual<double, N>`. The AD
-#'   width is determined at runtime from `ncol(sens1ini)`. `sens1ini` is
-#'   required at `solveODE()` time. Useful when the parameter dimension is
-#'   only known at runtime; `ad_backend = "dual"` makes this path much
-#'   faster than the default FADBAD heap because intermediates are bumped
-#'   from a per-call thread-local arena instead of allocated via `new[]`.
-#'   Incompatible with explicit `ntheta`, with `deriv2 = TRUE`, and with
-#'   runtime `fixed`.
+#' @param nStack Controls the compile-time AD slab width.
+#'   * `NULL` *(default)* -- the AD width equals the number of non-fixed
+#'     (state + parameter) slots (`n_total_sens`); stack-allocated.
+#'   * positive integer `K` -- AD width is fixed to `K` at compile time
+#'     (stack-allocated `dual<double, K>` / `F<double, K>`). Suitable
+#'     when integrating with respect to a reparametrization
+#'     \eqn{p = \Phi(\theta)} of known compile-time upper bound `K`. At
+#'     `solveODE()` time, `sens1ini` may be supplied with up to `K`
+#'     columns; `M = ncol(sens1ini) <= K` per call.
+#'   * `Inf` -- heap-allocated AD (`dual<double, 0>` / `F<double, 0>`).
+#'     The AD width is determined at runtime from `ncol(sens1ini)`. Useful
+#'     when the parameter / theta dimension is only known at runtime;
+#'     `ad_backend = "dual"` makes this path much faster than the default
+#'     FADBAD heap because intermediates are bumped from a per-call
+#'     thread-local arena instead of allocated via `new[]`. Incompatible
+#'     with `deriv2 = TRUE`.
+#'
+#'   The choice between legacy sens1ini shape `[n_states, n_active]` and
+#'   full shape `[n_states + n_params, M]` is per-call at `solveODE()`
+#'   time, independent of `nStack`. Requires `deriv = TRUE` for any
+#'   non-default value.
 #' @param ad_backend Character string selecting the forward-AD library.
 #'   * `"dual"` *(default)* -- the in-tree `cppode::dual<double, N>` /
 #'     `cppode::dual<double, 0>` backend. Uses a thread-local arena
@@ -237,8 +238,7 @@
 CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE,
-                   ntheta = NULL,
-                   dynamic_ad = FALSE,
+                   nStack = NULL,
                    ad_backend = c("dual", "fadbad"),
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
                    sparse = NULL,
@@ -334,35 +334,32 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   n_sens_params <- length(sens_params)
   n_total_sens <- n_sens_initials + n_sens_params
 
-  # --- Resolve ntheta (compile-time theta dimension) ---
-  # Default (ntheta = NULL, dynamic_ad = FALSE): identity Phi, backward-compatible.
-  # AD width N = n_total_sens (compile-time stack), sens columns labelled with
-  # model-parameter names, legacy sens1ini shape accepted.
-  # Explicit ntheta enables reparametrization p = Phi(theta). AD width N =
-  # ntheta (compile-time stack), sens1ini is required at solveODE() time with
-  # full shape [n_states + n_params, n_theta].
-  # dynamic_ad = TRUE selects the heap-allocated FADBAD spec F<double, 0> with
-  # m_diff sized at runtime via diff(idx, n_sens). sens1ini is required (drives
-  # the runtime AD width); incompatible with explicit ntheta and with deriv2.
-  has_reparam <- !is.null(ntheta) || isTRUE(dynamic_ad)
-  if (isTRUE(dynamic_ad)) {
-    if (!deriv) stop("'dynamic_ad = TRUE' requires deriv = TRUE")
-    if (deriv2) stop("'dynamic_ad = TRUE' is not supported with deriv2 = TRUE")
-    if (!is.null(ntheta)) stop("'dynamic_ad = TRUE' is incompatible with explicit 'ntheta'")
-    ntheta_resolved <- 0L  # routes codegen to F<double, 0> (heap spec)
-  } else if (!is.null(ntheta)) {
-    if (!is.numeric(ntheta) || length(ntheta) != 1L || ntheta < 0)
-      stop("'ntheta' must be a single non-negative integer")
-    if (!deriv)
-      stop("'ntheta' is only meaningful when deriv = TRUE")
-    ntheta_resolved <- as.integer(ntheta)
+  # --- Resolve nStack (compile-time AD slab width) ---
+  # NULL (default): stack-allocated with width = n_total_sens.
+  # K (positive integer): stack with width K. The runtime per-call active
+  #                 sens dimension M = ncol(sens1ini) must satisfy M <= K.
+  # Inf: heap-allocated AD (dual<double, 0> / F<double, 0>); width determined
+  #                 at runtime from ncol(sens1ini). Incompatible with deriv2.
+  if (is.null(nStack)) {
+    nStack_width <- as.integer(n_total_sens)
+    is_heap <- FALSE
+  } else if (is.numeric(nStack) && length(nStack) == 1L && is.infinite(nStack) && nStack > 0) {
+    if (!deriv) stop("'nStack = Inf' requires deriv = TRUE")
+    if (deriv2) stop("'nStack = Inf' is not supported with deriv2 = TRUE")
+    nStack_width <- 0L  # routes codegen to <double, 0> (heap spec)
+    is_heap <- TRUE
+  } else if (is.numeric(nStack) && length(nStack) == 1L && is.finite(nStack) && nStack >= 0 &&
+             nStack == as.integer(nStack)) {
+    if (!deriv) stop("'nStack' is only meaningful when deriv = TRUE")
+    nStack_width <- as.integer(nStack)
+    is_heap <- FALSE
   } else {
-    ntheta_resolved <- as.integer(n_total_sens)
+    stop("'nStack' must be NULL, a non-negative integer, or Inf")
   }
-  # Codegen helper: when AD is heap-allocated (dynamic_ad), every diff()
-  # seeding call must pass the runtime size as a second arg so m_diff is
-  # allocated. Stack AD uses the static-N spec where diff(idx) has no size arg.
-  dyn_arg <- if (isTRUE(dynamic_ad)) ", n_sens" else ""
+  # Codegen helper: under heap AD, every diff() seeding call must pass the
+  # runtime size as a second arg so the tangent slab is allocated. Stack AD
+  # uses the static-N spec where diff(idx) takes no size arg.
+  dyn_arg <- if (is_heap) ", n_sens" else ""
 
   # --- Generate unique model name ---
   if (is.null(modelname)) {
@@ -467,9 +464,10 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   )
 
   # --- Using declarations ---
-  # AD width N is bound to ntheta_resolved (= n_total_sens in the default
-  # non-reparam case). Under reparametrization p = Phi(theta) the AD sees
-  # n_theta dual components per variable.
+  # AD width N is bound to nStack_width: equals n_total_sens in the default
+  # case, an explicit positive integer when nStack = K, or 0 (heap spec) when
+  # nStack = Inf. The runtime per-call active sens dimension M may be smaller
+  # than N (with a stack of N empty slots ignored).
   # Backend selection: "fadbad" -> fadbad::F<double, N> (legacy);
   #                    "dual"   -> cppode::dual<double, N> (custom forward AD,
   #                                arena-allocated for N=0).
@@ -480,26 +478,26 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       # arbitrary nesting, so no new specialisations are required.
       usings <- c(
         "using namespace cppode;",
-        sprintf("using AD = cppode::dual<double, %d>;", ntheta_resolved),
-        sprintf("using AD2 = cppode::dual<cppode::dual<double, %d>, %d>;", ntheta_resolved, ntheta_resolved)
+        sprintf("using AD = cppode::dual<double, %d>;", nStack_width),
+        sprintf("using AD2 = cppode::dual<cppode::dual<double, %d>, %d>;", nStack_width, nStack_width)
       )
     } else {
       usings <- c(
         "using namespace cppode;",
-        sprintf("using AD = fadbad::F<double, %d>;", ntheta_resolved),
-        sprintf("using AD2 = fadbad::F<fadbad::F<double, %d>, %d>;", ntheta_resolved, ntheta_resolved)
+        sprintf("using AD = fadbad::F<double, %d>;", nStack_width),
+        sprintf("using AD2 = fadbad::F<fadbad::F<double, %d>, %d>;", nStack_width, nStack_width)
       )
     }
   } else if (deriv) {
     if (ad_backend == "dual") {
       usings <- c(
         "using namespace cppode;",
-        sprintf("using AD = cppode::dual<double, %d>;", ntheta_resolved)
+        sprintf("using AD = cppode::dual<double, %d>;", nStack_width)
       )
     } else {
       usings <- c(
         "using namespace cppode;",
-        sprintf("using AD = fadbad::F<double, %d>;", ntheta_resolved)
+        sprintf("using AD = fadbad::F<double, %d>;", nStack_width)
       )
     }
   } else {
@@ -603,24 +601,19 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       sprintf("  const int n_params_all = %d;", n_params),
       sprintf("  const int n_phi_rows   = %d;  // n_states + n_params (full Phi' row count)", n_variables + n_params),
       sprintf("  const int n_sens_total = %d;  // compile-time total (excl. compile-time fixed)", n_total_sens),
-      sprintf("  const int n_theta_max  = %s;  // compile-time upper bound on theta dim under reparam (INT_MAX under dynamic_ad)",
-              if (isTRUE(dynamic_ad)) "INT_MAX" else as.character(ntheta_resolved)),
-      sprintf("  const bool has_reparam = %s;", if (has_reparam) "true" else "false"),
-      sprintf("  const bool is_dynamic_ad = %s;", if (isTRUE(dynamic_ad)) "true" else "false"),
-      "  (void)is_dynamic_ad;",
-      "  if (has_reparam && !has_sens1ini)",
-      "    Rf_error(\"sens1ini is required when the model was compiled with an explicit ntheta\");",
-      "  // n_theta: active theta dim per call. Under reparam we read it at runtime from",
-      "  // ncol(sens1ini), which may be <= n_theta_max. In non-reparam mode it equals",
-      "  // n_sens_total (classical dx/dp sens).",
-      "  const int n_theta = has_reparam ? static_cast<int>(Rf_ncols(sens1iniSEXP)) : n_sens_total;",
-      "  if (has_reparam && n_theta > n_theta_max)",
-      "    Rf_error(\"sens1ini has %d columns but the model's compile-time ntheta upper bound is %d\",",
-      "             n_theta, n_theta_max);",
-      "  // n_sens: active sens dimension. In non-reparam mode this is n_sens_total minus",
-      "  // runtime-fixed parameters. Under reparametrization n_sens == n_theta (runtime",
-      "  // 'fixed' is not supported there).",
-      "  const int n_sens = has_reparam ? n_theta : (n_sens_total - n_runtime_fixed);",
+      sprintf("  const int n_stack_max  = %s;  // compile-time AD slab width (INT_MAX under heap AD)",
+              if (is_heap) "INT_MAX" else as.character(nStack_width)),
+      "  // Per-call active sens dimension: from sens1ini's column count when supplied",
+      "  // (which is the auto-extended full Phi' shape on the R side -- legacy",
+      "  // [n_states, n_active] input is padded with an identity block on the param",
+      "  // rows before reaching here), or n_sens_total - n_runtime_fixed when not",
+      "  // supplied (identity-fallback seeding).",
+      "  const int n_sens = has_sens1ini",
+      "      ? static_cast<int>(Rf_ncols(sens1iniSEXP))",
+      "      : (n_sens_total - n_runtime_fixed);",
+      "  if (n_sens > n_stack_max)",
+      "    Rf_error(\"sens1ini has %d columns but the model's compile-time nStack is %d\",",
+      "             n_sens, n_stack_max);",
       "",
       "  // active_idx[i]: compile-time sens index i -> active index in [0, n_sens), or -1 if runtime-fixed",
       "  std::vector<int> active_idx(n_sens_total, -1);",
@@ -671,10 +664,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "  // global_to_sens[v]: global index v -> compile-time sens index, or -1 if compile-time-fixed",
       sprintf("  static const int global_to_sens_arr[%d] = {%s};", n_global, global_to_sens_literal),
       sprintf("  auto global_to_sens = [](int v) -> int { return global_to_sens_arr[v]; };"),
-      "",
-      "  if (has_reparam && n_runtime_fixed > 0)",
-      "    Rf_error(\"runtime 'fixed' is not supported together with ntheta reparametrization; \"",
-      "             \"express fixedness through sens1ini (zero rows) instead\");",
       "",
       "  // Validate sens1ini / sens2ini length against full Phi'/Phi'' shape",
       "  // [n_phi_rows, n_sens] and [n_phi_rows, n_sens, n_sens] respectively.",
@@ -1376,21 +1365,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  return ans;")
 
   } else if (!deriv2) {
-    # deriv = TRUE, deriv2 = FALSE: list(time, variable, sens1)
-    # Under reparam, sens1 has n_theta columns (one per theta slot).
-    # Non-reparam: n_sens_out = n_total_sens - n_runtime_fixed as before.
+    # deriv = TRUE, deriv2 = FALSE: list(time, variable, sens1).
+    # sens1 has n_sens columns; the av-th column of Phi' (auto-extended on
+    # the R side for legacy input, direct for full Phi') drives AD slot av,
+    # so output reads xi.d(av) directly.
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1) ---",
                  "  int n_sens_out = n_sens;",
-                 "",
-                 "  // Helper: is global index v fixed (compile-time OR runtime)?",
-                 "  // (Only used in the non-reparam output path.)",
-                 "  auto is_any_fixed = [&active_idx, &global_to_sens](int v) -> bool {",
-                 "    int si = global_to_sens(v);",
-                 "    if (si < 0) return true;   // compile-time fixed",
-                 "    return active_idx[si] < 0;  // runtime fixed",
-                 "  };",
-                 "  (void)is_any_fixed;",
                  "",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 5));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 5));",
@@ -1418,21 +1399,8 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                  sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
                  "      variable_out[i + n_out * s] = xi.x();",
-                 "      if (has_reparam) {",
-                 "        // Columns are theta slots: dx_s/dtheta_av = xi.d(av)",
-                 "        for (int av = 0; av < n_sens_out; ++av)",
-                 sprintf("          sens1_out[i + n_out * (s + %d * av)] = xi.d(av);", n_variables),
-                 "      } else {",
-                 "        // Legacy path: columns are active (non-fixed) model-sens slots",
-                 "        int v_out = 0;",
-                 sprintf("        for (int v = 0; v < %d; ++v) {", n_variables + n_params),
-                 "          if (!is_any_fixed(v)) {",
-                 "            int av = active_idx[global_to_sens(v)];",
-                 sprintf("            sens1_out[i + n_out * (s + %d * v_out)] = xi.d(av);", n_variables),
-                 "            v_out++;",
-                 "          }",
-                 "        }",
-                 "      }",
+                 "      for (int av = 0; av < n_sens_out; ++av)",
+                 sprintf("        sens1_out[i + n_out * (s + %d * av)] = xi.d(av);", n_variables),
                  "    }",
                  "  }",
                  "",
@@ -1445,18 +1413,11 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  "  return ans;")
 
   } else {
-    # deriv2 = TRUE: list(time, variable, sens1, sens2)
-    # Note: Output dimension is n_total_sens (compile-time) minus n_runtime_fixed
+    # deriv2 = TRUE: list(time, variable, sens1, sens2). Same direct-AD-slot
+    # output pattern as the deriv-only branch, extended to the nested layer.
     externC <- c(externC,
                  "  // --- Return list(time, variable, sens1, sens2) ---",
                  "  int n_sens_out = n_sens;",
-                 "",
-                 "  auto is_any_fixed = [&active_idx, &global_to_sens](int v) -> bool {",
-                 "    int si = global_to_sens(v);",
-                 "    if (si < 0) return true;",
-                 "    return active_idx[si] < 0;",
-                 "  };",
-                 "  (void)is_any_fixed;",
                  "",
                  "  SEXP ans = PROTECT(Rf_allocVector(VECSXP, 6));",
                  "  SEXP names = PROTECT(Rf_allocVector(STRSXP, 6));",
@@ -1492,29 +1453,10 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                  sprintf("    for (int s = 0; s < %d; ++s) {", n_variables),
                  sprintf("      %s& xi = y[i * %d + s];", numType, n_variables),
                  "      variable_out[i + n_out * s] = xi.x().x();",
-                 "      if (has_reparam) {",
-                 "        for (int av1 = 0; av1 < n_sens_out; ++av1) {",
-                 sprintf("          sens1_out[i + n_out * (s + %d * av1)] = xi.d(av1).x();", n_variables),
-                 "          for (int av2 = 0; av2 < n_sens_out; ++av2)",
-                 sprintf("            sens2_out[i + n_out * (s + %d * (av1 + n_sens_out * av2))] = xi.d(av1).d(av2);", n_variables),
-                 "        }",
-                 "      } else {",
-                 "        int v1_out = 0;",
-                 sprintf("        for (int v1 = 0; v1 < %d; ++v1) {", n_variables + n_params),
-                 "          if (!is_any_fixed(v1)) {",
-                 "            int av1 = active_idx[global_to_sens(v1)];",
-                 sprintf("            sens1_out[i + n_out * (s + %d * v1_out)] = xi.d(av1).x();", n_variables),
-                 "            int v2_out = 0;",
-                 sprintf("            for (int v2 = 0; v2 < %d; ++v2) {", n_variables + n_params),
-                 "              if (!is_any_fixed(v2)) {",
-                 "                int av2 = active_idx[global_to_sens(v2)];",
-                 sprintf("                sens2_out[i + n_out * (s + %d * (v1_out + n_sens_out * v2_out))] = xi.d(av1).d(av2);", n_variables),
-                 "                v2_out++;",
-                 "              }",
-                 "            }",
-                 "            v1_out++;",
-                 "          }",
-                 "        }",
+                 "      for (int av1 = 0; av1 < n_sens_out; ++av1) {",
+                 sprintf("        sens1_out[i + n_out * (s + %d * av1)] = xi.d(av1).x();", n_variables),
+                 "        for (int av2 = 0; av2 < n_sens_out; ++av2)",
+                 sprintf("          sens2_out[i + n_out * (s + %d * (av1 + n_sens_out * av2))] = xi.d(av1).d(av2);", n_variables),
                  "      }",
                  "    }",
                  "  }",
@@ -1587,22 +1529,20 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "jacobian")      <- list(f.x = jac_matrix_R, f.time = time_derivs_str)
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
-  attr(modelname, "ntheta")        <- ntheta_resolved
-  attr(modelname, "has_reparam")   <- has_reparam
-  attr(modelname, "dynamic_ad")    <- isTRUE(dynamic_ad)
+  attr(modelname, "nStack")        <- if (is_heap) Inf else as.numeric(nStack_width)
   attr(modelname, "ad_backend")    <- ad_backend
   attr(modelname, "sparse")        <- use_sparse
   attr(modelname, "method")        <- method
   attr(modelname, "useNDF")        <- useNDF
   # Dimension names -- under reparametrization the sens columns are theta slots
-  # with auto-generated names (user can override via colnames(sens1ini)).
+  # The sens dim defaults to model-parameter names (legacy / identity seeding
+  # basis). solveODE() overrides this per call when sens1ini is supplied with
+  # full Phi'(theta) shape (uses colnames(sens1ini) or theta1..M).
   if (deriv) {
-    sens_col_names <- if (has_reparam) sprintf("theta%d", seq_len(ntheta_resolved))
-                      else              c(sens_initials, sens_params)
     attr(modelname, "dim_names") <- list(
       time = "time",
       variable = variables,
-      sens = sens_col_names
+      sens = c(sens_initials, sens_params)
     )
   } else {
     attr(modelname, "dim_names") <- list(

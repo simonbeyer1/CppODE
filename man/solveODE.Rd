@@ -34,19 +34,17 @@ Must be non-empty and contain only finite values.}
 Names must include all of \code{c(attr(model, "variables"), attr(model, "parameters"))}.}
 
 \item{sens1ini}{Optional numeric matrix of first-order sensitivity initial
-values, interpreted as the Jacobian \eqn{\Phi'(\theta)}. Accepts both the
+values, interpreted as the Jacobian \eqn{\Phi'(\theta)}. Accepts the
 legacy shape \verb{[n_states, n_active]} (auto-extended internally with an
-identity block on the parameter rows) and the full shape
-\verb{[n_states + n_params, n_active]}. Under explicit \code{ntheta} (compile-time
-reparametrization) only the full shape \verb{[n_states + n_params, ntheta]}
-is accepted and \code{sens1ini} is required. Row names, when present, must
-match the relevant row basis; column names must match the sensitivity
-column basis. Default \code{NULL} uses identity seeding (legacy mode only).}
+identity block on the parameter rows) or the full shape
+\verb{[n_states + n_params, M]}. Row names, when present, must match the
+relevant row basis; column names label the resulting sens output
+columns. Default \code{NULL} uses identity seeding on the active sens basis.}
 
 \item{sens2ini}{Optional numeric array of second-order sensitivity initial
 values, interpreted as the Hessian tensor \eqn{\Phi''(\theta)}. Shapes
 analogous to \code{sens1ini}: \verb{[n_states, n_active, n_active]} (legacy) or
-\verb{[n_states + n_params, n_theta, n_theta]} (full). Only allowed when
+\verb{[n_states + n_params, M, M]} (full). Only allowed when
 \code{attr(model, "deriv2") == TRUE}. Default \code{NULL} uses zero seeding
 (correct when \eqn{\Phi} is linear-affine).}
 
@@ -152,24 +150,25 @@ specified time span.
 \code{sens1ini} and \code{sens2ini} describe how the \emph{full} initial-condition and
 parameter vector depends on the sensitivity-column basis -- i.e., they are
 the Jacobian \eqn{\Phi'(\theta)} and Hessian \eqn{\Phi''(\theta)} of the
-reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted:
+reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted, chosen
+per call from the matrix's row count:
 \itemize{
-\item \strong{Legacy (non-reparam) shape} \verb{[n_states, n_active]}: assumes identity
-seeding on the parameter block. The active set equals the model's
+\item \strong{Legacy shape} \verb{[n_states, n_active]}: identity seeding on the
+parameter block is implied. The active set equals the model's
 sensitivity names minus \code{fixed}. This is the shape emitted by
 \code{solveODE()} itself (\code{res$sens1[t, , ]}) and is directly usable as
 \code{sens1ini} for warm-starting subsequent solves.
-\item \strong{Full shape} \verb{[n_states + n_params, n_active]} (or, under explicit
-compile-time \code{ntheta}, \verb{[n_states + n_params, n_theta]}): represents
-\eqn{\Phi'(\theta)} directly. State rows (first \code{n_states}) seed state
-ICs; parameter rows (next \code{n_params}) seed the dynamic parameters.
-Required when the model was compiled with \code{ntheta} (reparametrization
-mode); then \code{fixed} is not accepted and columns correspond to theta
-slots, not model parameters.
+\item \strong{Full shape} \verb{[n_states + n_params, M]}: \eqn{\Phi'(\theta)}
+directly. State rows (first \code{n_states}) seed state ICs; parameter rows
+(next \code{n_params}) seed the dynamic parameters. The column count \code{M}
+may vary across calls; under stack-mode AD it must satisfy
+\eqn{M \le \mathtt{nStack}}. Runtime \code{fixed} is incompatible with
+full-shape input -- express fixedness through zero rows of
+\eqn{\Phi'(\theta)} instead.
 }
 
 Column names, when present, must match the relevant column basis
-(\code{active_sens} legacy, or user-chosen theta names under reparam).
+(\code{active_sens} for legacy, user-chosen theta names for full-shape).
 }
 }
 \seealso{

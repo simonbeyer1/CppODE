@@ -71,7 +71,6 @@
 CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                   compile = TRUE, modelname = NULL, outdir = tempdir(),
                   deriv = FALSE,
-                  ntheta = NULL,
                   sparse = NULL,
                   method = c("bdf", "adams"),
                   stepTrace = FALSE,
@@ -149,17 +148,6 @@ CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = 
   sens_names     <- c(sens_initials, sens_params)
   n_total_sens   <- length(sens_names)
 
-  # --- Resolve ntheta (compile-time theta dimension) ---
-  has_reparam <- !is.null(ntheta)
-  if (has_reparam) {
-    if (!is.numeric(ntheta) || length(ntheta) != 1L || ntheta < 0)
-      stop("'ntheta' must be a single non-negative integer")
-    if (!deriv) stop("'ntheta' is only meaningful when deriv = TRUE")
-    ntheta_resolved <- as.integer(ntheta)
-  } else {
-    ntheta_resolved <- as.integer(n_total_sens)
-  }
-
   # --- Unique model name ---
   if (is.null(modelname)) {
     modelname <- paste(c("c", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
@@ -206,8 +194,6 @@ CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = 
     forcings_list = forcings,
     events = events,
     rootfunc = rootfunc,
-    ntheta = ntheta_resolved,
-    has_reparam = has_reparam,
     version = as.character(utils::packageVersion("CppODE"))
   )
 
@@ -237,17 +223,20 @@ CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = 
   attr(modelname, "jacobian")    <- list(f.x = jac_matrix_R, f.time = unlist(res$time_derivs))
   attr(modelname, "deriv")       <- isTRUE(deriv)
   attr(modelname, "deriv2")      <- FALSE
-  attr(modelname, "ntheta")      <- ntheta_resolved
-  attr(modelname, "has_reparam") <- has_reparam
+  # CVODE always uses runtime-sized sensitivity slots (CVodeSensInit1 allocates
+  # Ns_active vectors at solve time), so it's effectively heap AD from the
+  # compile-time-width perspective.
+  attr(modelname, "nStack")      <- Inf
   attr(modelname, "sparse")      <- use_sparse
   attr(modelname, "method")      <- method
   attr(modelname, "useNDF")      <- NA  # not meaningful for CVODE
   attr(modelname, "backend")     <- "cvode"
 
+  # The sens dim defaults to model-parameter names (legacy / identity seeding
+  # basis). solveODE() overrides this per call when sens1ini is supplied with
+  # full Phi'(theta) shape (uses colnames(sens1ini) or theta1..M).
   attr(modelname, "dim_names") <- if (deriv) {
-    sens_col_names <- if (has_reparam) sprintf("theta%d", seq_len(ntheta_resolved))
-                      else              sens_names
-    list(time = "time", variable = variables, sens = sens_col_names)
+    list(time = "time", variable = variables, sens = sens_names)
   } else {
     list(time = "time", variable = variables)
   }

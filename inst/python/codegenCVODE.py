@@ -61,8 +61,6 @@ def generate_cvode_cpp(
     forcings_list=None,
     events=None,
     rootfunc=None,
-    ntheta=None,
-    has_reparam=False,
     version="unknown",
 ):
     fixed_states = _as_list(fixed_states)
@@ -120,27 +118,14 @@ def generate_cvode_cpp(
     sens_names = sens_ic_names + sens_pr_names
     n_sens_compile = len(sens_names)
 
-    # --- ntheta / reparametrization resolution ---
-    # has_reparam=True means sens columns are theta slots; sens1ini at solve()
-    # time carries the full Phi'(theta) of shape [n_states + n_params, ntheta].
-    # Runtime `fixed` is not supported with reparam.
-    has_reparam = bool(has_reparam)
-    if ntheta is None:
-        ntheta_resolved = n_sens_compile
-    else:
-        ntheta_resolved = int(ntheta)
-    if has_reparam and not deriv:
-        raise ValueError("ntheta is only meaningful with deriv=TRUE")
-
-    sens_to_global = []
-    sens_to_param_idx = []
-    for nm in sens_ic_names:
-        sens_to_global.append(states_list.index(nm))
-        sens_to_param_idx.append(-1)
-    for nm in sens_pr_names:
-        pk = params_list.index(nm)
-        sens_to_global.append(n_states + pk)
-        sens_to_param_idx.append(pk)
+    # --- Sensitivity layout ---
+    # sens1ini is always interpreted at solve() time as the full Phi'(theta)
+    # of shape [n_states + n_params, M], where M = Ns_active is the per-call
+    # active theta count (M may vary across calls). Legacy [n_states, n_active]
+    # input is auto-extended on the R side to identity-on-active-params before
+    # reaching the C++ entry point. Compile-time `fixed` drops the slot from
+    # the sens layout entirely; runtime `fixed` (if any) is translated by R
+    # into zero rows of Phi'(theta).
 
     # df/dp_k only for non-fixed parameters
     df_dp_by_pk = {}
@@ -437,21 +422,6 @@ def generate_cvode_cpp(
         jyS_lines.append(f"    ySdot_arr[{i}] += ({cpp_of(e)}) * yS_arr[{j}];")
     jac_times_yS_body = "\n".join(jyS_lines)
 
-    # Sens: df/dp switch
-    sw_lines = []
-    for pk in sorted(df_dp_by_pk.keys()):
-        sw_lines.append(f"        case {pk}: {{")
-        for (i, d_expr) in df_dp_by_pk[pk]:
-            sw_lines.append(f"          ySdot_arr[{i}] += {cpp_of(d_expr)};")
-        sw_lines.append("          break;")
-        sw_lines.append("        }")
-    df_dp_switch_body = "\n".join(sw_lines)
-
-    # Constant tables
-    n_sens_arr = max(1, n_sens_compile)
-    s2g_str = ", ".join(str(v) for v in sens_to_global) if sens_to_global else "-1"
-    s2pk_str = ", ".join(str(v) for v in sens_to_param_idx) if sens_to_param_idx else "-1"
-
     # --- Compile-time preprocessor defs (only codegen-owned).
     # Linker flags are supplied by the R wrapper from the configure-time
     # detection (the `cvodeConfig` list at the top of R/CVODE.R, patched
@@ -472,14 +442,11 @@ def generate_cvode_cpp(
     src = _render_source(
         modelname=modelname, version=version,
         n_states=n_states, n_global=n_global,
-        n_sens_compile=n_sens_compile, n_sens_arr=n_sens_arr,
-        s2g_str=s2g_str, s2pk_str=s2pk_str,
         ode_body=ode_body,
         jac_body_dense=jac_body_dense,
         jac_body_sparse=jac_body_sparse,
         nnz_total=nnz_total,
         jac_times_yS_body=jac_times_yS_body,
-        df_dp_switch_body=df_dp_switch_body,
         df_dp_entries=df_dp_entries,
         cv_method=cv_method,
         deriv=deriv,
@@ -490,8 +457,6 @@ def generate_cvode_cpp(
         time_events=time_events,
         root_events=root_events,
         n_params=n_params,
-        ntheta=ntheta_resolved,
-        has_reparam=has_reparam,
         states_list=states_list,
         params_list=params_list,
         forcings_list=forcings_list,
@@ -525,10 +490,8 @@ def generate_cvode_cpp(
 def _render_source(
     modelname, version,
     n_states, n_global,
-    n_sens_compile, n_sens_arr,
-    s2g_str, s2pk_str,
     ode_body, jac_body_dense, jac_body_sparse, nnz_total,
-    jac_times_yS_body, df_dp_switch_body,
+    jac_times_yS_body,
     cv_method, deriv, use_sparse,
     n_forcings=0,
     rootfunc_mode="none",
@@ -537,14 +500,11 @@ def _render_source(
     root_events=None,
     n_params=0,
     df_dp_entries=None,
-    ntheta=0,
-    has_reparam=False,
     states_list=None,
     params_list=None,
     forcings_list=None,
 ):
     deriv_flag = "true" if deriv else "false"
-    has_reparam_cpp = "true" if has_reparam else "false"
     has_forcings = n_forcings > 0
     if rootfunc_exprs_cpp is None:
         rootfunc_exprs_cpp = []
@@ -587,11 +547,12 @@ def _render_source(
         "  int              maxroot = 1;          // cap from solveODE(maxroot=)\n"
     )
 
-    # Reparam: UserData carries Phi_prime (Phi' flat, column-major) so the
-    # sens rhs and event saltation lambdas can apply the chain rule.
-    if has_reparam:
+    # UserData carries Phi_prime (the auto-extended Phi'(theta) flat,
+    # column-major) so the sens rhs and event saltation lambdas can apply
+    # the chain rule. R always supplies a full-shape sens1ini at solve time.
+    if deriv:
         reparam_ud_members = (
-            "  std::vector<double> Phi_prime;         // (NEQ + n_params) * Ns_active, column-major (Ns_active <= NTHETA)\n"
+            "  std::vector<double> Phi_prime;         // (NEQ + n_params) * Ns_active, column-major\n"
         )
     else:
         reparam_ud_members = ""
@@ -860,15 +821,15 @@ static std::vector<RootEvent> build_root_events(const double* params,
     # ---- Conditional sens code snippets ----
     # Defined here (rather than alongside the linear-solver setup lower
     # down) because the event and main-loop blocks below reference them.
-    if deriv and has_reparam:
+    if deriv:
         phi_rows = n_states + n_params
         sens_init_block = f"""  if (Ns_active > 0) {{
     yS = N_VCloneVectorArray(Ns_active, y);
     Ns_alloc = Ns_active;
     if (!yS) {{ cleanup(); Rf_error("N_VCloneVectorArray failed"); }}
-    // Under reparametrization sens1ini carries Phi'(theta) of shape
-    // [NEQ + n_params, Ns_active] (column-major, Ns_active = M <= NTHETA);
-    // copy to UserData for the sens RHS callback and event-saltation chain rule.
+    // sens1ini is the auto-extended Phi'(theta) of shape
+    // [NEQ + n_params, Ns_active] (column-major); copy to UserData for the
+    // sens RHS callback and event-saltation chain rule.
     const int phi_rows_rt = {phi_rows};
     const int expected_len = phi_rows_rt * Ns_active;
     if (Rf_length(sens1iniSEXP) != expected_len) {{
@@ -892,39 +853,6 @@ static std::vector<RootEvent> build_root_events(const double* params,
       cleanup(); Rf_error("CVodeSetSensErrCon failed");
     }}
   }}
-"""
-    elif deriv:
-        sens_init_block = """  if (Ns_active > 0) {
-    yS = N_VCloneVectorArray(Ns_active, y);
-    Ns_alloc = Ns_active;
-    if (!yS) { cleanup(); Rf_error("N_VCloneVectorArray failed"); }
-    const bool has_s1ini = !Rf_isNull(sens1iniSEXP);
-    const double* s1 = has_s1ini ? REAL(sens1iniSEXP) : nullptr;
-    if (has_s1ini && Rf_length(sens1iniSEXP) != NEQ * Ns_active) {
-      cleanup();
-      Rf_error("sens1ini length != NEQ * Ns_active (%d * %d)", NEQ, Ns_active);
-    }
-    for (int iS = 0; iS < Ns_active; ++iS) {
-      double* v = N_VGetArrayPointer(yS[iS]);
-      for (int i = 0; i < NEQ; ++i) v[i] = 0.0;
-      if (has_s1ini) {
-        for (int i = 0; i < NEQ; ++i) v[i] = s1[i + NEQ * iS];
-      } else {
-        const int c = ud.active_to_compile[iS];
-        const int g = kSensToGlobal[c];
-        if (g < NEQ) v[g] = 1.0;
-      }
-    }
-    if (CVodeSensInit1(cvode_mem, Ns_active, CV_STAGGERED, sens_rhs1_fn, yS) < 0) {
-      cleanup(); Rf_error("CVodeSensInit1 failed");
-    }
-    if (CVodeSensEEtolerances(cvode_mem) < 0) {
-      cleanup(); Rf_error("CVodeSensEEtolerances failed");
-    }
-    if (CVodeSetSensErrCon(cvode_mem, SUNTRUE) < 0) {
-      cleanup(); Rf_error("CVodeSetSensErrCon failed");
-    }
-  }
 """
     else:
         sens_init_block = ""
@@ -998,11 +926,12 @@ static std::vector<RootEvent> build_root_events(const double* params,
         # so the time-shift term vanishes and we fall back to the
         # fixed-time formula.
         #
-        # Under reparametrization (HAS_REPARAM), iS indexes theta-slots;
-        # we apply chain-rule at the call site: dt_e/dθ_iS = Σ_k dt_e/dp_k · M[NEQ+k, iS]
-        # with M taken from ud.Phi_prime. Non-reparam: iS maps to a single
-        # param slot (or IC slot), no summation needed.
-        if deriv and has_reparam:
+        # iS indexes theta-slots; chain-rule applied at the call site:
+        # dt_e/dθ_iS = Σ_k dt_e/dp_k · M[NEQ+k, iS], with M from ud.Phi_prime.
+        # The legacy "iS maps to a single param slot" non-reparam path is
+        # subsumed: under R-side legacy auto-extension, M[NEQ+k, iS] is
+        # identity-on-active-params, so the sum collapses to a single term.
+        if deriv:
             phi_rows_e = n_states + n_params
             time_event_apply_lambda = f"""  auto apply_time_event = [&](const TimeEvent& ev) {{
     double* y_arr = N_VGetArrayPointer(y);
@@ -1060,62 +989,6 @@ static std::vector<RootEvent> build_root_events(const double* params,
     }}
   }};
 """
-        elif deriv:
-            time_event_apply_lambda = """  auto apply_time_event = [&](const TimeEvent& ev) {
-    double* y_arr = N_VGetArrayPointer(y);
-    double t_e = ev.time;
-    std::vector<double> x_old(NEQ);
-    for (int i = 0; i < NEQ; ++i) x_old[i] = y_arr[i];
-
-    rhs_fn(t_e, y, f_buf, &ud);
-    std::vector<double> f_old(NEQ);
-    { const double* fb = N_VGetArrayPointer(f_buf);
-      for (int i = 0; i < NEQ; ++i) f_old[i] = fb[i]; }
-
-    double new_v = ev.g_fn(x_old.data(), t_e);
-    y_arr[ev.var_idx] = new_v;
-
-    rhs_fn(t_e, y, f_buf, &ud);
-    std::vector<double> f_new(NEQ);
-    { const double* fb = N_VGetArrayPointer(f_buf);
-      for (int i = 0; i < NEQ; ++i) f_new[i] = fb[i]; }
-
-    const double dg_dt = ev.dg_dt_fn(x_old.data(), t_e);
-
-    for (int iS = 0; iS < Ns_active; ++iS) {
-      int compile_idx = ud.active_to_compile[iS];
-      int global_idx  = kSensToGlobal[compile_idx];
-      double* yS_k = N_VGetArrayPointer(yS[iS]);
-      std::vector<double> S_old(NEQ);
-      for (int i = 0; i < NEQ; ++i) S_old[i] = yS_k[i];
-
-      double dt_dp = 0.0;
-      double dg_dp_k = 0.0;
-      if (global_idx >= NEQ) {
-        int pk = global_idx - NEQ;
-        dt_dp   = ev.dt_dp_fn(x_old.data(), t_e, pk);
-        dg_dp_k = ev.dg_dp_fn(x_old.data(), t_e, pk);
-      }
-
-      double sum_gx_S = 0.0, sum_gx_f = 0.0;
-      for (int i = 0; i < NEQ; ++i) {
-        double gx_i = ev.dg_dx_fn(x_old.data(), t_e, i);
-        sum_gx_S += gx_i * S_old[i];
-        sum_gx_f += gx_i * f_old[i];
-      }
-
-      yS_k[ev.var_idx] = sum_gx_S + dg_dp_k
-                       + (sum_gx_f + dg_dt - f_new[ev.var_idx]) * dt_dp;
-
-      if (dt_dp != 0.0) {
-        for (int j = 0; j < NEQ; ++j) {
-          if (j == ev.var_idx) continue;
-          yS_k[j] = S_old[j] + (f_old[j] - f_new[j]) * dt_dp;
-        }
-      }
-    }
-  };
-"""
         else:
             time_event_apply_lambda = """  auto apply_time_event = [&](const TimeEvent& ev) {
     double* y_arr = N_VGetArrayPointer(y);
@@ -1155,7 +1028,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
         # from the first non-terminal triggered event; simultaneous roots
         # from different functions cross at the same t by construction,
         # so their dt* agrees to first order.
-        if deriv and has_reparam:
+        if deriv:
             phi_rows_r = n_states + n_params
             root_event_apply_lambda = f"""  auto apply_root_events_batch = [&](const std::vector<int>& triggered_idx,
                                      double t_e) -> bool {{
@@ -1249,103 +1122,6 @@ static std::vector<RootEvent> build_root_events(const double* params,
 
     return any_terminal;
   }};
-"""
-        elif deriv:
-            root_event_apply_lambda = """  auto apply_root_events_batch = [&](const std::vector<int>& triggered_idx,
-                                     double t_e) -> bool {
-    double* y_arr = N_VGetArrayPointer(y);
-    std::vector<double> x_old(NEQ);
-    for (int i = 0; i < NEQ; ++i) x_old[i] = y_arr[i];
-
-    rhs_fn(t_e, y, f_buf, &ud);
-    std::vector<double> f_old(NEQ);
-    { const double* fb = N_VGetArrayPointer(f_buf);
-      for (int i = 0; i < NEQ; ++i) f_old[i] = fb[i]; }
-
-    // Apply all non-terminal state changes atomically from x_old.
-    bool any_terminal = false;
-    std::vector<char> is_modified(NEQ, 0);
-    for (int j : triggered_idx) {
-      const auto& ev = event_roots[j];
-      if (ev.terminal) { any_terminal = true; continue; }
-      y_arr[ev.var_idx] = ev.g_fn(x_old.data(), t_e);
-      is_modified[ev.var_idx] = 1;
-    }
-
-    rhs_fn(t_e, y, f_buf, &ud);
-    std::vector<double> f_new(NEQ);
-    { const double* fb = N_VGetArrayPointer(f_buf);
-      for (int i = 0; i < NEQ; ++i) f_new[i] = fb[i]; }
-
-    // Reference event for the shared dt_dp.
-    int ref_j = -1;
-    for (int j : triggered_idx) {
-      if (!event_roots[j].terminal) { ref_j = j; break; }
-    }
-    if (ref_j < 0) return any_terminal;
-    const auto& ref = event_roots[ref_j];
-
-    // ġ = Σ dr/dx_i · f_old_i + dr/dt  (one value, shared across slots)
-    double g_dot = ref.dr_dt_fn(x_old.data(), t_e);
-    std::vector<double> rx(NEQ);
-    for (int i = 0; i < NEQ; ++i) {
-      rx[i] = ref.dr_dx_fn(x_old.data(), t_e, i);
-      g_dot += rx[i] * f_old[i];
-    }
-    if (std::fabs(g_dot) < 1e-14) {
-      Rf_warning("Root event: tangential crossing (g_dot ~ 0) — sensitivities may be unreliable at t=%.6e", t_e);
-    }
-
-    for (int iS = 0; iS < Ns_active; ++iS) {
-      int compile_idx = ud.active_to_compile[iS];
-      int global_idx  = kSensToGlobal[compile_idx];
-      double* yS_k = N_VGetArrayPointer(yS[iS]);
-      std::vector<double> S_old(NEQ);
-      for (int i = 0; i < NEQ; ++i) S_old[i] = yS_k[i];
-
-      // dt_dp from the reference event's IFT relation on x_old / S_old.
-      double dr_num = 0.0;
-      for (int i = 0; i < NEQ; ++i) dr_num += rx[i] * S_old[i];
-      if (global_idx >= NEQ) {
-        int pk = global_idx - NEQ;
-        dr_num += ref.dr_dp_fn(x_old.data(), t_e, pk);
-      }
-      double dt_dp = (g_dot != 0.0) ? -dr_num / g_dot : 0.0;
-
-      // Flow correction on non-modified states: applied exactly once.
-      if (dt_dp != 0.0) {
-        for (int i = 0; i < NEQ; ++i) {
-          if (is_modified[i]) continue;
-          yS_k[i] = S_old[i] + (f_old[i] - f_new[i]) * dt_dp;
-        }
-      }
-
-      // Event-specific saltation on each directly modified state.
-      for (int j : triggered_idx) {
-        const auto& ev = event_roots[j];
-        if (ev.terminal) continue;
-        int v = ev.var_idx;
-
-        double sum_gx_S = 0.0, sum_gx_f = 0.0;
-        for (int i = 0; i < NEQ; ++i) {
-          double gx_i = ev.dg_dx_fn(x_old.data(), t_e, i);
-          sum_gx_S += gx_i * S_old[i];
-          sum_gx_f += gx_i * f_old[i];
-        }
-        double dg_dt = ev.dg_dt_fn(x_old.data(), t_e);
-        double dg_dp_k = 0.0;
-        if (global_idx >= NEQ) {
-          int pk = global_idx - NEQ;
-          dg_dp_k = ev.dg_dp_fn(x_old.data(), t_e, pk);
-        }
-
-        yS_k[v] = sum_gx_S + dg_dp_k
-                + (sum_gx_f + dg_dt - f_new[v]) * dt_dp;
-      }
-    }
-
-    return any_terminal;
-  };
 """
         else:
             root_event_apply_lambda = """  auto apply_root_events_batch = [&](const std::vector<int>& triggered_idx,
@@ -1696,24 +1472,23 @@ static int jac_fn(sunrealtype t, N_Vector y, N_Vector fy,
         sens_decl = ("static int sens_rhs1_fn(int Ns, sunrealtype t, N_Vector y, "
                      "N_Vector ydot, int iS, N_Vector yS, N_Vector ySdot, "
                      "void* ud_vp, N_Vector tmp1, N_Vector tmp2);")
-        if has_reparam:
-            # Emit chain-rule accumulation: ySdot += sum_pk (df/dp_pk)(x,p) * M[NEQ+pk, iS]
-            # Grouped by pk so we read M[NEQ+pk, iS] once per pk.
-            by_pk = {}
-            for (i_row, pk, d_expr) in (df_dp_entries or []):
-                by_pk.setdefault(pk, []).append((i_row, d_expr))
-            phi_rows = n_states + n_params
-            reparam_part2_lines = [f"  const int phi_rows = {phi_rows};"]
-            for pk in sorted(by_pk.keys()):
-                reparam_part2_lines.append(f"  {{  // pk = {pk}")
+        # Emit chain-rule accumulation: ySdot += sum_pk (df/dp_pk)(x,p) * M[NEQ+pk, iS]
+        # Grouped by pk so we read M[NEQ+pk, iS] once per pk.
+        by_pk = {}
+        for (i_row, pk, d_expr) in (df_dp_entries or []):
+            by_pk.setdefault(pk, []).append((i_row, d_expr))
+        phi_rows = n_states + n_params
+        reparam_part2_lines = [f"  const int phi_rows = {phi_rows};"]
+        for pk in sorted(by_pk.keys()):
+            reparam_part2_lines.append(f"  {{  // pk = {pk}")
+            reparam_part2_lines.append(
+                f"    const double M_pk = ud->Phi_prime[{n_states + pk} + phi_rows * iS];")
+            for (i_row, d_expr) in by_pk[pk]:
                 reparam_part2_lines.append(
-                    f"    const double M_pk = ud->Phi_prime[{n_states + pk} + phi_rows * iS];")
-                for (i_row, d_expr) in by_pk[pk]:
-                    reparam_part2_lines.append(
-                        f"    ySdot_arr[{i_row}] += ({_to_cpp(d_expr, states_list, params_list, n_states, 'double', forcings_list)}) * M_pk;")
-                reparam_part2_lines.append("  }")
-            reparam_part2_body = "\n".join(reparam_part2_lines)
-            sens_impl = f"""
+                    f"    ySdot_arr[{i_row}] += ({_to_cpp(d_expr, states_list, params_list, n_states, 'double', forcings_list)}) * M_pk;")
+            reparam_part2_lines.append("  }")
+        reparam_part2_body = "\n".join(reparam_part2_lines)
+        sens_impl = f"""
 static int sens_rhs1_fn(int Ns, sunrealtype t,
                         N_Vector y, N_Vector ydot,
                         int iS, N_Vector yS, N_Vector ySdot,
@@ -1731,41 +1506,9 @@ static int sens_rhs1_fn(int Ns, sunrealtype t,
   // --- Part 1: ySdot = J(x,p) * yS ---
 {jac_times_yS_body}
 
-  // --- Part 2 (reparam): ySdot += (df/dp_d) * M_param[:, iS] ---
+  // --- Part 2: ySdot += (df/dp_d) * M_param[:, iS] ---
   // where M_param is the parameter block of Phi'(theta).
 {reparam_part2_body}
-  return 0;
-}}
-"""
-        else:
-            sens_impl = f"""
-static int sens_rhs1_fn(int Ns, sunrealtype t,
-                        N_Vector y, N_Vector ydot,
-                        int iS, N_Vector yS, N_Vector ySdot,
-                        void* ud_vp,
-                        N_Vector tmp1, N_Vector tmp2) {{
-  (void)Ns; (void)t; (void)ydot; (void)tmp1; (void)tmp2;
-  UserData* ud = static_cast<UserData*>(ud_vp);
-  const double* params = ud->params.data();
-  const double* x = N_VGetArrayPointer(y);
-  const double* yS_arr  = N_VGetArrayPointer(yS);
-  double*       ySdot_arr = N_VGetArrayPointer(ySdot);
-  (void)x; (void)params;
-{forcing_local}
-
-  // --- Part 1: ySdot = J(x,p) * yS ---
-{jac_times_yS_body}
-
-  // --- Part 2: add df/dp_k if iS maps to a real parameter ---
-  int compile_idx = ud->active_to_compile[iS];
-  int global_idx = kSensToGlobal[compile_idx];
-  if (global_idx >= NEQ) {{
-    int pk = global_idx - NEQ;
-    switch (pk) {{
-{df_dp_switch_body}
-      default: break;
-    }}
-  }}
   return 0;
 }}
 """
@@ -1796,16 +1539,9 @@ namespace {{
 
 constexpr int NEQ    = {n_states};
 constexpr int NPARMS = {n_global};           // n_states + n_params (flat layout)
-constexpr int NSENS_COMPILE = {n_sens_compile};
-constexpr int NTHETA = {ntheta};             // compile-time upper bound on theta dim under reparam
-constexpr bool HAS_REPARAM = {has_reparam_cpp};
-
-static const int kSensToGlobal[{n_sens_arr}]  = {{ {s2g_str} }};
-static const int kSensToParamIdx[{n_sens_arr}] = {{ {s2pk_str} }};
 
 struct UserData {{
   std::vector<double> params;               // length NPARMS
-  std::vector<int>    active_to_compile;    // length Ns_active
 {reparam_ud_members}{forcing_ud_members}{events_ud_members}}};
 
 static int rhs_fn(sunrealtype t, N_Vector y, N_Vector ydot, void* ud_vp);
@@ -1950,42 +1686,16 @@ extern "C" SEXP solve_{modelname}(
   }}
 
 {forcing_init_block}
-  // Runtime-fixed → build active_to_compile mapping (non-reparam only).
-  // Under reparam, `fixed` is rejected and Ns = ncol(sens1ini) at runtime.
-  std::vector<int> active_to_compile;
-  if (deriv) {{
-    if (HAS_REPARAM && !Rf_isNull(fixedSEXP) && Rf_length(fixedSEXP) > 0) {{
-      Rf_error("runtime 'fixed' is not supported together with ntheta reparametrization; "
-               "express fixedness via zero rows in sens1ini");
-    }}
-    std::vector<char> fixed_mask(NSENS_COMPILE, 0);
-    if (!Rf_isNull(fixedSEXP)) {{
-      const int* fx = INTEGER(fixedSEXP);
-      const int  nf = Rf_length(fixedSEXP);
-      for (int i = 0; i < nf; ++i)
-        if (fx[i] >= 0 && fx[i] < NSENS_COMPILE) fixed_mask[fx[i]] = 1;
-    }}
-    active_to_compile.reserve(NSENS_COMPILE);
-    for (int i = 0; i < NSENS_COMPILE; ++i)
-      if (!fixed_mask[i]) active_to_compile.push_back(i);
-    ud.active_to_compile = active_to_compile;
-  }}
-  // Under reparam, NTHETA is the compile-time upper bound. The runtime active
-  // theta count M is read from ncol(sens1ini) and may be <= NTHETA. M=0
-  // (degenerate: no active theta this call) skips sensitivity integration
-  // via the `if (Ns_active > 0)` gate inside sens_init_block.
+  // R always supplies a full-shape sens1ini = [NEQ + n_params, M] when
+  // deriv = TRUE: legacy [n_states, n_active] input is auto-extended with
+  // identity-on-non-fixed-params, runtime `fixed` is translated into zero
+  // rows of Phi'. Ns_active = M is read from ncol(sens1ini); M = 0 is a
+  // valid fast path (skips sensitivity integration via the gate below).
   int Ns_active_tmp = 0;
   if (deriv) {{
-    if (HAS_REPARAM) {{
-      if (Rf_isNull(sens1iniSEXP))
-        Rf_error("sens1ini is required when the model is compiled with an explicit ntheta");
-      Ns_active_tmp = static_cast<int>(Rf_ncols(sens1iniSEXP));
-      if (Ns_active_tmp > NTHETA)
-        Rf_error("sens1ini has %d columns but the model's compile-time ntheta upper bound is %d",
-                 Ns_active_tmp, NTHETA);
-    }} else {{
-      Ns_active_tmp = static_cast<int>(active_to_compile.size());
-    }}
+    if (Rf_isNull(sens1iniSEXP))
+      Rf_error("sens1ini is required when deriv = TRUE");
+    Ns_active_tmp = static_cast<int>(Rf_ncols(sens1iniSEXP));
   }}
   const int Ns_active = Ns_active_tmp;
 

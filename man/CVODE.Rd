@@ -14,7 +14,6 @@ CVODE(
   modelname = NULL,
   outdir = tempdir(),
   deriv = FALSE,
-  ntheta = NULL,
   sparse = NULL,
   method = c("bdf", "adams"),
   stepTrace = FALSE,
@@ -44,17 +43,6 @@ If \code{NULL}, a random identifier is used.}
 \item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
 
 \item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
-
-\item{ntheta}{Optional integer giving the compile-time theta dimension for
-parameter reparametrization \eqn{p = \Phi(\theta)}. When \code{NULL} (default),
-the AD width equals the number of non-fixed (state + parameter) slots and
-\code{sens1ini} is interpreted in legacy \verb{[n_states, n_active]} shape (or
-omitted for identity seeding). When set to an explicit integer, the AD
-width is fixed to \code{ntheta}, \code{sens1ini} must be supplied at \code{solveODE()}
-time as the full Jacobian \eqn{\Phi'(\theta)} of shape
-\verb{[n_states + n_params, ntheta]}, and sensitivity output columns are
-labelled as theta slots instead of model-parameter names. Requires
-\code{deriv = TRUE} and is incompatible with runtime \code{fixed}.}
 
 \item{sparse}{Controls sparse LU factorization.
 \code{NULL} (default) auto-selects based on Jacobian sparsity.

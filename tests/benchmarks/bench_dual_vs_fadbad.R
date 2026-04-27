@@ -59,17 +59,17 @@ cat("\nCompiling 6 models (3 fadbad + 3 dual) ...\n")
 m_fb_42 <- CppODE(rhs, modelname = "cb_fb_42", method = "bdf", outdir = getwd(),
                   deriv = TRUE, ad_backend = "fadbad", compile = FALSE)
 m_fb_44 <- CppODE(rhs, modelname = "cb_fb_44", method = "bdf", outdir = getwd(),
-                  deriv = TRUE, ad_backend = "fadbad", ntheta = .NTHETA, compile = FALSE)
+                  deriv = TRUE, ad_backend = "fadbad", nStack = .NTHETA, compile = FALSE)
 m_fb_h  <- CppODE(rhs, modelname = "cb_fb_h",  method = "bdf", outdir = getwd(),
-                  deriv = TRUE, ad_backend = "fadbad", dynamic_ad = TRUE, compile = FALSE)
+                  deriv = TRUE, ad_backend = "fadbad", nStack = Inf, compile = FALSE)
 
 # dual backend — same three width regimes
 m_du_42 <- CppODE(rhs, modelname = "cb_du_42", method = "bdf", outdir = getwd(),
                   deriv = TRUE, ad_backend = "dual", compile = FALSE)
 m_du_44 <- CppODE(rhs, modelname = "cb_du_44", method = "bdf", outdir = getwd(),
-                  deriv = TRUE, ad_backend = "dual", ntheta = .NTHETA, compile = FALSE)
+                  deriv = TRUE, ad_backend = "dual", nStack = .NTHETA, compile = FALSE)
 m_du_h  <- CppODE(rhs, modelname = "cb_du_h",  method = "bdf", outdir = getwd(),
-                  deriv = TRUE, ad_backend = "dual", dynamic_ad = TRUE, compile = FALSE)
+                  deriv = TRUE, ad_backend = "dual", nStack = Inf, compile = FALSE)
 
 CppODE:::compile(m_fb_42, m_fb_44, m_fb_h, m_du_42, m_du_44, m_du_h, cores = 4)
 cat("Done.\n\n")

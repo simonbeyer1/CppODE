@@ -85,33 +85,33 @@ m_rb4       <- CppODE(rhs, modelname = "cascade_rb4",       method = "rb4",
 m_tsit5     <- CppODE(rhs, modelname = "cascade_tsit5",     method = "tsit5",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
 
-# Static-ntheta variants -- AD width fixed to .NTHETA at compile time (stack)
+# Static-nStack variants -- AD width fixed to .NTHETA at compile time (stack)
 m_ndf_s     <- CppODE(rhs, modelname = "cascade_ndf_s",     method = "bdf",   useNDF = TRUE,
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      ntheta = .NTHETA)
+                      nStack = .NTHETA)
 m_bdf_s     <- CppODE(rhs, modelname = "cascade_bdf_s",     method = "bdf",   useNDF = FALSE,
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      ntheta = .NTHETA)
+                      nStack = .NTHETA)
 m_rb4_s     <- CppODE(rhs, modelname = "cascade_rb4_s",     method = "rb4",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      ntheta = .NTHETA)
+                      nStack = .NTHETA)
 m_tsit5_s   <- CppODE(rhs, modelname = "cascade_tsit5_s",   method = "tsit5",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      ntheta = .NTHETA)
+                      nStack = .NTHETA)
 
 # Heap variants -- F<double, 0> with runtime-sized m_diff (= new T[n_sens]).
 m_ndf_h     <- CppODE(rhs, modelname = "cascade_ndf_h",     method = "bdf",   useNDF = TRUE,
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      dynamic_ad = TRUE)
+                      nStack = Inf)
 m_bdf_h     <- CppODE(rhs, modelname = "cascade_bdf_h",     method = "bdf",   useNDF = FALSE,
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      dynamic_ad = TRUE)
+                      nStack = Inf)
 m_rb4_h     <- CppODE(rhs, modelname = "cascade_rb4_h",     method = "rb4",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      dynamic_ad = TRUE)
+                      nStack = Inf)
 m_tsit5_h   <- CppODE(rhs, modelname = "cascade_tsit5_h",   method = "tsit5",
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      dynamic_ad = TRUE)
+                      nStack = Inf)
 
 # cppode::dual backend — same three width regimes (stack42, stack44, heap)
 # These compile from the same generator output but route std::* to cppode::*
@@ -121,22 +121,23 @@ m_bdf_d     <- CppODE(rhs, modelname = "cascade_bdf_d",     method = "bdf",   us
                       ad_backend = "dual")
 m_bdf_sd    <- CppODE(rhs, modelname = "cascade_bdf_sd",    method = "bdf",   useNDF = FALSE,
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      ntheta = .NTHETA, ad_backend = "dual")
+                      nStack = .NTHETA, ad_backend = "dual")
 m_bdf_hd    <- CppODE(rhs, modelname = "cascade_bdf_hd",    method = "bdf",   useNDF = FALSE,
                       outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                      dynamic_ad = TRUE, ad_backend = "dual")
+                      nStack = Inf, ad_backend = "dual")
 
 m_cvode       <- CVODE( rhs, modelname = "cascade_cvode",       method = "bdf",
                         outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
 m_cvode_klu   <- CVODE( rhs, modelname = "cascade_cvode_klu",   method = "bdf",
                         outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE)
-# Reparam variants (compile-time ntheta -> reparam sens_rhs1_fn with general Phi)
+# Reparam variants -- CVODE always handles Phi'(theta) at runtime; the
+# "_r" suffix here just labels the call site that exercises the chain-rule
+# code path with a non-identity Phi'. (Pre-1.x these used a compile-time
+# `ntheta` arg; that's gone now.)
 m_cvode_r     <- CVODE( rhs, modelname = "cascade_cvode_r",     method = "bdf",
-                        outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE,
-                        ntheta = .NTHETA)
+                        outdir = getwd(), sparse = FALSE, deriv = .calcSens, compile = FALSE)
 m_cvode_klu_r <- CVODE( rhs, modelname = "cascade_cvode_klu_r", method = "bdf",
-                        outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE,
-                        ntheta = .NTHETA)
+                        outdir = getwd(), sparse = TRUE,  deriv = .calcSens, compile = FALSE)
 
 CppODE:::compile(m_ndf,   m_bdf,   m_tsit5, m_rb4,
                  m_ndf_s, m_bdf_s, m_tsit5_s, m_rb4_s,

@@ -9,23 +9,24 @@
 #' `sens1ini` and `sens2ini` describe how the *full* initial-condition and
 #' parameter vector depends on the sensitivity-column basis -- i.e., they are
 #' the Jacobian \eqn{\Phi'(\theta)} and Hessian \eqn{\Phi''(\theta)} of the
-#' reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted:
+#' reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted, chosen
+#' per call from the matrix's row count:
 #'
-#' - **Legacy (non-reparam) shape** `[n_states, n_active]`: assumes identity
-#'   seeding on the parameter block. The active set equals the model's
+#' - **Legacy shape** `[n_states, n_active]`: identity seeding on the
+#'   parameter block is implied. The active set equals the model's
 #'   sensitivity names minus `fixed`. This is the shape emitted by
 #'   `solveODE()` itself (`res$sens1[t, , ]`) and is directly usable as
 #'   `sens1ini` for warm-starting subsequent solves.
-#' - **Full shape** `[n_states + n_params, n_active]` (or, under explicit
-#'   compile-time `ntheta`, `[n_states + n_params, n_theta]`): represents
-#'   \eqn{\Phi'(\theta)} directly. State rows (first `n_states`) seed state
-#'   ICs; parameter rows (next `n_params`) seed the dynamic parameters.
-#'   Required when the model was compiled with `ntheta` (reparametrization
-#'   mode); then `fixed` is not accepted and columns correspond to theta
-#'   slots, not model parameters.
+#' - **Full shape** `[n_states + n_params, M]`: \eqn{\Phi'(\theta)}
+#'   directly. State rows (first `n_states`) seed state ICs; parameter rows
+#'   (next `n_params`) seed the dynamic parameters. The column count `M`
+#'   may vary across calls; under stack-mode AD it must satisfy
+#'   \eqn{M \le \mathtt{nStack}}. Runtime `fixed` is incompatible with
+#'   full-shape input -- express fixedness through zero rows of
+#'   \eqn{\Phi'(\theta)} instead.
 #'
 #' Column names, when present, must match the relevant column basis
-#' (`active_sens` legacy, or user-chosen theta names under reparam).
+#' (`active_sens` for legacy, user-chosen theta names for full-shape).
 #'
 #' @param model A compiled ODE model object returned by [CppODE()].
 #' @param times Numeric vector of time points at which to return the solution.
@@ -33,18 +34,16 @@
 #' @param parms Named numeric vector of initial conditions and parameters.
 #'   Names must include all of `c(attr(model, "variables"), attr(model, "parameters"))`.
 #' @param sens1ini Optional numeric matrix of first-order sensitivity initial
-#'   values, interpreted as the Jacobian \eqn{\Phi'(\theta)}. Accepts both the
+#'   values, interpreted as the Jacobian \eqn{\Phi'(\theta)}. Accepts the
 #'   legacy shape `[n_states, n_active]` (auto-extended internally with an
-#'   identity block on the parameter rows) and the full shape
-#'   `[n_states + n_params, n_active]`. Under explicit `ntheta` (compile-time
-#'   reparametrization) only the full shape `[n_states + n_params, ntheta]`
-#'   is accepted and `sens1ini` is required. Row names, when present, must
-#'   match the relevant row basis; column names must match the sensitivity
-#'   column basis. Default `NULL` uses identity seeding (legacy mode only).
+#'   identity block on the parameter rows) or the full shape
+#'   `[n_states + n_params, M]`. Row names, when present, must match the
+#'   relevant row basis; column names label the resulting sens output
+#'   columns. Default `NULL` uses identity seeding on the active sens basis.
 #' @param sens2ini Optional numeric array of second-order sensitivity initial
 #'   values, interpreted as the Hessian tensor \eqn{\Phi''(\theta)}. Shapes
 #'   analogous to `sens1ini`: `[n_states, n_active, n_active]` (legacy) or
-#'   `[n_states + n_params, n_theta, n_theta]` (full). Only allowed when
+#'   `[n_states + n_params, M, M]` (full). Only allowed when
 #'   `attr(model, "deriv2") == TRUE`. Default `NULL` uses zero seeding
 #'   (correct when \eqn{\Phi} is linear-affine).
 #' @param fixed Optional character vector of sensitivity parameter names to treat
@@ -157,16 +156,35 @@ solveODE <- function(model, times, parms,
   deriv         <- attr(model, "deriv")
   deriv2        <- attr(model, "deriv2")
   all_sens      <- if (deriv) attr(model, "dim_names")$sens else character(0)
-  has_reparam   <- isTRUE(attr(model, "has_reparam"))
-  dynamic_ad    <- isTRUE(attr(model, "dynamic_ad"))
-  ntheta        <- attr(model, "ntheta")
+  nStack_attr   <- attr(model, "nStack")
+  backend       <- attr(model, "backend")  # "cvode" for CVODE, NULL/other for native
+  is_cvode      <- identical(backend, "cvode")
 
-  ## --- Runtime fixed: resolve early so sens1ini/sens2ini see the active set ---
+  n_states  <- length(variables)
+  n_params  <- length(parameters)
+  n_phi_rows <- n_states + n_params
+
+  ## --- Detect sens1ini shape per call (legacy vs full Phi'(theta)) ---
+  ## - Full shape  [n_phi_rows, M] (the auto-extended Phi'(theta) we hand
+  ##   down to C++): user supplied a parameter Jacobian directly.
+  ## - Legacy shape [n_states, n_active]: identity-on-active-params
+  ##   reparametrization is implied; auto-extended below.
+  ## - NULL: identity on the whole non-fixed sens basis (default).
+  if (!is.null(sens1ini) && !deriv)
+    stop("'sens1ini' supplied but model has deriv = FALSE")
+  if (!is.null(sens2ini) && !deriv2)
+    stop("'sens2ini' supplied but model has deriv2 = FALSE")
+
+  sens1ini_is_full <- !is.null(sens1ini) &&
+    (is.matrix(sens1ini) || (is.array(sens1ini) && length(dim(sens1ini)) == 2L)) &&
+    nrow(sens1ini) == n_phi_rows && n_phi_rows != n_states
+
+  ## --- Runtime fixed: incompatible with full-shape sens1ini ---
   fixed_indices <- integer(0)
   if (!is.null(fixed)) {
     if (!deriv) { warning("'fixed' ignored when deriv = FALSE") }
-    else if (has_reparam) {
-      stop("'fixed' is not supported together with ntheta reparametrization; ",
+    else if (sens1ini_is_full) {
+      stop("'fixed' is not supported together with full-shape sens1ini; ",
            "express fixedness through zero rows in sens1ini instead")
     } else {
       if (!is.character(fixed)) stop("'fixed' must be a character vector")
@@ -178,38 +196,22 @@ solveODE <- function(model, times, parms,
   }
   active_sens <- if (deriv && length(fixed_indices))
     all_sens[-( fixed_indices + 1L)] else all_sens
-
-  ## --- Validate and coerce sens1ini / sens2ini ---
-  ## Under the unified semantics sens1ini is Phi'(theta) with full shape
-  ## [n_states + n_params, n_theta_active]. Legacy shape [n_states, n_active]
-  ## is accepted in non-reparam mode and auto-extended with an identity block
-  ## on the param rows (zeros for fixed params).
-  if (!is.null(sens1ini) && !deriv)
-    stop("'sens1ini' supplied but model has deriv = FALSE")
-  if (!is.null(sens2ini) && !deriv2)
-    stop("'sens2ini' supplied but model has deriv2 = FALSE")
-
-  n_states  <- length(variables)
-  n_params  <- length(parameters)
-  n_phi_rows <- n_states + n_params
   n_active  <- length(active_sens)
-  ## Under reparam, `ntheta` (model attr) is the compile-time upper bound on
-  ## the AD width. `n_theta_active` is the per-call count read from
-  ## ncol(sens1ini) and must satisfy 0 <= n_theta_active <= n_theta_max.
-  n_theta_max <- if (dynamic_ad) .Machine$integer.max else
-                 if (has_reparam) as.integer(ntheta) else n_active
-  n_theta_active <- if (has_reparam) {
-    if (is.null(sens1ini))
-      stop("'sens1ini' is required when the model was compiled with an explicit ntheta")
-    if (is.matrix(sens1ini) || (is.array(sens1ini) && length(dim(sens1ini)) == 2L)) {
-      as.integer(ncol(sens1ini))
-    } else {
-      stop("'sens1ini' must be a matrix under reparametrization ",
-           "(need a 'dim' attribute to infer the active theta count)")
-    }
-  } else n_active
 
-  ## Identity-on-active-params padding for legacy shape under non-reparam.
+  ## --- Per-call active sens dimension and stack-width check ---
+  ## sens1ini full shape: M = ncol(sens1ini) (theta count, may differ from n_active).
+  ## otherwise: M = n_active (legacy / identity seeding produces the active basis).
+  n_theta_active <- if (sens1ini_is_full) as.integer(ncol(sens1ini)) else n_active
+  if (deriv) {
+    nStack_max <- if (is.null(nStack_attr) || is.infinite(nStack_attr))
+                    .Machine$integer.max
+                  else as.integer(nStack_attr)
+    if (n_theta_active > nStack_max)
+      stop(sprintf("sens1ini column count (%d) exceeds the model's compile-time nStack (%d)",
+                   n_theta_active, nStack_max))
+  }
+
+  ## --- Identity-on-active-params padding for legacy shape ---
   build_param_identity <- function(col_names) {
     pad <- matrix(0, nrow = n_params, ncol = length(col_names),
                   dimnames = list(parameters, col_names))
@@ -220,21 +222,23 @@ solveODE <- function(model, times, parms,
     pad
   }
 
-  ## Reorder a matrix's rows to `row_order` if dimnames present.
-  reorder_rows <- function(x, row_order, arg) {
-    if (is.null(rownames(x))) return(x)
-    miss <- setdiff(row_order, rownames(x))
-    if (length(miss))
-      stop(sprintf("'%s' row names missing: %s", arg, paste(miss, collapse = ", ")))
-    x[row_order, , drop = FALSE]
+  ## --- Output sens column names (per call) ---
+  ## - full + colnames present  -> user-provided theta names
+  ## - full + no colnames       -> theta1..thetaM
+  ## - legacy / NULL            -> active_sens (model-parameter basis)
+  sens_col_names <- if (sens1ini_is_full) {
+    cn <- colnames(sens1ini)
+    if (!is.null(cn)) cn else sprintf("theta%d", seq_len(n_theta_active))
+  } else {
+    active_sens
   }
 
-  ## Full-shape coercion: returns flat double of length n_phi_rows * n_cols.
-  coerce_full_2d <- function(x, n_cols, col_names, arg) {
+  ## --- Coerce sens1ini to flat [n_phi_rows, n_theta_active] ---
+  coerce_sens1ini <- function(x, n_cols, col_names, arg) {
     if (!is.numeric(x)) stop("'", arg, "' must be numeric")
     if (is.matrix(x) || (is.array(x) && length(dim(x)) == 2)) {
-      if (nrow(x) == n_states && ncol(x) == n_cols && !has_reparam) {
-        ## Legacy shape: reorder, then append identity block on param rows.
+      if (nrow(x) == n_states && ncol(x) == n_cols && n_phi_rows != n_states) {
+        ## Legacy shape: reorder rows + cols if named, append identity-on-params.
         if (!is.null(rownames(x))) {
           if (!setequal(rownames(x), variables))
             stop("'", arg, "' row names must match variables")
@@ -247,13 +251,11 @@ solveODE <- function(model, times, parms,
           x <- x[, col_names, drop = FALSE]
         }
         pad <- build_param_identity(col_names)
-        full <- rbind(unname(x), unname(pad))
-        return(as.double(full))
+        return(as.double(rbind(unname(x), unname(pad))))
       }
       if (nrow(x) != n_phi_rows || ncol(x) != n_cols)
-        stop(sprintf("'%s' must be [%d, %d] (Phi' full shape)%s",
-                     arg, n_phi_rows, n_cols,
-                     if (!has_reparam) sprintf(" or [%d, %d] (legacy)", n_states, n_cols) else ""))
+        stop(sprintf("'%s' must be [%d, %d] (Phi' full shape) or [%d, %d] (legacy)",
+                     arg, n_phi_rows, n_cols, n_states, n_cols))
       if (!is.null(rownames(x))) {
         expected_rows <- c(variables, parameters)
         if (!setequal(rownames(x), expected_rows))
@@ -267,7 +269,7 @@ solveODE <- function(model, times, parms,
       }
       as.double(x)
     } else {
-      if (length(x) == n_states * n_cols && !has_reparam) {
+      if (length(x) == n_states * n_cols && n_phi_rows != n_states) {
         xmat <- matrix(as.double(x), nrow = n_states, ncol = n_cols)
         pad  <- build_param_identity(col_names)
         return(as.double(rbind(xmat, unname(pad))))
@@ -279,45 +281,40 @@ solveODE <- function(model, times, parms,
     }
   }
 
-  ## Column names: theta names under reparam come from user via colnames(sens1ini).
-  ## If user didn't provide colnames, fall back to the first n_theta_active of
-  ## the auto-generated names in attr(model, "dim_names")$sens (length n_theta_max).
-  sens_col_names <- if (has_reparam) {
-    if (!is.null(sens1ini) && !is.null(colnames(sens1ini))) colnames(sens1ini)
-    else if (dynamic_ad) sprintf("theta%d", seq_len(n_theta_active))
-    else all_sens[seq_len(n_theta_active)]
-  } else {
-    active_sens
-  }
-  if (has_reparam && length(sens_col_names) != n_theta_active)
-    stop(sprintf("colnames(sens1ini) length (%d) does not match ncol(sens1ini) (%d)",
-                 length(sens_col_names), n_theta_active))
-  if (has_reparam && n_theta_active > n_theta_max)
-    stop(sprintf("sens1ini column count (%d) exceeds model ntheta upper bound (%d)",
-                 n_theta_active, n_theta_max))
-
-  sens1ini <- if (!is.null(sens1ini)) {
-    flat <- coerce_full_2d(sens1ini, n_theta_active, sens_col_names, "sens1ini")
+  ## --- Build sens1ini for the C++ side ---
+  ## CVODE always needs a full Phi' (codegen has no identity-fallback). Native
+  ## CppODE accepts NULL: the generated C++ then identity-seeds via diff(ai).
+  ## Runtime `fixed` becomes zero rows when we synthesize the default Phi'.
+  if (deriv && is.null(sens1ini) && is_cvode) {
+    default_pp <- matrix(0, nrow = n_phi_rows, ncol = n_active,
+                         dimnames = list(c(variables, parameters), active_sens))
+    for (j in seq_along(active_sens)) {
+      r <- match(active_sens[j], c(variables, parameters))
+      if (!is.na(r)) default_pp[r, j] <- 1.0
+    }
+    sens1ini <- as.double(default_pp)
+    dim(sens1ini) <- c(n_phi_rows, n_active)
+  } else if (!is.null(sens1ini)) {
+    flat <- coerce_sens1ini(sens1ini, n_theta_active, sens_col_names, "sens1ini")
     ## Preserve 2-D shape for C++ Rf_ncols() -- distinguishes [phi_rows, M] from a flat vector.
     dim(flat) <- c(n_phi_rows, n_theta_active)
-    flat
+    sens1ini <- flat
   }
 
   if (!is.null(sens2ini)) {
     if (!is.numeric(sens2ini)) stop("'sens2ini' must be numeric")
+    ## Legacy [n_states, n_active, n_active] is accepted only when sens1ini
+    ## is legacy / NULL (then Phi'' = 0 on the param block, correct for
+    ## affine Phi). Full [n_phi_rows, M, M] is the unified shape.
+    legacy_d2_ok <- !sens1ini_is_full && n_phi_rows != n_states
     if (is.array(sens2ini) && length(dim(sens2ini)) == 3) {
-      ## Accept legacy [n_states, n_active, n_active] in non-reparam mode
-      ## by padding with zeros on the param block (correct when Phi'' = 0 for
-      ## linear-affine Phi, which is the legacy identity case).
-      if (all(dim(sens2ini) == c(n_states, n_theta_active, n_theta_active)) && !has_reparam) {
+      if (all(dim(sens2ini) == c(n_states, n_theta_active, n_theta_active)) && legacy_d2_ok) {
         dn <- dimnames(sens2ini)
         if (!is.null(dn[[1]])) sens2ini <- sens2ini[variables, , , drop = FALSE]
         if (!is.null(dn[[2]])) sens2ini <- sens2ini[, sens_col_names, , drop = FALSE]
         if (!is.null(dn[[3]])) sens2ini <- sens2ini[, , sens_col_names, drop = FALSE]
-        pad_arr <- array(0, dim = c(n_params, n_theta_active, n_theta_active))
         full <- array(0, dim = c(n_phi_rows, n_theta_active, n_theta_active))
         full[seq_len(n_states), , ] <- sens2ini
-        ## pad rows are zero by init
         sens2ini <- as.double(full)
       } else if (all(dim(sens2ini) == c(n_phi_rows, n_theta_active, n_theta_active))) {
         dn <- dimnames(sens2ini)
@@ -346,7 +343,7 @@ solveODE <- function(model, times, parms,
       len <- length(sens2ini)
       if (len == n_phi_rows * n_theta_active^2) {
         sens2ini <- as.double(sens2ini)
-      } else if (len == n_states * n_theta_active^2 && !has_reparam) {
+      } else if (len == n_states * n_theta_active^2 && legacy_d2_ok) {
         pad <- array(0, dim = c(n_phi_rows, n_theta_active, n_theta_active))
         pad[seq_len(n_states), , ] <- array(as.double(sens2ini),
                                             dim = c(n_states, n_theta_active, n_theta_active))
@@ -438,7 +435,7 @@ solveODE <- function(model, times, parms,
     error = function(e) stop("ODE solver error: ", e$message, call. = FALSE))
 
   ## --- Attach dimension names (time-first layout) ---
-  out_sens <- if (has_reparam) sens_col_names else active_sens
+  out_sens <- sens_col_names
   if (!is.null(result$variable))
     colnames(result$variable) <- variables
   if (!is.null(result$sens1))
