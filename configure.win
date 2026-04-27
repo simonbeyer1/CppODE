@@ -69,19 +69,40 @@ if [ -n "$RBIN" ]; then
   CPPFLAGS=$("${RBIN}" CMD config CPPFLAGS 2>/dev/null || true)
 fi
 
+PROBE_LAST_CMD=""
+PROBE_LAST_ERR=""
+
 probe_compile() {
   # $1: source snippet; $2: extra cflags; $3: extra libs
-  [ -z "$CXX" ] && return 1
+  # Captures cmd + stderr in PROBE_LAST_{CMD,ERR} on every call so the
+  # caller can surface failures via append_probe_err / dump_probe_errs.
+  [ -z "$CXX" ] && { PROBE_LAST_ERR="(no C++ compiler — R CMD config CXX returned empty)"; return 1; }
   snippet="$1"; extra_cflags="$2"; extra_libs="$3"
   tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t conftest)
   printf '%s\n' "$snippet" > "$tmpdir/conftest.cpp"
-  if $CXX $CPPFLAGS $CXXFLAGS $extra_cflags -o "$tmpdir/conftest.exe" \
-      "$tmpdir/conftest.cpp" $extra_libs >/dev/null 2>&1; then
-    rm -rf "$tmpdir"
-    return 0
-  fi
+  PROBE_LAST_CMD="$CXX $CPPFLAGS $CXXFLAGS $extra_cflags -o conftest.exe conftest.cpp $extra_libs"
+  PROBE_LAST_ERR=$($CXX $CPPFLAGS $CXXFLAGS $extra_cflags -o "$tmpdir/conftest.exe" \
+      "$tmpdir/conftest.cpp" $extra_libs 2>&1)
+  rc=$?
   rm -rf "$tmpdir"
-  return 1
+  return $rc
+}
+
+append_probe_err() {
+  # $1: name var holding accumulated errors; $2: tag
+  eval "prev=\$$1"
+  new=$(printf '%s\n  --- %s ---\n  $ %s\n%s' \
+        "$prev" "$2" "$PROBE_LAST_CMD" \
+        "$(printf '%s' "$PROBE_LAST_ERR" | sed 's/^/  /')")
+  eval "$1=\$new"
+}
+
+dump_probe_errs() {
+  # $1: var holding accumulated errors
+  eval "errs=\$$1"
+  [ -z "$errs" ] && return 0
+  log "Probe diagnostics (set CPPODE_CVODE_LIBS / CPPODE_CVODE_KLU_LIBS to bypass detection):"
+  printf '%s\n' "$errs" | while IFS= read -r line; do log "$line"; done
 }
 
 # --- Discover Rtools ucrt64 sysroot (where pacman drops mingw-w64-ucrt-* pkgs) ---
@@ -135,6 +156,7 @@ if [ -z "$libs" ] && command -v "$PKG_CONFIG" >/dev/null 2>&1 \
 fi
 
 # --- SUNDIALS via compile probe against Rtools ucrt64 sysroot ---
+sundials_probe_errs=""
 if [ -z "$libs" ] && [ -n "$ucrt_root" ] && [ -d "$ucrt_root/include/sundials" ]; then
   snippet='
 #include <cvodes/cvodes.h>
@@ -161,6 +183,7 @@ int main() {
       log "SUNDIALS detected via compile probe ($ucrt_root, libs: $trial_libs)"
       break
     fi
+    append_probe_err sundials_probe_errs "ucrt64 probe ($ucrt_root, libs: $trial_libs)"
   done
 fi
 
@@ -186,6 +209,7 @@ fi
 # --- KLU via compile probe against Rtools ucrt64 sysroot ---
 # MSYS2 ships klu.h in <ucrt_root>/include/suitesparse/, matching KLU.pc's
 # prefix layout.
+klu_probe_errs=""
 if [ -z "$klu_libs" ] && [ -n "$ucrt_root" ] && [ -f "$ucrt_root/include/suitesparse/klu.h" ]; then
   klu_snippet="#include <klu.h>
 int main() { klu_common c; klu_defaults(&c); return 0; }"
@@ -202,6 +226,7 @@ int main() { klu_common c; klu_defaults(&c); return 0; }"
       log "KLU detected via compile probe ($ucrt_root, libs: $trial_klu_libs)"
       break
     fi
+    append_probe_err klu_probe_errs "ucrt64 klu probe ($ucrt_root, libs: $trial_klu_libs)"
   done
 fi
 
@@ -274,6 +299,8 @@ if [ "$available" = "FALSE" ] || [ "$klu_available" = "FALSE" ]; then
   log "  is on PATH at R session start, otherwise dyn.load() will"
   log "  fail to resolve the runtime libraries."
   log "----------------------------------------------------------------"
+  [ "$available" = "FALSE" ]    && dump_probe_errs sundials_probe_errs
+  [ "$klu_available" = "FALSE" ] && dump_probe_errs klu_probe_errs
 fi
 
 mkdir -p inst
@@ -287,5 +314,15 @@ klu_libs: $klu_libs
 runtime_dll_path: $runtime_dll_path
 EOF
 
-log "Summary:  CVODE=$([ $available = TRUE ] && echo ON || echo off), KLU=$([ $klu_available = TRUE ] && echo ON || echo off)"
-[ -n "$runtime_dll_path" ] && log "Runtime DLL path recorded: $runtime_dll_path"
+log "Summary:  CVODE=$([ "$available" = TRUE ] && echo ON || echo off), KLU=$([ "$klu_available" = TRUE ] && echo ON || echo off)"
+if [ -n "$runtime_dll_path" ]; then
+  log "Runtime DLL path recorded: $runtime_dll_path"
+fi
+# Always exit 0 — missing optional libs are not a configure error;
+# the package installs in a degraded mode (CVODE / sparse path raise
+# at runtime). A non-zero exit here would make R CMD INSTALL abort
+# with "configuration failed" instead of just emitting the warnings
+# above. (This was the bug that broke Windows CI: the trailing
+# `[ -n "$runtime_dll_path" ] && log ...` returned 1 when the var
+# was empty, and that became the script's exit code.)
+exit 0

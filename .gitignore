@@ -42,3 +42,6 @@ vignettes/*.R
 
 *.html
 .positai
+
+# ---- Claude ----
+CLAUDE.md
