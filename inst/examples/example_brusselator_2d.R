@@ -94,18 +94,6 @@ model_bdf <- CppODE(
   sparse    = TRUE
 )
 
-model_msoda <- CppODE(
-  rhs,
-  outdir    = getwd(),
-  modelname = "bruss2d_msoda_sparse",
-  method    = "msoda",
-  compile   = FALSE,
-  deriv     = FALSE,
-  profile   = TRUE,
-  stepTrace = FALSE,
-  sparse    = TRUE
-)
-
 model_rb4 <- CppODE(
   rhs,
   outdir    = getwd(),
@@ -130,18 +118,6 @@ model_bdf_dense <- CppODE(
   sparse    = FALSE
 )
 
-model_msoda_dense <- CppODE(
-  rhs,
-  outdir    = getwd(),
-  modelname = "bruss2d_msoda_dense",
-  method    = "msoda",
-  compile   = FALSE,
-  deriv     = FALSE,
-  profile   = TRUE,
-  stepTrace = FALSE,
-  sparse    = FALSE
-)
-
 model_rb4_dense <- CppODE(
   rhs,
   outdir    = getwd(),
@@ -154,7 +130,7 @@ model_rb4_dense <- CppODE(
   sparse    = FALSE
 )
 
-CppODE:::compile(model_bdf, model_msoda, model_rb4, model_bdf_dense, model_msoda_dense, model_rb4_dense, cores = 6)
+CppODE:::compile(model_bdf, model_rb4, model_bdf_dense, model_rb4_dense, cores = 6)
 
 # rhs.sens <- sensitivitiesSymb(rhs)
 func <- funC(c(rhs), modelname = "bruss2d_cOde", compile = T)
@@ -205,21 +181,16 @@ system.time({res_radau <- odeC(yini, times, func, parsC, method = "radau", atol 
 system.time({res_deSolvebdf <- odeC(yini, times, func, parsC, method = "bdf", atol = 1e-10, rtol = 1e-10)})
 system.time({res_bdf <- solveODE(model_bdf, times, params, abstol = 1e-10, reltol = 1e-10)})
 system.time({res_rb4 <- solveODE(model_rb4, times, params, abstol = 1e-10, reltol = 1e-10)})
-system.time({res_msoda <- solveODE(model_msoda, times, params, abstol = 1e-10, reltol = 1e-10)})
 system.time({res_bdf_dense <- solveODE(model_bdf_dense, times, params, abstol = 1e-10, reltol = 1e-10)})
 system.time({res_rb4_dense <- solveODE(model_rb4_dense, times, params, abstol = 1e-10, reltol = 1e-10)})
-system.time({res_msoda_dense <- solveODE(model_msoda_dense, times, params, abstol = 1e-10, reltol = 1e-10)})
 
 CppODE::diagnostics(res_bdf)
-CppODE::diagnostics(res_msoda)
 deSolve::diagnostics(res_lsodes)
 deSolve::diagnostics(res_vode)
 
 resBDF <- res_bdf$variable %>% t()
-resMSODA <- res_msoda$variable %>% t()
 resRB <- res_rb4$variable %>% t()
 resBDFD <- res_bdf_dense$variable %>% t()
-resMSODAD <- res_msoda_dense$variable %>% t()
 resRBD <- res_rb4_dense$variable %>% t()
 resLSODES <- res_lsodes[,colnames(resBDF)]
 resVODE <- res_vode[,colnames(resBDF)]
@@ -229,12 +200,9 @@ resDSBDF <- res_deSolvebdf[,colnames(resBDF)]
 norm(resRADAU - resLSODES, type = "I")
 norm(resDSBDF - resLSODES, type = "I")
 norm(resBDF - resLSODES, type = "I")
-norm(resMSODA - resLSODES, type = "I")
 norm(resRB - resLSODES, type = "I")
 norm(resBDFD - resLSODES, type = "I")
-norm(resMSODAD - resLSODES, type = "I")
 norm(resRBD - resLSODES, type = "I")
 
 norm(resBDFD - resBDF, type = "I")
-norm(resMSODAD - resMSODA, type = "I")
 norm(resRBD - resRB, type = "I")

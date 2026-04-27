@@ -387,7 +387,7 @@ for (info in list(
 )) {
   res <- info$res
   if (!is.null(res) && length(res$time) > 1 && !is.null(res$sens1)) {
-    dn <- attr(res, "dim_names")
+    dn <- attr(res, "dimNames")
     if (!is.null(dn) && "sens" %in% names(dn)) {
       sens_names <- dn$sens
       mu1_idx <- which(sens_names == "mu1")

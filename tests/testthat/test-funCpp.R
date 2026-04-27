@@ -31,7 +31,8 @@ test_that("funCpp Jacobian matches analytical derivatives", {
   )
 
   f <- funCpp(trafo, parameters = c("a", "b", "x"),
-              deriv = TRUE, modelname = "fun_jac", convenient = TRUE)
+              deriv = TRUE, derivMode = "symbolic",
+              modelname = "fun_jac", convenient = TRUE)
 
   jac <- f$jac(a = 2, b = 0.5, x = 1)
 
@@ -59,7 +60,7 @@ test_that("funCpp Hessian has correct dimensions and is symmetric", {
   trafo <- c(y = "a * b * x^2")
 
   f <- funCpp(trafo, parameters = c("a", "b", "x"),
-              deriv = TRUE, deriv2 = TRUE,
+              deriv = TRUE, deriv2 = TRUE, derivMode = "symbolic",
               modelname = "fun_hess", convenient = TRUE)
 
   hess_arr <- f$hess(a = 2, b = 3, x = 4)
@@ -88,7 +89,7 @@ test_that("funCpp fixed parameters are excluded from derivatives", {
   trafo <- c(y = "a * b + c")
 
   f <- funCpp(trafo, parameters = c("a", "b", "c"),
-              fixed = "c", deriv = TRUE,
+              fixed = "c", deriv = TRUE, derivMode = "symbolic",
               modelname = "fun_fixed", convenient = TRUE)
 
   jac <- f$jac(a = 2, b = 3, c = 1)

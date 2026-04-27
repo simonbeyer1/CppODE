@@ -2,7 +2,7 @@
 % Please edit documentation in R/symbolics.R
 \name{getSymbols}
 \alias{getSymbols}
-\title{Extract symbol names from R expressions}
+\title{Extract Symbol Names from R Expressions}
 \usage{
 getSymbols(expr, omit = NULL)
 }
@@ -15,7 +15,7 @@ getSymbols(expr, omit = NULL)
 Character vector of unique symbol names.
 }
 \description{
-Returns the unique names of all symbols occurring in a character vector
-of R expressions.
+Returns the unique names of all symbols occurring in a character
+vector of R expressions.
 }
 \keyword{internal}

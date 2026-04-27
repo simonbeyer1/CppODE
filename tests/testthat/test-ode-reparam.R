@@ -473,3 +473,131 @@ test_that("M > nStack is rejected with a clear error", {
   )
 })
 
+# -- Partial-row sens1ini (rowname-driven implicit fixed) --------------------
+
+test_that("partial-row sens1ini matches zero-padded full Phi'", {
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+  mod <- CppODE(rhs, modelname = "rep_partial", deriv = TRUE)
+  pars <- c(A = 1.0, B = 0.0, k1 = 0.3, k2 = 0.1)
+  tvec <- seq(0, 5, length.out = 11)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  # Perturb only k1: partial form supplies a single row.
+  Phi_partial <- matrix(c(0.3), nrow = 1, ncol = 1,
+                        dimnames = list("k1", "log_k1"))
+  res_p <- solveODE(mod, tvec, pars, sens1ini = Phi_partial,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  # Equivalent full Phi': zero on (A, B, k2), 0.3 on k1.
+  Phi_full <- matrix(c(0, 0, 0.3, 0), nrow = 4, ncol = 1,
+                     dimnames = list(c("A", "B", "k1", "k2"), "log_k1"))
+  res_f <- solveODE(mod, tvec, pars, sens1ini = Phi_full,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  expect_equal(dim(res_p$sens1), c(length(tvec), 2L, 1L))
+  expect_equal(dimnames(res_p$sens1)$sens, "log_k1")
+  expect_equal(as.numeric(res_p$sens1), as.numeric(res_f$sens1),
+               tolerance = 1e-9)
+})
+
+test_that("partial-row sens1ini accepts mixed state/param rows in any order", {
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+  mod <- CppODE(rhs, modelname = "rep_partial_mix", deriv = TRUE)
+  pars <- c(A = 1.0, B = 0.0, k1 = 0.3, k2 = 0.1)
+  tvec <- seq(0, 3, length.out = 7)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  # Two rows in non-canonical order: k2 first, then A. Two thetas.
+  # Layout: row(k2)=(0.1,0), row(A)=(0,1) -> theta1 perturbs k2, theta2 perturbs A.
+  Phi_partial <- matrix(c(0.1, 0,
+                          0,   1),
+                        nrow = 2, ncol = 2, byrow = TRUE,
+                        dimnames = list(c("k2", "A"),
+                                        c("log_k2", "A0")))
+  res_p <- solveODE(mod, tvec, pars, sens1ini = Phi_partial,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  # Full equivalent: zeros except k2 in col 1, A in col 2.
+  Phi_full <- matrix(0, nrow = 4, ncol = 2,
+                     dimnames = list(c("A", "B", "k1", "k2"),
+                                     c("log_k2", "A0")))
+  Phi_full["k2", "log_k2"] <- 0.1
+  Phi_full["A",  "A0"]     <- 1.0
+  res_f <- solveODE(mod, tvec, pars, sens1ini = Phi_full,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  expect_equal(as.numeric(res_p$sens1), as.numeric(res_f$sens1),
+               tolerance = 1e-9)
+})
+
+test_that("partial-row sens1ini without rownames is rejected", {
+  rhs <- c(A = "-k1*A + k2*B",
+           B =  "k1*A - k2*B")
+  mod <- CppODE(rhs, modelname = "rep_partial_noname", deriv = TRUE)
+  pars <- c(A = 1.0, B = 0.0, k1 = 0.3, k2 = 0.1)
+  # 1 row, n_active = 4 columns, no rownames -> ambiguous.
+  Phi_bad <- matrix(0, nrow = 1, ncol = 4)
+  expect_error(
+    solveODE(mod, c(0, 1), pars, sens1ini = Phi_bad,
+             abstol = 1e-10, reltol = 1e-10),
+    "expected"
+  )
+})
+
+test_that("partial-row sens1ini with unknown rownames is rejected", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_partial_unknown",
+                deriv = TRUE)
+  pars <- c(x = 1.0, k = 0.5)
+  Phi_bad <- matrix(0.5, nrow = 1, ncol = 1,
+                    dimnames = list("not_a_name", "theta"))
+  expect_error(
+    solveODE(mod, c(0, 1), pars, sens1ini = Phi_bad,
+             abstol = 1e-10, reltol = 1e-10),
+    "unknown row names"
+  )
+})
+
+test_that("partial-row sens1ini rejects 'fixed' argument", {
+  mod <- CppODE(c(x = "-k*x"), modelname = "rep_partial_fixed",
+                deriv = TRUE)
+  Phi_partial <- matrix(0.5, nrow = 1, ncol = 1,
+                        dimnames = list("k", "log_k"))
+  expect_error(
+    solveODE(mod, c(0, 1), c(x = 1, k = 0.5),
+             sens1ini = Phi_partial, fixed = "k"),
+    "not supported"
+  )
+})
+
+test_that("partial-row sens2ini matches zero-padded full Phi''", {
+  rhs <- c(A = "-k*A")
+  mod <- CppODE(rhs, modelname = "rep_partial_d2",
+                deriv = TRUE, deriv2 = TRUE)
+  pars <- c(A = 1.0, k = 0.5)
+  tvec <- seq(0, 2, by = 0.5)
+  tight <- list(abstol = 1e-10, reltol = 1e-10)
+
+  # Single theta perturbing only k: Phi' partial on k.
+  Phi1 <- matrix(0.5, nrow = 1, ncol = 1,
+                 dimnames = list("k", "log_k"))
+  # Phi'' partial: d^2/dtheta^2 of exp(theta) on k = 0.5.
+  Phi2_partial <- array(0.5, dim = c(1, 1, 1),
+                        dimnames = list("k", "log_k", "log_k"))
+  res_p <- solveODE(mod, tvec, pars,
+                    sens1ini = Phi1, sens2ini = Phi2_partial,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  # Equivalent full Phi''.
+  Phi2_full <- array(0, dim = c(2, 1, 1),
+                     dimnames = list(c("A", "k"), "log_k", "log_k"))
+  Phi2_full["k", "log_k", "log_k"] <- 0.5
+  res_f <- solveODE(mod, tvec, pars,
+                    sens1ini = Phi1, sens2ini = Phi2_full,
+                    abstol = tight$abstol, reltol = tight$reltol)
+
+  expect_equal(as.numeric(res_p$sens2), as.numeric(res_f$sens2),
+               tolerance = 1e-9)
+})
+

@@ -1,5 +1,5 @@
 ## =================================================================
-## Benchmark: stiff solvers -- CppODE (bdf, rb4, msoda) vs deSolve
+## Benchmark: stiff solvers -- CppODE (bdf, rb4) vs deSolve
 ## =================================================================
 rm(list = ls(all.names = TRUE))
 
@@ -73,8 +73,6 @@ rob_bdf <- CppODE(rob_eqns, deriv = FALSE, outdir = getwd(), useNDF = FALSE,
                   method = "bdf", modelname = "rob_bdf", compile = TRUE)
 rob_rb4 <- CppODE(rob_eqns, deriv = FALSE, outdir = getwd(),
                   method = "rb4", modelname = "rob_rb4", compile = TRUE)
-rob_msoda <- CppODE(rob_eqns, deriv = FALSE, outdir = getwd(),
-                    method = "msoda", modelname = "rob_msoda", compile = TRUE)
 
 # --- deSolve function ---
 rob_desolve <- function(t, y, p) {
@@ -100,10 +98,6 @@ r <- solveODE(rob_rb4, rob_times, rob_pars)
 t_rb4 <- bench("rb4", quote(solveODE(rob_rb4, rob_times, rob_pars)), nrep)
 print_row("CppODE rb4", ncol(r$variable), t_rb4, r$diagnostics, rob_mass_err_cpp(r))
 
-r <- solveODE(rob_msoda, rob_times, rob_pars)
-t_msoda <- bench("msoda", quote(solveODE(rob_msoda, rob_times, rob_pars)), nrep)
-print_row("CppODE msoda", ncol(r$variable), t_msoda, r$diagnostics, rob_mass_err_cpp(r))
-
 r_lsoda <- lsoda(rob_pars[1:3], rob_times, rob_desolve, rob_pars[4:6])
 t_lsoda <- bench("lsoda", quote(lsoda(rob_pars[1:3], rob_times, rob_desolve, rob_pars[4:6])), nrep)
 print_row("deSolve lsoda", nrow(r_lsoda), t_lsoda, desolve_diag(r_lsoda), rob_mass_err_ds(r_lsoda))
@@ -119,7 +113,7 @@ print_row("deSolve radau", nrow(r_radau), t_radau, desolve_diag(r_radau), rob_ma
 # Verify agreement
 ref_mat <- r_lsoda[, c("y1", "y2", "y3")]
 cpp_mat <- t(r$variable[c("y1","y2","y3"), ])
-cat(sprintf("\n  Max |CppODE msoda - deSolve lsoda|: %.3e\n",
+cat(sprintf("\n  Max |CppODE rb4 - deSolve lsoda|: %.3e\n",
             max(abs(cpp_mat[1:nrow(ref_mat), ] - ref_mat))))
 
 
@@ -139,8 +133,6 @@ vdp_bdf <- CppODE(vdp_eqns, deriv = FALSE, outdir = getwd(),
                   method = "bdf", modelname = "vdp_bdf", compile = TRUE)
 vdp_rb4 <- CppODE(vdp_eqns, deriv = FALSE, outdir = getwd(),
                   method = "rb4", modelname = "vdp_rb4", compile = TRUE)
-vdp_msoda <- CppODE(vdp_eqns, deriv = FALSE, outdir = getwd(),
-                    method = "msoda", modelname = "vdp_msoda", compile = TRUE)
 
 vdp_desolve <- function(t, y, p) {
   with(as.list(c(y, p)), {
@@ -159,10 +151,6 @@ print_row("CppODE bdf", ncol(r$variable), t_bdf, r$diagnostics)
 r <- solveODE(vdp_rb4, vdp_times, vdp_pars)
 t_rb4 <- bench("rb4", quote(solveODE(vdp_rb4, vdp_times, vdp_pars)), nrep)
 print_row("CppODE rb4", ncol(r$variable), t_rb4, r$diagnostics)
-
-r <- solveODE(vdp_msoda, vdp_times, vdp_pars)
-t_msoda <- bench("msoda", quote(solveODE(vdp_msoda, vdp_times, vdp_pars)), nrep)
-print_row("CppODE msoda", ncol(r$variable), t_msoda, r$diagnostics)
 
 r_lsoda <- lsoda(vdp_pars[1:2], vdp_times, vdp_desolve, vdp_pars[3])
 t_lsoda <- bench("lsoda", quote(lsoda(vdp_pars[1:2], vdp_times, vdp_desolve, vdp_pars[3])), nrep)

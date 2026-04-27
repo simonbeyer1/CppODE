@@ -219,15 +219,27 @@ fi
 # Step 4: file probe with explicit -I / -L. This is the route that wins
 # on Debian/Ubuntu when R's gcc driver doesn't auto-search multiarch.
 if [ "$sundials_available" = "0" ]; then
+  # User-local prefixes (XDG ~/.local, plus a few common env-var conventions
+  # used by HPC module systems and CMake — SUNDIALS_ROOT / SUNDIALS_DIR).
+  user_inc_prefixes=""
+  user_lib_prefixes=""
+  for root in "${SUNDIALS_ROOT:-}" "${SUNDIALS_DIR:-}" "$HOME/.local"; do
+    [ -n "$root" ] || continue
+    user_inc_prefixes="$user_inc_prefixes $root/include"
+    user_lib_prefixes="$user_lib_prefixes $root/lib $root/lib64"
+  done
+
   inc_prefix=""
-  for p in /usr/include /usr/local/include /opt/homebrew/include /opt/local/include; do
+  for p in /usr/include /usr/local/include /opt/homebrew/include /opt/local/include \
+           $user_inc_prefixes; do
     if [ -f "$p/cvodes/cvodes.h" ] && [ -f "$p/sundials/sundials_config.h" ]; then
       inc_prefix="$p"; break
     fi
   done
   lib_prefix=""
   for d in /usr/lib/x86_64-linux-gnu /usr/lib/aarch64-linux-gnu /usr/lib64 \
-           /usr/lib /usr/local/lib /opt/homebrew/lib /opt/local/lib; do
+           /usr/lib /usr/local/lib /opt/homebrew/lib /opt/local/lib \
+           $user_lib_prefixes; do
     for ext in so dylib a; do
       if ls "$d"/libsundials_cvodes.$ext* >/dev/null 2>&1; then
         lib_prefix="$d"; break 2
@@ -243,14 +255,20 @@ if [ "$sundials_available" = "0" ]; then
     done
     trial_cflags="$sundials_mpi_cflags"
     [ "$inc_prefix" != "/usr/include" ] && trial_cflags="$trial_cflags -I$inc_prefix"
-    base_libs="-L$lib_prefix -lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense"
+    # Embed rpath so the per-model .so loaded via dyn.load() finds
+    # libsundials_*.so.<v> at runtime even when $lib_prefix is not on
+    # the dynamic linker's default search path (e.g. ~/.local/lib,
+    # /usr/local/lib, or any custom SUNDIALS_ROOT prefix). Without
+    # this, link-time succeeds but dyn.load() fails with "cannot open
+    # shared object file: No such file or directory".
+    base_libs="-L$lib_prefix -Wl,-rpath,$lib_prefix -lsundials_cvodes -lsundials_nvecserial -lsundials_sunmatrixdense -lsundials_sunlinsoldense"
     [ "$has_core" = "1" ] && base_libs="$base_libs -lsundials_core"
     if probe_compile "$snippet" "$trial_cflags" "$base_libs"; then
       sundials_cflags="$trial_cflags"
       sundials_libs="$base_libs"
       sundials_available=1
       core_note=""; [ "$has_core" = "1" ] && core_note=", incl. sundials_core"
-      log "SUNDIALS detected via file probe (headers: $inc_prefix, libs: $lib_prefix$core_note)"
+      log "SUNDIALS detected via file probe (headers: $inc_prefix, libs: $lib_prefix$core_note, rpath embedded)"
     else
       append_probe_err sundials_probe_errs "file probe ($inc_prefix, $lib_prefix)"
     fi
@@ -322,7 +340,10 @@ int main() { klu_common c; klu_defaults(&c); return 0; }"
       for ld in $ld_candidates; do
         for ext in so dylib a; do
           if ls "$ld"/libklu.$ext* >/dev/null 2>&1; then
-            libdir_flag="-L$ld "; break 2
+            # Embed rpath alongside -L so dyn.load() resolves libklu.so
+            # at runtime even when $ld isn't on the loader's default
+            # search path (e.g. /usr/local/lib on macOS).
+            libdir_flag="-L$ld -Wl,-rpath,$ld "; break 2
           fi
         done
       done

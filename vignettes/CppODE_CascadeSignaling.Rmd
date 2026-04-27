@@ -121,8 +121,7 @@ model <- CppODE(
 ```
 
 The default multistep is NDF-on-BDF — a good stiff choice for this
-network. For comparison you can swap `method = "rb4"` (Rosenbrock-4) or
-`method = "msoda"` (LSODA-style auto-switching).
+network. For comparison you can swap `method = "rb4"` (Rosenbrock-4).
 
 ## Solve
 

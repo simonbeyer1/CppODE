@@ -38,7 +38,7 @@ n_out    <- length(res$time)
 n_states <- ncol(res$variable)
 n_sens   <- dim(res$sens1)[3]
 
-dims <- attr(model, "dim_names")
+dims <- attr(model, "dimNames")
 
 ## ---------- sens1 ----------
 sens1_matrix <- matrix(res$sens1,

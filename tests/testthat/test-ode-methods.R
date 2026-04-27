@@ -12,7 +12,7 @@ pars  <- c(A = 1, B = 0, k1 = 0.1, k2 = 0.2)
 exact_A <- function(t, A0, k1) A0 * exp(-k1 * t)
 exact_B <- function(t, A0, k1, k2) A0 * k1 / (k2 - k1) * (exp(-k1 * t) - exp(-k2 * t))
 
-methods_all <- c("bdf", "adams", "msoda", "rb4", "tsit5")
+methods_all <- c("bdf", "adams", "rb4", "tsit5")
 
 # -- Basic solver output structure --------------------------------------------
 
@@ -69,7 +69,7 @@ test_that("first-order sensitivities are correct for all methods", {
     # Match time grids (both should be identical since same output times)
     fd_dA_dk1 <- (res_hi$variable[, "A"] - res_lo$variable[, "A"]) / (2 * eps)
 
-    sens_names <- attr(mod, "dim_names")$sens
+    sens_names <- attr(mod, "dimNames")$sens
     k1_idx <- which(sens_names == "k1")
     ad_dA_dk1 <- res$sens1[, 1, k1_idx]  # state 1 (A), param k1_idx
 
@@ -149,7 +149,7 @@ test_that("fixed parameters are excluded from sensitivities", {
                 modelname = "fixed_test")
   res <- solveODE(mod, times, pars)
 
-  sens_names <- attr(mod, "dim_names")$sens
+  sens_names <- attr(mod, "dimNames")$sens
   expect_false("k2" %in% sens_names)
   expect_true("k1" %in% sens_names)
 })

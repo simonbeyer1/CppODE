@@ -65,7 +65,7 @@ stepper_traits<Stepper>::needs_restart_after_event;
 //  The cppode::multistepper class declares a nested tag typedef
 //    typedef void is_multistepper_tag;
 //  which we detect by SFINAE.  Covers all multistepper instantiations
-//  (bdf, adams, msoda).
+//  (bdf, adams).
 // ============================================================================
 
 // SFINAE detector for the multistepper tag

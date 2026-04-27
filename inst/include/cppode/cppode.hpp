@@ -34,7 +34,7 @@
 
 // ============================================================================
 //  cppode::dual / cppode::dual2nd (custom forward AD backend)
-//  Selected at codegen time via the R-side `ad_backend` argument.
+//  Selected at codegen time via the R-side `derivMode` argument.
 // ============================================================================
 #include <cppode/cppode_dual_math.hpp>
 #include <cppode/cppode_dual_expr.hpp>
@@ -87,13 +87,13 @@
 #include <cppode/cppode_step_checker.hpp>
 
 // ============================================================================
-//  CppODE multistep family (BDF / Adams / MSODA)
+//  CppODE multistep family (BDF / Adams)
 //
 //  Single unified multistepper class (cppode::multistepper) with a
 //  method selector (multistep_method enum).  Default coefficients are
 //  the Klopfenstein-Shampine NDF family (Shampine & Reichelt 1997);
-//  classical BDF, pure Adams-Moulton, and the two LSODA-style
-//  switching variants are all instantiations of the same class.
+//  classical BDF and pure Adams-Moulton are both instantiations of the
+//  same class.
 // ============================================================================
 #include <cppode/cppode_multistepper.hpp>
 #include <cppode/cppode_multistepper_controller.hpp>

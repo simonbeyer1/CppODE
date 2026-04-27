@@ -33,7 +33,7 @@ namespace cppode {
 //
 //  ControlledStepper = multistepper_controller<multistepper<M, V, J, R>>
 //  with value type V in { double, F<double>, F<F<double>> } and method
-//  M in { bdf, adams, msoda }.
+//  M in { bdf, adams }.
 // ============================================================================
 
 template<class ControlledStepper>

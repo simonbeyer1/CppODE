@@ -2,7 +2,7 @@
 % Please edit documentation in R/CVODE.R
 \name{CVODE}
 \alias{CVODE}
-\title{Compile an ODE model against the SUNDIALS CVODE(S) library}
+\title{Generate and Compile an ODE Solver Linked Against SUNDIALS CVODE(S)}
 \usage{
 CVODE(
   rhs,
@@ -21,103 +21,119 @@ CVODE(
 )
 }
 \arguments{
-\item{rhs}{Named character vector of ODE right-hand sides; names must correspond to variables.}
+\item{rhs}{Named character vector of ODE right-hand sides. Names
+correspond to state variables.}
 
-\item{events}{Optional \code{data.frame} describing events (see \strong{Events}). Default: \code{NULL}.}
+\item{events}{Optional \code{data.frame} of event specifications. See
+Details. Default \code{NULL}.}
 
-\item{rootfunc}{Optional root function specification for integration termination.
-Either \code{"equilibrate"} for steady-state detection, or a character vector of
-expressions that trigger termination when crossing zero. Default: \code{NULL}.}
+\item{rootfunc}{Optional root function specification. Either
+\code{"equilibrate"} for steady-state detection, or a character vector of
+expressions that trigger termination when crossing zero. Default
+\code{NULL}.}
 
-\item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
+\item{fixed}{Optional character vector of state or parameter names
+treated as fixed (excluded from sensitivities at compile time).}
 
-\item{forcings}{Character vector of forcing function names used in \code{rhs}.}
+\item{forcings}{Optional character vector of forcing-function names
+that appear in \code{rhs}.}
 
-\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
+\item{compile}{Logical. If \code{TRUE} (default), compile and load the
+generated C++ code.}
 
-\item{modelname}{Optional base name for the generated C++ source file
-\emph{and} for all generated C/C++ symbols (e.g. \verb{solve_<modelname>})
-as well as the resulting shared library.
-If \code{NULL}, a random identifier is used.}
+\item{modelname}{Optional base name for the generated source file and
+the corresponding C/C++ symbols (e.g. \verb{solve_<modelname>}). If
+\code{NULL}, a random identifier is used.}
 
-\item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
+\item{outdir}{Directory in which the generated C++ source file is
+written. Defaults to \code{tempdir()}.}
 
-\item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
+\item{deriv}{Logical. If \code{TRUE} (default), compute first-order
+sensitivities via dual numbers.}
 
-\item{sparse}{Controls sparse LU factorization.
-\code{NULL} (default) auto-selects based on Jacobian sparsity.
-\code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
+\item{sparse}{Logical or \code{NULL}. Controls sparse LU factorization.
+\code{NULL} (default) auto-selects based on Jacobian sparsity; \code{TRUE}
+forces sparse LU; \code{FALSE} forces dense LU. Sparse LU requires the
+KLU linear solver to have been found at install time.}
 
 \item{method}{One of \code{"bdf"} (default) or \code{"adams"}.}
 
-\item{stepTrace}{Logical. If \code{TRUE}, emit per-step diagnostics to
-\code{cvode_trace.csv} in the current working directory. See details.}
+\item{stepTrace}{Logical. If \code{TRUE}, record per-step diagnostics (the
+trace \code{data.frame} is attached as \verb{$trace} to the result of
+\code{\link[=solveODE]{solveODE()}} and may be written to CSV via the \code{traceFile} argument
+of that function). Not supported together with \code{events} or
+\code{rootfunc}. Default \code{FALSE}.}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
-A compiled model name (character string) with the same set of attributes
-as a model returned by \code{\link[=CppODE]{CppODE()}}, so it can be passed directly to
-\code{\link[=solveODE]{solveODE()}}.  The attribute \code{backend} is set to \code{"cvode"}.
+The compiled model name (character string), with the same attribute
+set as a model returned by \code{\link[=CppODE]{CppODE()}}, so it can be passed directly to
+\code{\link[=solveODE]{solveODE()}}. The attribute \code{backend} is \code{"cvode"}.
 }
 \description{
-Generates and compiles a C++ solver for the given ODE system against
-\strong{SUNDIALS CVODE} (or \strong{CVODES} when \code{deriv = TRUE}), mirroring the
-interface of \code{\link[=CppODE]{CppODE()}} so that compiled models can be run with the
-same \code{\link[=solveODE]{solveODE()}} interface.
+Generates and compiles a C++ ODE solver that links against the
+system-installed SUNDIALS CVODE library (or CVODES when
+\code{deriv = TRUE}) for a system of ordinary differential equations of
+the form
 
-This is intended primarily for direct, apples-to-apples comparison of
-CppODE's built-in steppers against the CVODE(S) reference implementation.
-The generated model links against the system-installed
-\code{libsundials_cvodes} (and, when a sparse Jacobian is selected,
-\code{libsundials_sunlinsolklu} + \code{libklu}).
+\deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}},}
 
-Like \code{\link[=CppODE]{CppODE()}}, the symbolic Jacobian \code{df/dx} is derived via SymPy at
-code-generation time and emitted as analytic C++.  When \code{deriv = TRUE},
-forward-mode sensitivities use CVODES' \code{CVodeSensInit1} with an
-\strong{analytic} sensitivity RHS:
-\deqn{\dot S_k = J(x,p)\,S_k + \partial f / \partial p_k}
-(with the \code{df/dp} term present only for sens slots that correspond to
-parameters -- initial-condition sens slots contribute only through
-\code{J * S_k}).  This matches the work CppODE does via forward-mode AD.
+where the parameter vector \eqn{p = (p_{\text{init}}, p_{\text{dyn}})}
+concatenates the initial conditions \eqn{p_{\text{init}}} and the
+dynamic parameters \eqn{p_{\text{dyn}}} that appear in the right-hand
+side. \code{\link[=solveODE]{solveODE()}} takes this combined \code{p} as the \code{parms} argument.
+
+The compiled model exposes the same interface as a model produced by
+\code{\link[=CppODE]{CppODE()}} and can be passed directly to \code{\link[=solveODE]{solveODE()}}.
+}
+\details{
+The symbolic Jacobian \eqn{df/dx} is derived via SymPy at code
+generation time and emitted as analytic C++. With \code{deriv = TRUE},
+first-order forward sensitivities use the analytic sensitivity
+right-hand side \eqn{\dot S_k = J(x, p)\, S_k + \partial f / \partial p_k},
+so the work matches the AD-based path in \code{\link[=CppODE]{CppODE()}} up to the
+integrator's internals.
+
+Like \code{\link[=CppODE]{CppODE()}}, the CVODE backend also supports sensitivities with
+respect to a user-defined reparametrization \eqn{p = \Phi(\theta)}
+by seeding the columns of \eqn{S_k(0)} with the columns of
+\eqn{\Phi'(\theta)} (passed via \code{sens1ini} to \code{\link[=solveODE]{solveODE()}}). The
+returned trajectories then carry \eqn{\partial x / \partial \theta}
+directly. See \code{\link[=solveODE]{solveODE()}} for the chain-rule derivation and the
+accepted shapes of \code{sens1ini}. Second-order sensitivities are not
+available through this backend.
+
+SUNDIALS (>= 6.0) must be available on the build host at install time;
+otherwise \code{\link[=CVODE]{CVODE()}} raises an informative error at the first call.
+KLU (used for sparse Jacobians) is detected the same way and is
+required when \code{sparse = TRUE}.
 \subsection{Scope}{
 
-The CVODE backend currently supports:
+The CVODE backend supports:
 \itemize{
-\item \code{method} may be \code{"bdf"} or \code{"adams"} (CVODE's two multistep families).
-\item First-order forward sensitivities via \code{deriv = TRUE}.
-\item Dense or KLU-sparse linear solver (auto-selected or forced via \code{sparse}).
+\item \code{method} is \code{"bdf"} or \code{"adams"} (CVODE's two multistep families);
+\item first-order forward sensitivities via \code{deriv = TRUE};
+\item dense or KLU-sparse linear solver (auto-selected or forced with
+\code{sparse});
 \item \code{fixed} at both compile and run time, with the same semantics as
-\code{\link[=CppODE]{CppODE()}}.
-\item \code{forcings} -- PCHIP-interpolated time-dependent inputs.  Forcings do
-not contribute to sensitivities (they are data, not parameters).
-\item \code{rootfunc} -- integration termination via \code{CVodeRootInit}.
-\item \code{events} -- time- and root-triggered.  Time events apply via
-\code{CVodeReInit}; root events via \code{CVodeRootInit} + \code{CVodeGetRootInfo}
-dispatch on \code{CV_ROOT_RETURN}.  Sensitivities are corrected through
-the full first-order saltation: time events use the explicit
-\code{dt_e/dp_k} you supply in the event expression, root events use the
-IFT-derived \verb{dt_root/dp_k = -(dr/dp_k + Sigma dr/dx_i * S_i[k]) / gdot}.
+\code{\link[=CppODE]{CppODE()}};
+\item \code{forcings}, PCHIP-interpolated time-dependent inputs (forcings do
+not contribute to sensitivities);
+\item \code{rootfunc} for integration termination;
+\item \code{events}, both time- and root-triggered, with first-order
+saltation correction of sensitivities.
 }
 
-The following features of \code{\link[=CppODE]{CppODE()}} are \strong{not} available via the CVODE
-backend: second-order sensitivities, \code{profile}, and the
-\code{"msoda"}/\code{"rb4"}/\code{"tsit5"} methods.
+Not available via the CVODE backend: second-order sensitivities, the
+\code{"rb4"} and \code{"tsit5"} methods, and the \code{profile} flag.
 }
-
-\subsection{Step trace (\code{stepTrace = TRUE})}{
-
-Compiles the solver with \code{-DCVODE_STEP_TRACE}, driving integration in
-\code{CV_ONE_STEP} mode (with \code{CVodeSetStopTime} + \code{CVodeGetDky} for
-user-time dense output).  Each accepted internal step appends a row
-into the shared trace buffer declared in \code{cppode_step_trace.hpp};
-the row schema mirrors CppODE's multistepper trace.  The buffer is
-marshalled into the \verb{$trace} element of the result list returned to R
-and \code{\link[=solveODE]{solveODE()}} exposes it as a \code{data.frame} (optionally writing a
-CSV when \code{traceFile} is supplied).  \strong{Not supported together with
-\code{events} or \code{rootfunc}} -- in those cases the trace macro is silently
-a no-op and the solver falls back to the standard \code{CV_NORMAL} loop.
 }
+\references{
+Hindmarsh, A. C., Brown, P. N., Grant, K. E., Lee, S. L., Serban, R.,
+Shumaker, D. E., and Woodward, C. S. (2005). SUNDIALS: Suite of
+Nonlinear and Differential/Algebraic Equation Solvers.
+\emph{ACM Transactions on Mathematical Software} \strong{31}(3), 363-396.
 }
 \seealso{
 \code{\link[=CppODE]{CppODE()}}, \code{\link[=solveODE]{solveODE()}}.

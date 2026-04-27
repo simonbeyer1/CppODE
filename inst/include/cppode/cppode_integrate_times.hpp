@@ -840,7 +840,7 @@ private:
  // ----------------------------------------------------------------
  // init_stepper_after_event
  //
- // Multistep methods (bdf/adams/msoda) discard their Nordsieck history
+ // Multistep methods (bdf/adams) discard their Nordsieck history
  // at order 1 after an event, so the pre-event step size is no longer
  // a meaningful starting point — it was tuned to the previous regime
  // and pre-event Nordsieck data, neither of which survives the

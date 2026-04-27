@@ -252,7 +252,7 @@ inline double estimate_initial_dt(
   // ||ÿ||, so the natural proxy makes this exact for p=1.  For higher-order
   // methods the formula would overestimate h on stiff problems (where
   // ||y^(k)|| ~ ||J||^(k-1)·||f||), so callers normally pass order=1
-  // regardless of the method's nominal order: BDF/NDF/Adams/msoda always
+  // regardless of the method's nominal order: BDF/NDF/Adams always
   // start the integration at q=1 anyway, and for single-step methods
   // (rb4, tsit5) a conservative initial h is cheap — the controller ramps
   // up within a few steps.
@@ -369,7 +369,7 @@ inline fd_ydd<System> make_fd_ydd(System sys) { return fd_ydd<System>(sys); }
 // =========================================================================================
 //  cppode_hin — faithful port of CVODES cvHin (sundials/src/cvodes/cvodes.c).
 //
-//  Used by multistep methods (bdf / adams / msoda). The port mirrors the
+//  Used by multistep methods (bdf / adams). The port mirrors the
 //  sundials code path so the first integration step CppODE takes matches the
 //  one CVODES would take on the same problem.
 //

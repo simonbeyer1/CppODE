@@ -1,7 +1,7 @@
-#' Extract symbol names from R expressions
+#' Extract Symbol Names from R Expressions
 #'
-#' Returns the unique names of all symbols occurring in a character vector
-#' of R expressions.
+#' Returns the unique names of all symbols occurring in a character
+#' vector of R expressions.
 #'
 #' @param expr Character vector of R expressions.
 #' @param omit Optional character vector of symbol names to remove.
@@ -24,15 +24,13 @@ getSymbols <- function(expr, omit = NULL) {
   if (!is.null(omit)) syms <- setdiff(syms, omit)
   syms
 }
-#' Sanitize expressions for SymPy compatibility
+#' Sanitize Expressions for SymPy Compatibility
 #'
-#' Scans character expressions for reserved Python keywords and replaces them
-#' with the same name plus an underscore appended.
-#'
-#' Function names like \code{min}, \code{max}, \code{abs}, and \code{sum} are
-#' left untouched, since they are valid in SymPy.
-#'
-#' A warning is emitted for each replacement performed.
+#' Scans character expressions for reserved Python keywords and
+#' replaces each occurrence with the keyword followed by an underscore.
+#' Function names like \code{min}, \code{max}, \code{abs}, and
+#' \code{sum} are left untouched because they are valid in SymPy. A
+#' warning is emitted for each replacement.
 #'
 #' @param exprs Character vector of expressions.
 #' @return Character vector with sanitized expressions.
@@ -58,75 +56,70 @@ sanitizeExprs <- function(exprs) {
   }
   sanitized
 }
-#' Symbolic differentiation (Jacobian and optional Hessian) via SymPy
+#' Symbolic Differentiation via SymPy
 #'
 #' @description
-#' Computes symbolic first- and second-order derivatives of a system of
-#' algebraic expressions using Python's **SymPy** library via the
-#' \pkg{reticulate} interface.
+#' Computes symbolic first- and (optionally) second-order derivatives
+#' of a system of algebraic expressions using the SymPy library via the
+#' \pkg{reticulate} interface. The Jacobian is returned as a character
+#' matrix of shape \eqn{(n_f, n_v)}; the Hessian (when requested) as a
+#' list of character matrices of shape \eqn{(n_v, n_v)}.
 #'
-#' The Jacobian (first derivatives) is returned as a character matrix of shape
-#' \eqn{(n_f, n_v)}, and, if requested, the Hessian (second derivatives) as a
-#' list of character matrices, each of shape \eqn{(n_v, n_v)}.
+#' @details
+#' This function calls a Python module shipped with the package
+#' (\code{derivSymb.py}) through \pkg{reticulate}. All free symbols in
+#' the expressions are detected automatically by the Python backend.
 #'
-#' The Python backend automatically infers all variables occurring in
-#' the expressions using SymPy's internal symbol detection.
+#' Setting \code{real = TRUE} simplifies all results under the
+#' assumption that variables are real, without invoking SymPy's
+#' \code{refine()} (which can recurse on non-analytic functions).
 #'
-#' @param exprs Named character vector of algebraic expressions. Each name
-#'   corresponds to a dependent variable \eqn{f_i}, and the element content
-#'   defines the right-hand side expression in terms of other variables.
-#'   Both \code{^} and \code{**} are supported for exponentiation.
-#' @param real Logical; if \code{TRUE}, imaginary parts of symbolic expressions
-#'   are set to zero post hoc, and real parts are replaced by their argument.
-#'   This ensures real-valued simplifications even for non-analytic functions
-#'   such as \code{abs()}, \code{max()}, \code{min()}, or \code{sign()}.
-#'   Default is \code{FALSE}.
-#' @param deriv2 Logical; if \code{TRUE}, second derivatives (Hessians)
-#'   are computed and returned. Default is \code{FALSE}.
-#' @param fixed Character vector of variable names that should be treated
-#'   as *fixed parameters* (no derivatives are computed with respect to them).
-#'   Default: \code{NULL}.
+#' @param exprs Named character vector of algebraic expressions. Each
+#'   name corresponds to a dependent variable \eqn{f_i}; the element
+#'   content defines the right-hand side expression. Both \code{^} and
+#'   \code{**} are accepted for exponentiation.
+#' @param real Logical; if \code{TRUE}, imaginary parts of symbolic
+#'   expressions are set to zero and real parts are replaced by their
+#'   argument. This ensures real-valued simplifications even for
+#'   non-analytic functions such as \code{abs()}, \code{max()},
+#'   \code{min()}, or \code{sign()}. Default \code{FALSE}.
+#' @param deriv2 Logical; if \code{TRUE}, also compute second
+#'   derivatives (Hessians). Default \code{FALSE}.
+#' @param fixed Character vector of variable names to be treated as
+#'   fixed parameters (no derivatives are taken with respect to them).
+#'   Default \code{NULL}.
 #' @param verbose Logical; if \code{TRUE}, print diagnostic information
-#'   during backend setup and execution. Default is \code{FALSE}.
+#'   during backend setup and execution. Default \code{FALSE}.
 #'
 #' @return
 #' A list with components:
 #' \describe{
 #'   \item{\code{jacobian}}{Character matrix of shape \eqn{(n_f, n_v)}
-#'     containing first derivatives \eqn{\partial f_i/\partial v_j}, where
-#'     \eqn{n_f} is the number of functions and \eqn{n_v} is the number of
-#'     differentiation variables (excluding fixed parameters).}
-#'   \item{\code{hessian}}{List of \eqn{n_f} character matrices, each of shape
-#'     \eqn{(n_v, n_v)}, containing second derivatives
-#'     \eqn{\partial^2 f_i/\partial v_j \partial v_k}. Returns \code{NULL}
-#'     if \code{deriv2 = FALSE}.}
+#'     containing the first derivatives
+#'     \eqn{\partial f_i / \partial v_j}, where \eqn{n_f} is the number
+#'     of functions and \eqn{n_v} the number of differentiation
+#'     variables (excluding fixed parameters).}
+#'   \item{\code{hessian}}{List of \eqn{n_f} character matrices, each of
+#'     shape \eqn{(n_v, n_v)}, containing the second derivatives
+#'     \eqn{\partial^2 f_i / \partial v_j \partial v_k}. Returns
+#'     \code{NULL} when \code{deriv2 = FALSE}.}
 #' }
-#'
-#' @details
-#' This function calls the Python module \code{derivSymb.py} (shipped with the
-#' \pkg{CppODE} package) using \pkg{reticulate}. The Python side performs
-#' symbolic differentiation using SymPy. If \code{variables = NULL},
-#' all free symbols in the expressions are automatically detected.
-#'
-#' Setting \code{real = TRUE} simplifies all results under the assumption
-#' that all variables are real, without invoking SymPy's \code{refine()}
-#' (which can cause recursion issues for non-analytic functions).
 #'
 #' @examples
 #' \dontrun{
 #' eqs <- c(
 #'   f1 = "a*x^2 + b*y^2",
-#'   f2 = "x*y + exp(2*c) + abs(max(x,y))"
+#'   f2 = "x*y + exp(2*c) + abs(max(x, y))"
 #' )
 #'
-#' # Compute Jacobian only
+#' # Jacobian only
 #' result <- derivSymb(eqs, real = TRUE)
 #' result$jacobian
 #'
-#' # Compute Jacobian and Hessian
+#' # Jacobian and Hessian
 #' result2 <- derivSymb(eqs, real = TRUE, deriv2 = TRUE)
-#' result2$hessian[[1]]  # Hessian of f1
-#' result2$hessian[[2]]  # Hessian of f2
+#' result2$hessian[[1]]
+#' result2$hessian[[2]]
 #' }
 #'
 #' @export

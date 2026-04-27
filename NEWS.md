@@ -1,3 +1,36 @@
+# CppODE (development version)
+
+## New features
+
+- **Partial-row `sens1ini` / `sens2ini`.** `solveODE()` now accepts a
+  partial Φ′(θ) of shape `[k, M]` with `k < n_states + n_params` as long
+  as row names are supplied and form a subset of
+  `c(variables, parameters)`. Missing rows are zero-padded — equivalent
+  to declaring those slots fixed. The same applies to dim-1 of
+  `sens2ini`. This is the rowname-driven counterpart to the run-time
+  `fixed` argument and is most useful when only a few parameters or
+  states should be perturbed.
+
+## Breaking changes
+
+- **MSODA solver removed.** `method = "msoda"` no longer accepted by
+  `CppODE()`; pure `"bdf"` consistently outperformed it on stiff problems
+  and pure `"adams"` on non-stiff. The LSODA-style switching machinery
+  (`stiffness_detector`, `methodswitch_step`, mode-switching state in
+  `multistepper`) has been excised. Choose `"bdf"` (or `"rb4"`) for stiff
+  and `"adams"` (or `"tsit5"`) for non-stiff problems.
+- **`ad_backend` argument renamed to `derivMode`.** The `ad_backend`
+  argument of `CppODE()` is now `derivMode`; values are unchanged
+  (`"dual"` default, `"fadbad"`). The model attribute previously stored
+  as `ad_backend` is likewise renamed to `derivMode`.
+- **`funCpp(derivMode = ...)` reworked.** The previous values
+  `c("symbolic", "ad", "both", "none")` are replaced by
+  `c("dual", "fadbad", "symbolic")`. The `"none"` case is now implicit
+  in `deriv = FALSE && deriv2 = FALSE`. The AD path can now use either
+  the in-tree `cppode::dual` backend or the legacy FADBAD++ backend.
+- **`dim_names` model attribute renamed to `dimNames`.** Code that reads
+  `attr(model, "dim_names")` must be updated to `attr(model, "dimNames")`.
+
 # CppODE 1.0.0
 
 First tagged release collecting the `devel`-branch work on top of the

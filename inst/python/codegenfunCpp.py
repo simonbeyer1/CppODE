@@ -274,6 +274,7 @@ class CodeGenContext:
 
 def generate_fun_cpp(exprs, variables, parameters=None,
                      jacobian=None, hessian=None, ad=False,
+                     ad_backend="fadbad",
                      modelname="model", outdir=None, version = "1.0.0"):
     """
     Generate C++ source code for algebraic model evaluation.
@@ -291,9 +292,13 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     hessian : dict[str, list[list[str]]], optional
         Symbolic Hessian from derivSymb().
     ad : bool, optional
-        If True, emit an extra entry <modelname>_eval_ad that, via FADBAD++
-        forward-mode AD, returns value and chain-ruled dY/dtheta for given
-        upstream seeds dX (per obs) and dP (const).
+        If True, emit an extra entry <modelname>_eval_ad that, via forward-mode
+        AD, returns value and chain-ruled dY/dtheta for given upstream seeds
+        dX (per obs) and dP (const).
+    ad_backend : {"dual", "fadbad"}, optional
+        Forward-AD backend used for the _eval_ad entry when ad=True. "dual"
+        uses cppode::dual<double, 0> (arena-allocated heap AD); "fadbad" uses
+        the legacy fadbad::F<double>. Ignored when ad=False.
     modelname : str, optional
         Base name for the generated model.
 
@@ -302,6 +307,10 @@ def generate_fun_cpp(exprs, variables, parameters=None,
     dict
         {"filename": absolute path, "modelname": model name}
     """
+    if ad and ad_backend not in ("dual", "fadbad"):
+        raise ValueError(
+            f"unknown ad_backend: {ad_backend!r} (expected 'dual' or 'fadbad')"
+        )
     # Normalize inputs
     if isinstance(variables, str):
         variables = [variables]
@@ -325,7 +334,7 @@ def generate_fun_cpp(exprs, variables, parameters=None,
 
     # Generate C++ code using StringIO for efficient string building
     cpp_code = _generate_cpp_code(
-        parsed_exprs, ctx, jacobian, hessian, ad, modelname, version
+        parsed_exprs, ctx, jacobian, hessian, ad, ad_backend, modelname, version
     )
     
     if outdir is None:
@@ -384,7 +393,7 @@ def _strip_std_prefix(cpp):
     return cpp
 
 
-def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, modelname, version):
+def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, ad_backend, modelname, version):
     """Assemble the complete C++ source for the model."""
     out_names = list(exprs.keys())
     buf = StringIO()
@@ -395,8 +404,12 @@ def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, modelname, version):
     buf.write("#include <algorithm>\n")
     if ad:
         buf.write("#include <vector>\n")
-        buf.write("#include <fadbad++/fadiff.h>\n")
-        buf.write("#include <cppode/cppode_fadiff_extensions.hpp>\n")
+        if ad_backend == "dual":
+            buf.write("#include <cppode/cppode_dual_math.hpp>\n")
+            buf.write("#include <cppode/cppode_dual_expr.hpp>\n")
+        else:
+            buf.write("#include <fadbad++/fadiff.h>\n")
+            buf.write("#include <cppode/cppode_fadiff_extensions.hpp>\n")
     buf.write("\n")
     buf.write(f"// Modelname: {modelname}\n")
     buf.write(f"// Variables: {', '.join(ctx.variables) if ctx.variables else 'none'}\n")
@@ -404,7 +417,7 @@ def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, modelname, version):
     buf.write(f"// Outputs: {', '.join(out_names)}\n\n")
 
     # Template helper shared by _eval and (if ad) _eval_ad.
-    _write_eval_template(buf, exprs, out_names, ctx, modelname, ad)
+    _write_eval_template(buf, exprs, out_names, ctx, modelname, ad, ad_backend)
 
     buf.write("extern \"C\" {\n\n")
 
@@ -413,7 +426,7 @@ def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, modelname, version):
 
     # AD function (forward-mode, chain-ruled derivatives).
     if ad:
-        _write_eval_ad_function(buf, out_names, ctx, modelname)
+        _write_eval_ad_function(buf, out_names, ctx, modelname, ad_backend)
 
     # Jacobian (symbolic, double-only).
     if jacobian is not None:
@@ -428,11 +441,11 @@ def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, modelname, version):
     return buf.getvalue()
 
 
-def _write_eval_template(buf, exprs, out_names, ctx, modelname, ad):
+def _write_eval_template(buf, exprs, out_names, ctx, modelname, ad, ad_backend="fadbad"):
     """
     Emit an inline template helper that evaluates the expressions for a single
     observation. Templated on scalar type T so it instantiates for `double` and,
-    when `ad=True`, for `fadbad::F<double>`.
+    when `ad=True`, for the AD scalar type selected by ad_backend.
     """
     n_vars = len(ctx.variables)
 
@@ -440,7 +453,7 @@ def _write_eval_template(buf, exprs, out_names, ctx, modelname, ad):
     buf.write("template <typename T>\n")
     buf.write(f"inline void {modelname}_eval_one(const T* x_obs, const T* p, T* y_local) {{\n")
     # Bring math functions into scope so expressions resolve for both double
-    # and fadbad::F<double> via overload resolution.
+    # and the AD scalar via overload resolution.
     buf.write("    using std::exp; using std::log; using std::sqrt; using std::pow;\n")
     buf.write("    using std::sin; using std::cos; using std::tan;\n")
     buf.write("    using std::asin; using std::acos; using std::atan; using std::atan2;\n")
@@ -448,13 +461,23 @@ def _write_eval_template(buf, exprs, out_names, ctx, modelname, ad):
     buf.write("    using std::asinh; using std::acosh; using std::atanh;\n")
     buf.write("    using std::floor; using std::ceil;\n")
     buf.write("    using std::abs; using std::max; using std::min;\n")
-    if ad:
+    if ad and ad_backend == "fadbad":
         buf.write("    using fadbad::exp; using fadbad::log; using fadbad::sqrt; using fadbad::pow;\n")
         buf.write("    using fadbad::sin; using fadbad::cos; using fadbad::tan;\n")
         buf.write("    using fadbad::asin; using fadbad::acos; using fadbad::atan;\n")
         buf.write("    using fadbad::sinh; using fadbad::cosh; using fadbad::tanh;\n")
         buf.write("    using fadbad::asinh; using fadbad::acosh; using fadbad::atanh;\n")
         buf.write("    using fadbad::abs; using fadbad::max; using fadbad::min;\n")
+    elif ad and ad_backend == "dual":
+        # cppode::dual overloads live in namespace cppode; ADL picks them up
+        # for dual<...> arguments. Pull them in by name to also make
+        # double-or-dual mixed expressions resolve consistently.
+        buf.write("    using cppode::exp; using cppode::log; using cppode::sqrt; using cppode::pow;\n")
+        buf.write("    using cppode::sin; using cppode::cos; using cppode::tan;\n")
+        buf.write("    using cppode::asin; using cppode::acos; using cppode::atan;\n")
+        buf.write("    using cppode::sinh; using cppode::cosh; using cppode::tanh;\n")
+        buf.write("    using cppode::asinh; using cppode::acosh; using cppode::atanh;\n")
+        buf.write("    using cppode::abs; using cppode::max; using cppode::min;\n")
     if n_vars == 0:
         buf.write("    (void)x_obs;\n")
     if not ctx.parameters:
@@ -498,7 +521,7 @@ def _write_eval_function(buf, out_names, ctx, modelname):
     buf.write("    }\n}\n\n")
 
 
-def _write_eval_ad_function(buf, out_names, ctx, modelname):
+def _write_eval_ad_function(buf, out_names, ctx, modelname, ad_backend="fadbad"):
     """
     Generate extern-C AD entry point. Takes upstream seeds dX (per-obs state
     sensitivities) and dP (parameter Jacobian) and fills value + dY/dtheta
@@ -516,13 +539,19 @@ def _write_eval_ad_function(buf, out_names, ctx, modelname):
     n_params = len(ctx.parameters)
     n_out = len(out_names)
 
+    is_dual = (ad_backend == "dual")
+    if is_dual:
+        ad_t = "cppode::dual<double, 0>"
+    else:
+        ad_t = "fadbad::F<double>"
+
     buf.write(
         f"void {modelname}_eval_ad(double* x, double* p, double* dX, double* dP,\n"
         f"                         double* y, double* dy,\n"
         f"                         int* n_obs_p, int* n_vars_p, int* n_params_p,\n"
         f"                         int* n_out_p, int* n_theta_p) {{\n"
     )
-    buf.write("    using fadbad::F;\n")
+    buf.write(f"    using AD = {ad_t};\n")
     buf.write("    const int n_obs    = *n_obs_p;\n")
     buf.write("    const int n_vars   = *n_vars_p;\n")
     buf.write("    const int n_params = *n_params_p;\n")
@@ -531,9 +560,16 @@ def _write_eval_ad_function(buf, out_names, ctx, modelname):
     buf.write("    (void)n_vars; (void)n_params; (void)n_out;\n")
     buf.write("    (void)dX; (void)dP;\n\n")
 
-    buf.write(f"    std::vector<F<double>> x_ad({n_vars});\n")
-    buf.write(f"    std::vector<F<double>> p_ad({n_params});\n")
-    buf.write(f"    std::vector<F<double>> y_ad({n_out});\n\n")
+    if is_dual:
+        # dual<double, 0> tangent buffers come from the thread-local arena.
+        # One outer scope guard frees every per-obs CSE temp at function exit.
+        # Per-obs scopes are unsafe here because the AD vectors persist across
+        # iterations and would hold dangling tan_ pointers after a pop.
+        buf.write("    cppode::dual_arena::scope _eval_ad_scope;\n")
+
+    buf.write(f"    std::vector<AD> x_ad({n_vars});\n")
+    buf.write(f"    std::vector<AD> p_ad({n_params});\n")
+    buf.write(f"    std::vector<AD> y_ad({n_out});\n\n")
 
     # Seed parameters once (constant across obs).
     if n_params > 0:
@@ -559,11 +595,13 @@ def _write_eval_ad_function(buf, out_names, ctx, modelname):
         buf.write("                }\n")
         buf.write("            }\n")
         buf.write("        }\n")
-    buf.write(f"        {modelname}_eval_one<F<double>>(x_ad.data(), p_ad.data(), y_ad.data());\n")
+    buf.write(f"        {modelname}_eval_one<AD>(x_ad.data(), p_ad.data(), y_ad.data());\n")
     buf.write("        for (int i = 0; i < n_out; ++i) {\n")
     buf.write("            y[obs + (size_t)n_obs * i] = y_ad[i].val();\n")
     buf.write("            for (int k = 0; k < n_theta; ++k) {\n")
-    buf.write("                dy[obs + (size_t)n_obs * (i + (size_t)n_out * k)] = y_ad[i].deriv(k);\n")
+    # operator[] is supported by both fadbad::F<double> and cppode::dual<double, 0>
+    # for tangent-component access.
+    buf.write("                dy[obs + (size_t)n_obs * (i + (size_t)n_out * k)] = y_ad[i][k];\n")
     buf.write("            }\n")
     buf.write("        }\n")
     buf.write("    }\n}\n\n")

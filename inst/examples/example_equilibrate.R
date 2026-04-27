@@ -38,7 +38,7 @@ if (!is.null(res$sens1)) {
   n_states <- ncol(res$variable)
   n_sens   <- dim(res$sens1)[3]
 
-  dims <- attr(model, "dim_names")
+  dims <- attr(model, "dimNames")
 
   ## ---------- sens1 ----------
   # sens1 is [n_out, n_states, n_sens] -> flatten to [n_out, n_states*n_sens]
@@ -129,7 +129,7 @@ if (!is.null(res2$sens1)) {
   n_states <- ncol(res2$variable)
   n_sens   <- dim(res2$sens1)[3]
 
-  dims <- attr(model, "dim_names")
+  dims <- attr(model, "dimNames")
 
   ## ---------- sens1 ----------
   # sens1 is [n_out, n_states, n_sens] -> flatten to [n_out, n_states*n_sens]

@@ -2,7 +2,7 @@
 % Please edit documentation in R/solveODE.R
 \name{solveODE}
 \alias{solveODE}
-\title{Solver Interface for Ordinary Differential Equation Models}
+\title{Run a Compiled ODE Model}
 \usage{
 solveODE(
   model,
@@ -25,152 +25,211 @@ solveODE(
 )
 }
 \arguments{
-\item{model}{A compiled ODE model object returned by \code{\link[=CppODE]{CppODE()}}.}
+\item{model}{A compiled ODE model returned by \code{\link[=CppODE]{CppODE()}} or \code{\link[=CVODE]{CVODE()}}.}
 
-\item{times}{Numeric vector of time points at which to return the solution.
-Must be non-empty and contain only finite values.}
+\item{times}{Numeric vector of time points at which to return the
+solution. Must be non-empty and contain only finite values.}
 
 \item{parms}{Named numeric vector of initial conditions and parameters.
-Names must include all of \code{c(attr(model, "variables"), attr(model, "parameters"))}.}
+Names must include all of
+\code{c(attr(model, "variables"), attr(model, "parameters"))}.}
 
-\item{sens1ini}{Optional numeric matrix of first-order sensitivity initial
-values, interpreted as the Jacobian \eqn{\Phi'(\theta)}. Accepts the
-legacy shape \verb{[n_states, n_active]} (auto-extended internally with an
-identity block on the parameter rows) or the full shape
-\verb{[n_states + n_params, M]}. Row names, when present, must match the
-relevant row basis; column names label the resulting sens output
-columns. Default \code{NULL} uses identity seeding on the active sens basis.}
+\item{sens1ini}{Optional numeric matrix of first-order sensitivity
+initial values, interpreted as the Jacobian \eqn{\Phi'(\theta)}.
+Accepts three shapes (see Details): legacy \verb{[n_states, n_active]}
+(auto-extended with identity on parameter rows), full
+\verb{[n_states + n_params, M]}, or partial \verb{[k, M]} with row names
+identifying a subset of \code{c(variables, parameters)} (missing rows
+are zero-padded, i.e. implicitly fixed). Column names label the
+resulting sensitivity output columns. Default \code{NULL} uses identity
+seeding on the active sensitivity basis.}
 
-\item{sens2ini}{Optional numeric array of second-order sensitivity initial
-values, interpreted as the Hessian tensor \eqn{\Phi''(\theta)}. Shapes
-analogous to \code{sens1ini}: \verb{[n_states, n_active, n_active]} (legacy) or
-\verb{[n_states + n_params, M, M]} (full). Only allowed when
-\code{attr(model, "deriv2") == TRUE}. Default \code{NULL} uses zero seeding
-(correct when \eqn{\Phi} is linear-affine).}
+\item{sens2ini}{Optional numeric array of second-order sensitivity
+initial values, interpreted as the Hessian tensor
+\eqn{\Phi''(\theta)}. Shapes are analogous to those of \code{sens1ini}:
+\verb{[n_states, n_active, n_active]} (legacy),
+\verb{[n_states + n_params, M, M]} (full), or \verb{[k, M, M]} with dim-1
+names identifying a subset of \code{c(variables, parameters)} (partial,
+zero-padded). Allowed only when \code{attr(model, "deriv2")} is \code{TRUE}.
+Default \code{NULL} uses zero seeding (correct when \eqn{\Phi} is
+linear-affine).}
 
-\item{fixed}{Optional character vector of sensitivity parameter names to treat
-as fixed at runtime. These parameters will not have their dual-number
-components allocated, so the integrator runs with a strictly smaller AD
-state. Names must be a subset of \code{attr(model, "dim_names")$sens}. Unlike
-compile-time \code{fixed} in \code{\link[=CppODE]{CppODE()}}, runtime fixed parameters can be changed
-between calls without recompilation. Default \code{NULL} (all parameters active).}
+\item{fixed}{Optional character vector of sensitivity-parameter names
+to treat as fixed at run time. The integrator then runs with a
+smaller AD state. Names must be a subset of
+\code{attr(model, "dimNames")$sens}. Unlike compile-time \code{fixed} in
+\code{\link[=CppODE]{CppODE()}}, the run-time \code{fixed} set can be changed between calls
+without recompilation. Incompatible with full / partial \code{sens1ini}
+(those encode fixedness through row values or row presence).
+Default \code{NULL} (all parameters active).}
 
-\item{forcings}{Optional named list of forcing function data. Each element
-must be a \code{data.frame} (or coercible object) with columns \code{time} and \code{value},
-or a two-column matrix. Names must match \code{attr(model, "forcings")}.
-Default \code{NULL}.}
+\item{forcings}{Optional named list of forcing-function data. Each
+element must be a \code{data.frame} (or coercible object) with columns
+\code{time} and \code{value}, or a two-column matrix. Names must match
+\code{attr(model, "forcings")}. Default \code{NULL}.}
 
-\item{abstol}{Absolute error tolerance for the integrator. Default \code{1e-6}.}
+\item{abstol}{Absolute error tolerance. Default \code{1e-6}.}
 
-\item{reltol}{Relative error tolerance for the integrator. Default \code{1e-6}.}
+\item{reltol}{Relative error tolerance. Default \code{1e-6}.}
 
-\item{maxprogress}{Maximum number of consecutive integration steps without
-time advance (i.e. consecutive rejected steps) before the solver aborts
-with \code{CV_CONV_FAILURE} (\code{return_code = -4}). Default \code{50}. Very stiff
-problems with sharp transients or discontinuities may legitimately reject
-several steps in a row when the controller first adapts, so setting this
-too low (e.g. \code{10}) can produce false positives; Boost.odeint's reference
-value is \code{500}. Lower this for "fail fast" behaviour in optimisation
-pipelines where a stuck solve should be rejected cheaply.}
+\item{maxprogress}{Maximum number of consecutive integration steps
+without time advance (consecutive rejected steps) before the solver
+aborts with \code{CV_CONV_FAILURE} (\code{return_code = -4}). Default \code{50}.
+Lower values can be useful for fail-fast behaviour in optimisation
+pipelines; very stiff problems with sharp transients may legitimately
+reject several steps in a row when the controller first adapts.}
 
-\item{maxsteps}{Maximum total number of integration steps. Default \code{1e6}.}
+\item{maxsteps}{Maximum total number of integration steps. Default
+\code{1e6}.}
 
-\item{hini}{Initial step size; \code{0} (default) triggers automatic estimation.}
+\item{hini}{Initial step size; \code{0} (default) triggers automatic
+estimation.}
 
-\item{roottol}{Tolerance for root-finding in root-triggered events. Default \code{1e-6}.}
+\item{roottol}{Tolerance for root finding in root-triggered events.
+Default \code{1e-6}.}
 
-\item{maxroot}{Maximum triggers per root event. Default \code{1}.}
+\item{maxroot}{Maximum number of triggers per root event. Default \code{1}.}
 
-\item{usePID}{Character string selecting the step-size control
-strategy for NDF/BDF. One of:
+\item{usePID}{Step-size control strategy for NDF/BDF. One of:
 \describe{
-\item{\code{"none"}}{(default) Classical CVODE-style I-controller
-with the BIAS2 safety factor. This is what \code{solveODE} did
-before the H211b experiments and is the recommended
-baseline for stiff problems on KLU-equipped Jacobians.}
-\item{\code{"intermediate"}}{Same I-controller and same order
-selection as \code{"none"}, plus a geometric (log-space) low-pass
-filter applied to the final step-size ratio:
-\deqn{\log \eta_{\mathrm{filt}} = (1-\alpha)\log \eta + \alpha \log \eta_{n-1}}
-with default \eqn{\alpha = 0.4}. The filter smooths the
-step-size sequence without interfering with order changes
-and resets its history on order changes, failures, and
-events.}
+\item{\code{"none"}}{(default) Classical CVODE-style I-controller with
+the BIAS2 safety factor. Recommended baseline for stiff problems.}
+\item{\code{"intermediate"}}{The same I-controller and order selection
+as \code{"none"}, plus a geometric (log-space) low-pass filter on the
+final step-size ratio. The filter resets on order changes,
+failures, and events.}
 \item{\code{"full"}}{Soederlind's H211b second-order digital filter
-replaces the I-controller at the current order. The
-order-decrease and order-increase candidates are lifted onto
-the same safety-only scale as the H211b proposal so that
-order selection is not biased against the filter path. Uses
-a default safety factor of 0.8.}
+replaces the I-controller at the current order. Uses a default
+safety factor of 0.8.}
 }
-For Rosenbrock4 the value is silently forced to \code{"full"} because
-Rosenbrock4 always uses its built-in Gustafsson PI controller and
-has no toggle for it. Note that "PID" is a slight misnomer for
-all of these -- H211b is a second-order digital filter and the
-Gustafsson form is a PI controller, neither is a classical
-PID -- but the name follows common usage in the adaptive-stepping
-literature. References: Soederlind (2003) "Digital Filters in
-Adaptive Time-Stepping", ACM TOMS 29(1); Soederlind & Wang (2006)
-"Adaptive Time-Stepping and Computational Stability"; Gustafsson,
-Lundh & Soederlind (1988) "A PI stepsize control for the numerical
-solution of ordinary differential equations", BIT 28.}
+For methods \code{"rb4"} and \code{"tsit5"} the value is silently set to
+\code{"full"} because those methods always use their built-in PI
+controller. The label "PID" follows common usage in the
+adaptive-stepping literature.}
 
-\item{onFailure}{How to react when the solver returns \code{return_code != 0}
-(step limit hit, no progress, etc.). One of \code{"warn"} (default, historical
-behaviour: emit a warning and return partial results up to \code{t_reached}),
-\code{"stop"} (raise an error with the solver message; no partial results
-are returned), or \code{"silent"} (return the partial result without any
-signal). Use \code{"stop"} in optimisation pipelines where a silently
-truncated trajectory would be misinterpreted as a valid prediction.}
+\item{onFailure}{How to react when the solver returns a non-zero
+return code. One of \code{"warn"} (default; emit a warning and return
+partial results up to \code{t_reached}), \code{"stop"} (raise an error with
+the solver message and no partial results), or \code{"silent"} (return
+the partial result without any signal).}
 
-\item{traceFile}{Optional character. If the compiled model was built
-with \code{stepTrace = TRUE} and a non-empty path is supplied here, the
-per-step trace data.frame is also written to this CSV file in the
-current working directory.  The trace is additionally attached to
-the returned list as \verb{$trace} regardless of whether a file path is
-provided.  Ignored for models compiled without trace support (the
-\verb{$trace} element is \code{NULL} in that case).}
+\item{traceFile}{Optional character giving a CSV file path. If the
+model was compiled with \code{stepTrace = TRUE} and a non-empty path is
+supplied, the per-step trace \code{data.frame} is written to that path.
+The trace is also attached to the returned list as \verb{$trace}. Ignored
+for models compiled without trace support (\verb{$trace} is \code{NULL} in
+that case).}
 }
 \value{
-A named list with components \code{time}, \code{variable}, \code{diagnostics},
-and, when \code{attr(model, "deriv") == TRUE}, \code{sens1}, and additionally
-\code{sens2} when \code{attr(model, "deriv2") == TRUE}. All output arrays are
-\strong{time-first}: \code{variable} is \verb{[n_t, n_x]}, \code{sens1} is \verb{[n_t, n_x, n_s]},
-and \code{sens2} is \verb{[n_t, n_x, n_s, n_s]}. Dimension names of \code{sens1}/\code{sens2}
-reflect only the active (non-fixed) sensitivity parameters. The
-\code{diagnostics} element is a list with solver statistics (see
+A named list with components \code{time}, \code{variable}, \code{diagnostics}, and,
+when \code{attr(model, "deriv")} is \code{TRUE}, \code{sens1}, plus \code{sens2} when
+\code{attr(model, "deriv2")} is \code{TRUE}. Output arrays are time-first:
+\code{variable} is \verb{[n_t, n_x]}, \code{sens1} is \verb{[n_t, n_x, n_s]}, and
+\code{sens2} is \verb{[n_t, n_x, n_s, n_s]}. The dimension names of \code{sens1}
+and \code{sens2} reflect the active (non-fixed) sensitivity parameters.
+The \code{diagnostics} element is a list of solver statistics (see
 \code{\link[=diagnostics]{diagnostics()}}). When the model was compiled with \code{stepTrace = TRUE},
-an additional \verb{$trace} data.frame with per-step diagnostics is attached.
+an additional \verb{$trace} \code{data.frame} with per-step diagnostics is
+attached.
 }
 \description{
-Numerically integrates a compiled ODE model created by \code{\link[=CppODE]{CppODE()}} over a
-specified time span.
-\subsection{Sensitivity initial values, \code{fixed}, and reparametrization}{
+Numerically integrates a compiled ODE model created by \code{\link[=CppODE]{CppODE()}} (or
+\code{\link[=CVODE]{CVODE()}}) over a specified time span. Returns the state trajectory and,
+when the model was compiled with sensitivities, first- and (optionally)
+second-order parameter sensitivities.
+}
+\details{
+\subsection{Sensitivity with respect to a reparametrization}{
 
-\code{sens1ini} and \code{sens2ini} describe how the \emph{full} initial-condition and
-parameter vector depends on the sensitivity-column basis -- i.e., they are
-the Jacobian \eqn{\Phi'(\theta)} and Hessian \eqn{\Phi''(\theta)} of the
-reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted, chosen
-per call from the matrix's row count:
+By default, the compiled solver computes sensitivities of the state
+trajectory \eqn{x(t)} with respect to the full input vector
+\eqn{p = (p_{\text{init}}, p_{\text{dyn}}) \in \mathbb{R}^{n_x + n_p}},
+i.e. all initial conditions stacked on all dynamic parameters. In
+fitting and identifiability workflows the quantity of interest is
+often instead the gradient with respect to a smaller set of free
+variables \eqn{\theta \in \mathbb{R}^{M}}, where the model inputs are
+obtained from a smooth reparametrization
+
+\deqn{p = \Phi(\theta) \in \mathbb{R}^{n_x + n_p}.}
+
+Typical examples are log-parametrization
+(\eqn{p_i = \exp \theta_i}) to enforce positivity, parameters that
+are shared across compartments or experimental conditions, and
+components of \eqn{p} that are held constant and therefore drop out
+of \eqn{\theta}.
+
+By the chain rule, the trajectory's first- and second-order
+sensitivities with respect to \eqn{\theta} are
+
+\deqn{\frac{\partial x(t)}{\partial \theta} \;=\;
+      \frac{\partial x(t)}{\partial p}\,\Phi'(\theta),}
+
+\deqn{\frac{\partial^{2} x(t)}{\partial \theta\,\partial \theta^{\top}}
+      \;=\;
+      \Phi'(\theta)^{\top}\,
+      \frac{\partial^{2} x(t)}{\partial p\,\partial p^{\top}}\,
+      \Phi'(\theta) \;+\;
+      \frac{\partial x(t)}{\partial p}\,\Phi''(\theta),}
+
+where \eqn{\Phi'(\theta)} is an \eqn{(n_x + n_p) \times M} Jacobian
+and \eqn{\Phi''(\theta)} is the corresponding
+\eqn{(n_x + n_p) \times M \times M} Hessian tensor (contracted on its
+first index in the formula above).
+
+Rather than first computing \eqn{\partial x(t)/\partial p} along all
+\eqn{n_x + n_p} canonical directions and contracting with
+\eqn{\Phi'(\theta)} afterwards, the solver applies the chain rule
+\emph{inside} the AD pass: each of the \eqn{M} forward-AD directions is
+seeded with the corresponding column of \eqn{\Phi'(\theta)}, so the
+integrator directly returns
+\eqn{\partial x(t)/\partial \theta} (and analogously
+\eqn{\partial^{2} x(t)/\partial \theta\,\partial \theta^{\top}} when
+\eqn{\Phi''(\theta)} is supplied for the second-order seeds). The
+parameter sweep then has cost \eqn{O(M)} rather than
+\eqn{O(n_x + n_p)}, which is the main practical benefit when
+\eqn{M \ll n_x + n_p}.
+
+The default identity reparametrization \eqn{\Phi(\theta) = \theta}
+corresponds to \eqn{\Phi'(\theta) = I_{(n_x + n_p) \times (n_x + n_p)}}
+and \eqn{\Phi''(\theta) = 0}; this is the legacy seeding emitted when
+\code{sens1ini} / \code{sens2ini} are omitted, restricted to the active
+(non-fixed) sensitivity columns.
+}
+
+\subsection{Sensitivity initial values}{
+
+\code{sens1ini} and \code{sens2ini} are exactly \eqn{\Phi'(\theta)} and
+\eqn{\Phi''(\theta)} from the chain-rule derivation above, evaluated
+at the current \eqn{\theta}. Three shapes are accepted, selected per
+call from the row count and row names of the supplied matrix:
 \itemize{
 \item \strong{Legacy shape} \verb{[n_states, n_active]}: identity seeding on the
 parameter block is implied. The active set equals the model's
-sensitivity names minus \code{fixed}. This is the shape emitted by
-\code{solveODE()} itself (\code{res$sens1[t, , ]}) and is directly usable as
-\code{sens1ini} for warm-starting subsequent solves.
+sensitivity names minus \code{fixed}. Detected when \code{nrow == n_states}
+and row names are absent or are a permutation of \code{variables}. This
+is the shape emitted by \code{solveODE()} itself (\code{res$sens1[t, , ]}) and
+can therefore be used directly for warm-starting subsequent solves.
 \item \strong{Full shape} \verb{[n_states + n_params, M]}: \eqn{\Phi'(\theta)}
-directly. State rows (first \code{n_states}) seed state ICs; parameter rows
-(next \code{n_params}) seed the dynamic parameters. The column count \code{M}
-may vary across calls; under stack-mode AD it must satisfy
-\eqn{M \le \mathtt{nStack}}. Runtime \code{fixed} is incompatible with
-full-shape input -- express fixedness through zero rows of
-\eqn{\Phi'(\theta)} instead.
+directly. State rows seed state ICs; parameter rows seed the dynamic
+parameters. The column count \code{M} may vary across calls; under
+stack-mode AD it must satisfy \eqn{M \le \mathtt{nStack}}.
+\item \strong{Partial shape} \verb{[k, M]} with \code{k < n_states + n_params}: row
+names are required and must be a subset of
+\code{c(variables, parameters)}. The supplied rows are placed at the
+matching positions of \eqn{\Phi'(\theta)}; missing rows are zero-
+padded, i.e. those slots are treated as fixed. This is the
+row-name-driven equivalent of run-time \code{fixed}.
 }
 
+Run-time \code{fixed} is incompatible with the full and partial shapes
+(those already encode fixedness via row presence / row values).
+
 Column names, when present, must match the relevant column basis
-(\code{active_sens} for legacy, user-chosen theta names for full-shape).
+(the active sensitivity names for the legacy shape, user-chosen theta
+names for the full / partial shapes).
 }
 }
 \seealso{
-\code{\link[=CppODE]{CppODE()}} for model specification and compilation.
+\code{\link[=CppODE]{CppODE()}} and \code{\link[=CVODE]{CVODE()}} for model compilation;
+\code{\link[=diagnostics]{diagnostics()}} for printing solver statistics.
 }

@@ -2,11 +2,10 @@
  CppODE Multistep Stepper — Nordsieck multistep implementation.
 
  Unified variable-order, variable-step Nordsieck multistep stepper
- covering three method variants selected at compile time via the
+ covering two method variants selected at compile time via the
  multistep_method enum:
 
-   msoda   : BDF/NDF with Adams-PECE switching (LSODA-like)
-   bdf     : pure BDF/NDF, no switching, max order 5  (default)
+   bdf     : pure BDF/NDF, max order 5  (default)
    adams   : pure Adams-Moulton PECE,  max order 12
 
  Whether the stiff side uses NDF (Klopfenstein-Shampine) kappa
@@ -47,9 +46,7 @@
                              (defined inline below)
  - adams_set_coefficients()  free function — Adams Nordsieck coefficients
                              (defined inline below)
- - methodswitch_step()       free function — LSODA stiffness detector
-                             (declared in cppode_multistepper_stiffness_detector.hpp)
- - multistepper              orchestrates the step pipeline + mode switching
+ - multistepper              orchestrates the step pipeline
 
  AD handling is fully transparent: lu_W::solve() dispatches to IFT
  internally, WRMS norms in newton include derivative components.
@@ -82,11 +79,6 @@
 #include <cppode/cppode_ad_lu.hpp>          // ad_lu::is_ad — used by adams_pece_solve
 #include <cppode/cppode_ad_traits.hpp>
 #include <cppode/cppode_dual_slab.hpp>
-
-// Note: cppode_multistepper_stiffness_detector.hpp is included further
-// down, AFTER the adams_constants namespace is defined, because the
-// detector references adams_constants::ADAMS_STAB_RADIUS at constexpr
-// initialisation time.
 
 namespace cppode {
 
@@ -156,49 +148,11 @@ static constexpr double NDF_KAPPA[6] = {
 
 } // namespace ndf_constants
 
-// ============================================================================
-//  Adams-Moulton stability radii on the imaginary axis
-//
-//  |h * lambda| at which the order-q variable-step Adams-Moulton method
-//  transitions out of its absolute-stability region for purely imaginary
-//  eigenvalues.  Used by the stiffness detector to compare h * |lambda_dom|
-//  against the boundary.
-//
-//  Source: Hairer & Wanner, "Solving ODEs II", 2nd ed., Springer 1996,
-//  Tables III.7.{1,2}, and LSODA's `sm1` array (opkda1.f, sm1[1..12]).
-//  Index = order q in 1..12.  Index 0 is unused.
-// ============================================================================
-
 namespace adams_constants {
-
-static constexpr std::array<double, 13> ADAMS_STAB_RADIUS = {
-  0.0,     // q = 0  (unused)
-  2.000,   // q = 1
-  4.500,   // q = 2
-  7.333,   // q = 3
-  10.42,   // q = 4
-  13.7,    // q = 5
-  17.15,   // q = 6
-  20.74,   // q = 7
-  24.46,   // q = 8
-  28.31,   // q = 9
-  32.27,   // q = 10
-  36.34,   // q = 11
-  40.51    // q = 12
-};
 
 static constexpr int max_order_adams = 12;
 
 } // namespace adams_constants
-
-// The stiffness detector is kept in a separate header so it can be
-// unit-tested in isolation against published LSODA reference values.
-// It is included HERE (not at the top) because it references
-// adams_constants::ADAMS_STAB_RADIUS / max_order_adams at constexpr
-// initialisation time, and those symbols must be fully visible.
-} // namespace cppode — close so the detector can reopen it
-#include <cppode/cppode_multistepper_stiffness_detector.hpp>
-namespace cppode {
 
 // ============================================================================
 //  Adams coefficient routines  (cvSetAdams port from Sundials/cvode.c)
@@ -557,36 +511,30 @@ pece_result adams_pece_solve(
 //  multistep_method — compile-time method selector
 //
 //  Selects which Nordsieck multistep family the stepper instantiates.
-//  All variants share the same Nordsieck history array, the same
+//  Both variants share the same Nordsieck history array, the same
 //  step-size controller, and the same resize / dense-output / AD
 //  machinery.  They differ in:
 //
 //    - which xxxSet() coefficient routine is called
 //    - whether the corrector is Newton (BDF/NDF) or PECE (Adams)
 //    - the maximum order
-//    - whether mode-switching code is compiled in at all
 // ============================================================================
 
 enum class multistep_method {
-  msoda,    // BDF/NDF with Adams-PECE switching (LSODA-like, MSODA)
-  bdf,      // pure BDF/NDF, no switching (default)
+  bdf,      // pure BDF/NDF (default)
   adams     // pure Adams-Moulton PECE
 };
 
 namespace multistep_detail {
 
-constexpr bool method_has_switching(multistep_method m) {
-  return m == multistep_method::msoda;
-}
 constexpr bool method_can_use_adams(multistep_method m) {
-  return m == multistep_method::adams || method_has_switching(m);
+  return m == multistep_method::adams;
 }
 constexpr bool method_can_use_bdf_family(multistep_method m) {
-  return m != multistep_method::adams;
+  return m == multistep_method::bdf;
 }
 
-// Nordsieck max order: 12 for any variant that may run Adams,
-// 5 otherwise.  Pure BDF users pay zero memory overhead.
+// Nordsieck max order: 12 for Adams, 5 for BDF/NDF.
 constexpr int method_max_order(multistep_method m) {
   return method_can_use_adams(m) ? 12 : 5;
 }
@@ -612,7 +560,6 @@ public:
 
   // Compile-time method properties (derived from Method)
   static constexpr multistep_method method            = Method;
-  static constexpr bool             has_switching     = multistep_detail::method_has_switching(Method);
   static constexpr bool             can_use_adams     = multistep_detail::method_can_use_adams(Method);
   static constexpr bool             can_use_bdf_family= multistep_detail::method_can_use_bdf_family(Method);
 
@@ -642,11 +589,6 @@ public:
 
   // LU solver type
   using lu_type = lu_W<Value, is_sparse>;
-
-  // Current mode for switching instantiations (bdf/ndf family vs Adams).
-  // Declared here, before its first use in current_mode(), to satisfy
-  // the class-complete-point lookup rules used by GCC's -Wchanges-meaning.
-  enum class mstep_mode { bdf_family, adams };
 
   // ====================================================================
   //  Constructor
@@ -766,24 +708,17 @@ public:
   };
 
   // ====================================================================
-  //  q_max_current — current effective max order
-  //
-  //  In mode-switching instantiations, this is 12 when running Adams
-  //  and 5 when running BDF/NDF.  In pure-method instantiations it
-  //  is just the static max_order.  Used by the controller to clamp
-  //  order-increase decisions to the current method's limit.
+  //  q_max_current — effective max order for this method.
+  //  Adams: 12.  BDF/NDF: 5.  Used by the controller to clamp
+  //  order-increase decisions.
   // ====================================================================
 
   int q_max_current() const
   {
     if constexpr (Method == multistep_method::adams) {
       return adams_constants::max_order_adams;     // = 12
-    } else if constexpr (!has_switching) {
-      return 5;                                    // pure NDF/BDF
     } else {
-      return (m_mode == mstep_mode::adams)
-        ? adams_constants::max_order_adams         // 12
-        : 5;                                       // BDF/NDF side
+      return 5;                                    // pure NDF/BDF
     }
   }
 
@@ -791,16 +726,7 @@ public:
   //  do_step — public dispatcher
   //
   //  Selects between the BDF/NDF Newton corrector path and the Adams
-  //  PECE corrector path at compile time (for pure-method instantiations)
-  //  or at runtime via m_mode (for the ++ instantiations with switching).
-  //
-  //  When has_switching = false the if-constexpr collapses to a single
-  //  direct call and there is no runtime branch overhead.
-  //
-  //  In the switching case, after each accepted step the stiffness
-  //  detector is consulted and may trigger a mode switch.  The switch
-  //  itself is cheap (no LU teardown, no Nordsieck reset) — see
-  //  switch_to_adams() / switch_to_bdf_family() below.
+  //  PECE corrector path at compile time.
   // ====================================================================
 
   template<class System, class TimeArg>
@@ -815,205 +741,20 @@ public:
       convfail_t convfail = convfail_t::no_failures)
   {
     if constexpr (Method == multistep_method::adams) {
-      // Pure Adams — direct call, no mode dispatch.
       step_adams(system, x, t, x_out, dt, xerr);
-    } else if constexpr (!has_switching) {
-      // Pure NDF or pure BDF — direct call, no mode dispatch.
-      step_bdf_family(system, x, t, x_out, dt, xerr, force_setup, convfail);
     } else {
-      // Mode-switching instantiation: dispatch on m_mode.
-      if (m_mode == mstep_mode::adams) {
-        step_adams(system, x, t, x_out, dt, xerr);
-      } else {
-        step_bdf_family(system, x, t, x_out, dt, xerr, force_setup, convfail);
-      }
+      step_bdf_family(system, x, t, x_out, dt, xerr, force_setup, convfail);
     }
   }
 
   // ====================================================================
-  //  on_step_accepted — called by the controller after a successful step
-  //
-  //  Updates per-mode counters, runs the LSODA stiffness-switch test,
-  //  and performs a mode switch if the test recommends one.  Must be
-  //  called once per accepted step, AFTER complete_step (so the new
-  //  zn[] / m_q / m_h are in place).
-  //
-  //  This function is a NO-OP at the call site for non-switching
-  //  instantiations: the controller wraps its call in
-  //  `if constexpr (decltype(m_stepper)::has_switching)` so the call
-  //  doesn't even appear in the generated code for pure NDF/BDF/Adams.
-  //  We still keep an internal `if constexpr (!has_switching) return;`
-  //  guard so direct calls (e.g. from tests) are also safe.
+  //  on_step_accepted — called by the controller after a successful step.
+  //  Currently a no-op (no mode-switching machinery).  Kept as a hook
+  //  in case future per-step bookkeeping is needed.
   // ====================================================================
 
   template<class System, class TimeArg>
-  void on_step_accepted(System& system, TimeArg /*t*/)
-  {
-    using ndf_detail::scalar_value;
-
-    // Per-mode step counters (always tracked, cheap)
-    if (m_mode == mstep_mode::adams) {
-      ++m_n_steps_adams;
-    } else {
-      ++m_n_steps_bdf_family;
-    }
-
-    if constexpr (!has_switching) {
-      // Pure-method instantiation: no switching ever.
-      (void)system;
-      return;
-    } else {
-      // Decrement the cooldown counter — see LSODA stoda.f.
-      if (m_icount > 0) {
-        --m_icount;
-      }
-
-      // Compute dsm = error norm * tq[2] just like the controller
-      // does in cvDoErrorTest — needed by methodswitch_step().
-      const double dsm = m_acnrm * m_tq[2];
-      const double h_d = static_cast<double>(scalar_value(m_h));
-
-      // The pnorm we pass to the detector is the LSODA Jacobian norm.
-      // BDF side: m_pnorm has been updated whenever the Jacobian was
-      // recomputed (see step_bdf_family / lu setup).  Adams side: we
-      // don't have J, so m_pnorm is 0 and the detector falls back to
-      // the irflag path.
-      const double pnorm_d  = m_pnorm;
-      const double pdlast_d = m_pdlast;
-
-      const auto sw = stiffness_detector::methodswitch_step(
-          /*in_adams_mode=*/ (m_mode == mstep_mode::adams),
-          /*nq=*/            m_q,
-          /*h=*/             h_d,
-          /*dsm=*/           dsm,
-          /*pnorm=*/         pnorm_d,
-          /*pdlast=*/        pdlast_d,
-          /*icount=*/        m_icount,
-          /*irflag=*/        m_irflag);
-
-      using stiffness_detector::recommendation;
-
-      // Hard PECE divergence overrides the LSODA test — switch
-      // immediately and unconditionally on Adams divergence.
-      // Apply a long cooldown (100 steps) so the BDF→Adams switch
-      // test doesn't fire again until the dynamics have changed
-      // significantly.  Without this, a BDF↔Adams flip-flop occurs
-      // every ICOUNT_RESET (20) steps on stiff problems where BDF's
-      // error test makes Adams LOOK efficient but Adams can't handle
-      // the step size from a stability perspective.
-      if (m_mode == mstep_mode::adams && m_last_pece_diverged) {
-        switch_to_bdf_family(/*new_q=*/std::min(m_q, 5));
-        m_icount = 100;   // long cooldown — suppress flip-flop
-        m_last_pece_diverged = false;
-        return;
-      }
-
-      // Adams watchdog: catch Robertson-style stalls where Adams
-      // survives with microscopic steps at q <= 2 forever because the
-      // PECE-rate Lipschitz estimate can't register the true
-      // stiffness.  Productive Adams runs climb past q=2 quickly; a
-      // long streak stuck at q <= 2 is a stiffness flag.  Reset on
-      // any step at q >= 3 so genuine Adams work isn't interrupted.
-      if (m_mode == mstep_mode::adams) {
-        if (m_q <= 2) {
-          ++m_adams_low_order_streak;
-        } else {
-          m_adams_low_order_streak = 0;
-        }
-        constexpr int WATCHDOG_STEPS = 500;
-        if (m_adams_low_order_streak >= WATCHDOG_STEPS) {
-          switch_to_bdf_family(/*new_q=*/std::min(m_q, 5));
-          m_icount = 500;   // long cooldown — don't flip back
-          return;
-        }
-      }
-
-      if (sw.rec == recommendation::switch_to_bdf) {
-        switch_to_bdf_family(sw.new_q);
-      } else if (sw.rec == recommendation::switch_to_adams) {
-        switch_to_adams(sw.new_q);
-      }
-      // else: stay
-    }
-  }
-
-  // ====================================================================
-  //  switch_to_adams — transition from BDF/NDF to Adams
-  //
-  //  The Nordsieck history array is method-neutral: zn[j] holds
-  //  h^j / j! * y^(j) regardless of which formula computed it.  So
-  //  the switch costs essentially nothing — we flip the mode flag
-  //  and reset the cooldown to ICOUNT_RESET.
-  //
-  //  The Nordsieck array is NOT rescaled here.  The controller's
-  //  prepare_next_step() / rescale() path handles step-size changes.
-  //
-  //  We do NOT destroy m_lu — keeping the symbolic factorization
-  //  makes a future switch back to BDF essentially free.  pdlast is
-  //  reset to 0 because the Jacobian is no longer "current" from
-  //  the Adams perspective.
-  // ====================================================================
-
-  void switch_to_adams(int new_q)
-  {
-    if constexpr (!has_switching) { (void)new_q; return; }
-    m_mode = mstep_mode::adams;
-    if (new_q >= 1 && new_q <= adams_constants::max_order_adams) {
-      m_q = new_q;
-      m_L = new_q + 1;
-    }
-    m_icount = stiffness_detector::ICOUNT_RESET;
-    m_pdlast = 0.0;
-    m_irflag = 0;
-    m_qwait  = m_L;   // give order-selection a fresh start
-    ++m_n_switches_to_adams;
-    m_adams_low_order_streak = 0;
-    // Briefly raise etamax so the new method can find its sweet spot.
-    m_etamax = std::max(m_etamax, ndf_constants::ETAMX2);
-#ifdef CPPODE_STEP_TRACE
-    std::fprintf(stderr,
-      "SWITCH nst=%d BDF/NDF -> ADAMS  new_q=%d\n",
-      m_nst, m_q);
-#endif
-  }
-
-  // ====================================================================
-  //  switch_to_bdf_family — transition from Adams to BDF/NDF
-  //
-  //  Clamp the order to max 5 (NDF/BDF cap), reset the cooldown,
-  //  invalidate the LU so it gets refactored on the next step.
-  //  pdlast stays 0 until the next Jacobian evaluation populates it.
-  // ====================================================================
-
-  void switch_to_bdf_family(int new_q)
-  {
-    if constexpr (!has_switching) { (void)new_q; return; }
-    m_mode = mstep_mode::bdf_family;
-    if (new_q >= 1 && new_q <= 5) {
-      m_q = new_q;
-      m_L = new_q + 1;
-    } else if (m_q > 5) {
-      m_q = 5;
-      m_L = 6;
-    }
-    m_icount = stiffness_detector::ICOUNT_RESET;
-    m_qwait  = m_L;
-    ++m_n_switches_to_bdf;
-    m_lu.invalidate();   // force LU setup on next step
-    m_etamax = std::max(m_etamax, ndf_constants::ETAMX2);
-#ifdef CPPODE_STEP_TRACE
-    std::fprintf(stderr,
-      "SWITCH nst=%d ADAMS -> BDF/NDF  new_q=%d\n",
-      m_nst, m_q);
-#endif
-  }
-
-  // ====================================================================
-  //  current_mode — public accessor for diagnostics
-  // ====================================================================
-
-  mstep_mode current_mode() const { return m_mode; }
-  bool   in_adams_mode() const { return m_mode == mstep_mode::adams; }
+  void on_step_accepted(System& /*system*/, TimeArg /*t*/) {}
 
   // ====================================================================
   //  step_bdf_family: perform one BDF/NDF step
@@ -1188,16 +929,6 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
       m_lu.cache_jacobian(n);
       { auto _tp = m_prof.timer(prof_cat::lu_factor);
         m_lu.factorize_W(n, inv_gamma_dt); }
-
-      // LSODA stiffness-switching support: update m_pnorm with the
-      // 1-norm of the freshly-computed Jacobian and propagate to
-      // m_pdlast for the next switch test.  Cost is O(nnz) sparse
-      // or O(n^2) dense — done only on Jacobian recomputation, not
-      // on every step, so the amortized cost is small.
-      if constexpr (has_switching) {
-        m_pnorm  = m_lu.jacobian_one_norm();
-        m_pdlast = m_pnorm;
-      }
     } else {
       auto _tp = m_prof.timer(prof_cat::lu_factor);
       if constexpr (is_sparse) {
@@ -1301,17 +1032,6 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   //  adams_set_coefficients() instead of ndfSet() and adams_pece_solve()
   //  instead of ndf_newton_solve().  No LU, no Jacobian, no setup
   //  triggers — pure non-stiff path.
-  //
-  //  Status: NOT YET WIRED.  Compiles only when instantiated, which
-  //  currently happens only for Method == multistep_method::adams.
-  //  The has_switching = true paths still go through step_bdf_family;
-  //  enabling the runtime mode dispatch is a follow-up step that
-  //  needs the m_mode member and the stiffness detector.
-  //
-  //  This implementation has been validated at the coefficient level
-  //  (see test_adams_coeffs.cpp) but has NOT been end-to-end tested
-  //  in the stepper context.  Treat as alpha-quality until benchmarked
-  //  against deSolve::lsoda on Lotka-Volterra and harmonic oscillator.
   // ====================================================================
 
   template<class System, class TimeArg>
@@ -1333,15 +1053,9 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     typedef typename unwrap_reference<System>::type system_type;
     typedef typename unwrap_reference<
       typename system_type::first_type>::type deriv_func_type;
-    typedef typename unwrap_reference<
-      typename system_type::second_type>::type jacobi_func_type;
 
-    system_type&     sys         = system;
-    deriv_func_type& deriv_func  = sys.first;
-    jacobi_func_type& jacobi_func = sys.second;
-    // jacobi_func is used on the Adams path only for periodic Lipschitz
-    // refresh (every MSBP steps) so the stiffness detector can notice
-    // stiffness that emerges AFTER the BDF→Adams switch.
+    system_type&     sys        = system;
+    deriv_func_type& deriv_func = sys.first;
 
     const size_t n = x.size();
 
@@ -1438,55 +1152,6 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     m_trace_pece_iters   = result.n_iters;
     m_trace_pece_diverged = result.diverged;
 #endif
-
-    // Propagate the divergence flag to the stiffness detector via
-    // m_last_pece_diverged.  on_step_accepted reads and clears it.
-    m_last_pece_diverged = result.diverged;
-    if (result.diverged) ++m_n_pece_failures;
-
-    // ----------------------------------------------------------------
-    //  LSODA-style Lipschitz estimate for the stiffness detector
-    //
-    //  On the Adams side we have no Jacobian, so we can't compute
-    //  pnorm = ||J||_1 directly.  Instead LSODA estimates the
-    //  dominant Lipschitz constant from the PECE convergence rate:
-    //
-    //      pdest = max(pdest, rate / |h * l[1]|)
-    //      if (pdest != 0) pdlast = pdest
-    //
-    //  The rate comes from the corrector's del/delp ratios (tracked
-    //  in adams_pece_solve as rate_max).  pdest persists across
-    //  multiple Adams steps as a running maximum — this is what
-    //  makes the Adams→BDF switch work at cold start: once we've
-    //  accumulated a nonzero pdest from a few Adams steps, the
-    //  non-polluted branch of methodswitch_step() becomes active
-    //  and can detect stiffness before PECE actually diverges.
-    //
-    //  Matches LSODA's correction() routine in lh3lh3/lsoda.c.
-    // ----------------------------------------------------------------
-    if constexpr (has_switching) {
-      if (result.rate_max > 0.0) {
-        using ndf_detail::scalar_value;
-        const double h_d   = static_cast<double>(scalar_value(m_h));
-        const double l1_d  = static_cast<double>(scalar_value(m_l[1]));
-        const double denom = std::abs(h_d * l1_d);
-        if (denom > 0.0) {
-          const double new_pdest = result.rate_max / denom;
-          // Running max across steps (LSODA: pdest = max(pdest, ...)).
-          // We fold pdest into m_pdlast directly since LSODA only
-          // keeps pdest as a temporary — pdlast is what methodswitch
-          // actually reads, and LSODA sets "pdlast = pdest" right
-          // after the max.
-          if (new_pdest > m_pdlast) m_pdlast = new_pdest;
-        }
-      }
-
-      // (Periodic Jacobian refresh in Adams mode was tried here — it
-      // breaks VDP-type problems where Adams was working fine, because
-      // a fresh pnorm after 20 steps triggers spurious Adams→BDF
-      // switches.  We rely instead on the PECE rate path plus the
-      // pdlast seed carried over from switch_to_adams.)
-    }
 
     // ================================================================
     //  5. Output
@@ -1675,27 +1340,20 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
 
   void set_order_for_next_step(int new_q)
   {
-    // Dispatch to the method-appropriate order-change routine.
     // BDF/NDF and Adams use different Nordsieck adjustment formulas
-    // (cvAdjustBDF vs cvAdjustAdams in CVODE).  For pure-method
-    // instantiations this collapses at compile time; for switching
-    // instantiations we dispatch on the current mode.
-    const bool in_adams = [this] {
-      if constexpr (Method == multistep_method::adams) return true;
-      else if constexpr (!has_switching) return false;
-      else return m_mode == mstep_mode::adams;
-    }();
+    // (cvAdjustBDF vs cvAdjustAdams in CVODE).  Selected at compile time.
+    constexpr bool in_adams = (Method == multistep_method::adams);
 
     if (new_q == m_q + 1) {
       ++m_n_order_up;
-      if (in_adams) adamsIncreaseOrder();
-      else          ndfIncreaseOrder();
+      if constexpr (in_adams) adamsIncreaseOrder();
+      else                    ndfIncreaseOrder();
       m_q = new_q;
       m_L = new_q + 1;
     } else if (new_q == m_q - 1) {
       ++m_n_order_down;
-      if (in_adams) adamsDecreaseOrder();
-      else          ndfDecreaseOrder();
+      if constexpr (in_adams) adamsDecreaseOrder();
+      else                    ndfDecreaseOrder();
       m_q = new_q;
       m_L = new_q + 1;
     }
@@ -1733,12 +1391,6 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     m_gamrat = 1.0; m_crate = 1.0;
     m_acnrm = 0; m_nstlp = 0;
     m_saved_tq5 = 0; m_tn_current = t0_s;
-    // Short initial cooldown so the very first accepted step does not
-    // trigger a switch based on a stale / not-yet-representative error
-    // estimate.  LSODA effectively has the same guard via its startup
-    // path.  Kept short so it doesn't hurt problems like Van der Pol
-    // that really do benefit from an early Adams switch.
-    m_icount = 5;
 
     m_tau.fill(time_type(0));
     m_tau[1] = dt_s;
@@ -1818,7 +1470,6 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   template<class TimeArg> void set_tn_current(TimeArg tn) { m_tn_current = static_cast<time_type>(ndf_detail::scalar_value(tn)); }
   void set_tolerances(double atol, double rtol) { m_atol = atol; m_rtol = rtol; }
   void set_qwait(int qw) { m_qwait = qw; }
-  void set_icount(int ic) { m_icount = ic; }
 
   int n_fevals() const { return m_n_fevals; }
   int n_jevals() const { return m_n_jevals; }
@@ -1847,23 +1498,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
       if (m_steps_at_order[q] > 0)
         std::fprintf(stderr, "    q=%d: %d steps\n", q, m_steps_at_order[q]);
     }
-    std::fprintf(stderr, "===================================\n");
-
-    if constexpr (Method == multistep_method::adams || has_switching) {
-      std::fprintf(stderr, "\n=== Multistep mode statistics ===\n");
-      std::fprintf(stderr, "  Steps in Adams mode:       %d\n", m_n_steps_adams);
-      std::fprintf(stderr, "  Steps in BDF/NDF mode:     %d\n", m_n_steps_bdf_family);
-      if constexpr (has_switching) {
-        std::fprintf(stderr, "  Switches Adams → BDF/NDF:  %d\n", m_n_switches_to_bdf);
-        std::fprintf(stderr, "  Switches BDF/NDF → Adams:  %d\n", m_n_switches_to_adams);
-        std::fprintf(stderr, "  PECE divergence failures:  %d\n", m_n_pece_failures);
-        std::fprintf(stderr, "  Current mode:              %s\n",
-          m_mode == mstep_mode::adams ? "Adams" : "BDF/NDF");
-      }
-      std::fprintf(stderr, "==================================\n\n");
-    } else {
-      std::fprintf(stderr, "\n");
-    }
+    std::fprintf(stderr, "===================================\n\n");
   }
 
   // ====================================================================
@@ -1911,20 +1546,12 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     const double acnrm_state =
       (n_state > 0) ? std::sqrt(acnrm_state_sq / static_cast<double>(n_state)) : 0.0;
 
-    // Resolve the mode label for the trace line.  Pure instantiations
-    // are known at compile time; switching instantiations use the
-    // runtime is_adams_step flag from the caller.
+    // Resolve the mode label for the trace line — known at compile time.
     const char* mode_label;
     if constexpr (Method == multistep_method::adams) {
       mode_label = "ADAMS";
-    } else if constexpr (!has_switching) {
-      mode_label = m_use_ndf_kappa ? "NDF" : "BDF";
     } else {
-      // msoda — label reflects current step kind.
-      if (is_adams_step)
-        mode_label = "ADAMS";
-      else
-        mode_label = m_use_ndf_kappa ? "NDF" : "BDF";
+      mode_label = m_use_ndf_kappa ? "NDF" : "BDF";
     }
 
     const char* setup_reason =
@@ -1961,13 +1588,6 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     (void)is_adams_step; (void)t_end;
 #endif
   }
-
-  // Public accessors for the switching diagnostics
-  int n_steps_adams()       const { return m_n_steps_adams; }
-  int n_steps_bdf_family()  const { return m_n_steps_bdf_family; }
-  int n_switches_to_bdf()   const { return m_n_switches_to_bdf; }
-  int n_switches_to_adams() const { return m_n_switches_to_adams; }
-  int n_pece_failures()     const { return m_n_pece_failures; }
 
   int max_achievable_order() const { return max_order; }
   void increment_step_counter() { }
@@ -2472,56 +2092,7 @@ private:
   // Per-order step counts: m_steps_at_order[q] = # steps completed at order q
   std::array<int, max_order + 1> m_steps_at_order = {};
 
-  // ====================================================================
-  //  Mode-switching state (used when has_switching = true)
-  //
-  //  These members are present unconditionally to keep the layout
-  //  simple, but they're only read/written when has_switching = true.
-  //  Total cost is ~40 bytes per stepper instance — negligible.
-  //
-  //  Variable names match the LSODA source (stoda.f / methodswitch.c)
-  //  for line-by-line traceability:
-  //
-  //    m_mode      — current method family (adams or bdf_family).
-  //                  For pure-method instantiations this is set once
-  //                  in the constructor and never changes.
-  //    m_icount    — switch cooldown counter, decremented per accepted
-  //                  step.  Set to ICOUNT_RESET (= 20) after a switch.
-  //    m_pdlast    — last computed Lipschitz estimate (= ||J||_1 from
-  //                  the most recent Jacobian).  Zero on the Adams
-  //                  side and after switches that invalidated J.
-  //    m_pnorm     — current ||J||_1 estimate.  Updated whenever the
-  //                  Jacobian is recomputed (BDF side) or assumed 0
-  //                  (Adams side).
-  //    m_irflag    — Adams side: 1 if the last accepted Adams step
-  //                  was stability-limited (rh came from the pdh
-  //                  branch in the order selector), 0 otherwise.
-  // ====================================================================
-
   bool m_use_ndf_kappa = true;   // NDF kappa coefficients (runtime, default: NDF)
-
-  mstep_mode m_mode =
-    (Method == multistep_method::adams) ? mstep_mode::adams : mstep_mode::bdf_family;
-  int    m_icount = 0;
-  double m_pdlast = 0.0;
-  double m_pnorm  = 0.0;
-  int    m_irflag = 0;
-
-  // Adams / switching diagnostics
-  int m_n_steps_adams       = 0;
-  int m_n_steps_bdf_family  = 0;
-  int m_n_switches_to_bdf   = 0;
-  int m_n_switches_to_adams = 0;
-  int m_n_pece_failures     = 0;
-  bool m_last_pece_diverged = false;
-
-  // Adams watchdog: consecutive accepted Adams steps at q <= 2.
-  // Productive Adams runs climb rapidly to q >= 3; a long streak at
-  // q <= 2 means the problem is actually stiff and Adams is surviving
-  // with tiny steps because the PECE-rate Lipschitz estimate hasn't
-  // registered the true stiffness.  Resetting on q >= 3 keeps the
-  // watchdog from tripping on legitimate Adams work.
-  int m_adams_low_order_streak = 0;
 
 #ifdef CPPODE_STEP_TRACE
   // Scratch state populated by step_bdf_family / step_adams and read by
@@ -2544,9 +2115,6 @@ public:
 //  the multistep_method.  These are the names user code and codegen
 //  output should reference.
 // ============================================================================
-
-template<class Value, class JacobianPattern = cppode::dense_lu_tag, class Resizer = initially_resizer>
-using msoda_stepper_t = multistepper<multistep_method::msoda, Value, JacobianPattern, Resizer>;
 
 template<class Value, class JacobianPattern = cppode::dense_lu_tag, class Resizer = initially_resizer>
 using bdf_stepper_t   = multistepper<multistep_method::bdf,   Value, JacobianPattern, Resizer>;

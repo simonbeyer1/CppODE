@@ -7,17 +7,18 @@
 diagnostics(result)
 }
 \arguments{
-\item{result}{A list returned by \code{\link[=solveODE]{solveODE()}}, containing a \code{diagnostics} element.}
+\item{result}{A list returned by \code{\link[=solveODE]{solveODE()}}, containing a
+\code{diagnostics} element.}
 }
 \value{
-Invisibly returns the diagnostics list.
+Invisibly returns the \code{diagnostics} list.
 }
 \description{
-Prints a summary of solver diagnostics.
+Prints a summary of the solver diagnostics returned by \code{\link[=solveODE]{solveODE()}}.
 }
 \examples{
 \dontrun{
-res <- solveODE(model, times, params)
+res <- solveODE(model, times, parms)
 diagnostics(res)
 }
 

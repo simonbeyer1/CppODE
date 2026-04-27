@@ -1,248 +1,244 @@
-#' Generate C++ code for ODE models with events and parameter sensitivities
+#' Generate and Compile a C++ ODE Solver
 #'
 #' @description
-#' This function generates and compiles a C++ solver for systems of ordinary differential
-#' equations (ODEs) of the form
+#' Generates C++ source code for a system of ordinary differential equations
+#' (ODEs) of the form
 #'
-#' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
+#' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}},}
 #'
-#' Four integration methods are available, all sharing a common Nordsieck-based
-#' multistep machinery (the `multistepper` template) plus Rosenbrock4:
+#' where the parameter vector \eqn{p = (p_{\text{init}}, p_{\text{dyn}})}
+#' concatenates the initial conditions \eqn{p_{\text{init}}} and the
+#' dynamic parameters \eqn{p_{\text{dyn}}} that appear in the right-hand
+#' side. [solveODE()] takes this combined `p` as the `parms` argument.
 #'
-#' | Method | Family | Max order | Stiff? | Auto-switching |
-#' |:--|:--|:--|:--|:--|
-#' | `"bdf"` *(default)* | BDF/NDF | 5  | Stiff | -- |
-#' | `"adams"`  | Adams-Moulton (PECE)                | 12 | Non-stiff | -- |
-#' | `"msoda"`  | BDF/NDF + Adams with LSODA-style switching | 12 | Both | yes |
-#' | `"rb4"`    | Rosenbrock4 (L-stable, single-step) | 4  | Stiff | -- |
-#' | `"tsit5"`  | Tsitouras 5(4) (explicit RK, FSAL)  | 5  | Non-stiff | -- |
+#' The generated C++ is compiled into a shared library and loaded for use
+#' with [solveODE()]. Optionally, first- and second-order sensitivities of
+#' the state trajectory with respect to every component of \eqn{p} are
+#' computed via forward-mode automatic differentiation (AD) on dual numbers
+#' in a single integration pass.
 #'
-#' **BDF** is a variable-order (1..5) Nordsieck multistep method. By default
-#' (`useNDF = TRUE`) it uses Shampine's NDF kappa modification (Shampine &
-#' Reichelt, SIAM J. Sci. Comput. 18(1), 1997, Table 1) which is typically
-#' ~10% faster than classical BDF. Set `useNDF = FALSE` for classical BDF.
+#' @details
+#' ## Methods
 #'
-#' **Adams** is a variable-order (1..12) Adams-Moulton method with PECE
-#' (Predict-Evaluate-Correct-Evaluate) iteration. It is explicit in the sense
-#' that no Newton iteration / linear solve is required, which makes it
-#' significantly cheaper per step on **non-stiff** problems. On stiff problems
-#' it will fail or stall -- use BDF or MSODA instead.
+#' Four integration methods are available:
 #'
-#' **MSODA** (Multistep Solver for ODEs with Automatic method switching) starts
-#' in Adams mode and dynamically switches to BDF/NDF when stiffness is detected,
-#' and back to Adams when the problem becomes non-stiff again. The detection
-#' logic is a faithful port of the LSODA switching heuristic (Petzold 1983),
-#' driven by the dominant eigenvalue estimate `pdest` from the PECE iteration
-#' rate and the matrix 1-norm `pnorm = ||J||_1` from the cached Jacobian. Use
-#' MSODA when the problem has phases of differing stiffness -- for example, slow
-#' drift followed by a fast transient. The `useNDF` flag controls whether the
-#' stiff side uses NDF or classical BDF coefficients.
+#' \tabular{llrl}{
+#'   \strong{Method} \tab \strong{Family} \tab \strong{Order} \tab \strong{Type} \cr
+#'   \code{"bdf"} \emph{(default)} \tab BDF / NDF                          \tab 5  \tab Stiff     \cr
+#'   \code{"adams"}                \tab Adams-Moulton (PECE)               \tab 12 \tab Non-stiff \cr
+#'   \code{"rb4"}                  \tab Rosenbrock4 (L-stable, single-step)\tab 4  \tab Stiff     \cr
+#'   \code{"tsit5"}                \tab Tsitouras 5(4) (explicit RK, FSAL) \tab 5  \tab Non-stiff \cr
+#' }
 #'
-#' **Rosenbrock4** is a fourth-order L-stable single-step method derived from
-#' Boost.Odeint. It uses one Jacobian evaluation and one LU factorization per
-#' step but no Newton iteration, which can be advantageous for problems where
-#' the Jacobian is cheap relative to the right-hand side.
+#' For BDF, `useNDF = TRUE` (default) selects Shampine's NDF kappa
+#' modification (Shampine and Reichelt 1997), which is typically about
+#' 10\% faster than classical BDF. Adams-Moulton (PECE) requires no
+#' Newton iteration and is significantly cheaper per step on non-stiff
+#' problems but stalls on stiff ones. Rosenbrock4 is a fourth-order
+#' L-stable single-step method (Boost.Odeint origin) that uses one
+#' Jacobian evaluation and one LU factorization per step. Tsit5
+#' (Tsitouras 2011) is a fifth-order explicit Runge-Kutta method with
+#' an embedded fourth-order error estimator and FSAL property; it is
+#' the method of choice for non-stiff problems with expensive RHS
+#' evaluations.
 #'
-#' **Tsit5** (Tsitouras 2011) is a 5th-order explicit Runge-Kutta method with
-#' an embedded 4th-order error estimator and FSAL (First Same As Last) property.
-#' It requires only function evaluations (no Jacobian or linear algebra) and is
-#' the method of choice for **non-stiff** problems where function evaluations are
-#' expensive. On stiff problems it will fail or stall -- use BDF or Rb4 instead.
+#' All steppers support dense (Hermite) output, error control, sparse
+#' and dense LU factorization, time- and root-triggered events, and
+#' optional sensitivities.
 #'
-#' All steppers support dense output, error control, sparse and dense LU factorization,
-#' **time-based** and **root-triggered events**, and, optionally,
-#' **first- and second-order sensitivities** by evaluating the *same system* with
-#' **dual number** types provided by
-#' [**FADBAD++**](https://uning.dk/fadbad.html).
+#' ## Sensitivity computation
 #'
-#' ## Sensitivity Computation
+#' If `deriv = TRUE`, state variables and parameters are represented as
+#' dual numbers and the right-hand side is evaluated on those dual
+#' numbers. Derivative components propagate automatically through every
+#' operation, so the integrator solves the same initial-value problem
+#' over the dual-number algebra and returns state trajectories and first
+#' sensitivities together. With `deriv2 = TRUE`, nested dual numbers
+#' additionally yield second-order sensitivities. Variables and
+#' parameters listed in `fixed` are stored as plain scalars and do not
+#' contribute sensitivity components.
 #'
-#' If `deriv = TRUE`, all state variables and parameters are represented as
-#' [**dual numbers**](https://en.wikipedia.org/wiki/Dual_number) of type `F<double>`.
-#' The ODE right-hand side \eqn{f} is evaluated on these dual numbers; due to the chain rule
-#' encoded in dual number arithmetic, the **derivative components propagate automatically**
-#' through every operation in \eqn{f}. Consequently, the numerical integration solves
-#' *exactly the same* initial value problem, only over the dual number algebra
-#' \eqn{\mathbb{D}}, yielding both the state trajectories and their first derivatives
-#' in a single pass.
+#' Sensitivities are reported with respect to whichever basis the
+#' AD seeds are initialised in. By default this is the canonical
+#' \eqn{p}-basis (initial conditions stacked on dynamic parameters),
+#' but [solveODE()] also accepts a Jacobian \eqn{\Phi'(\theta)} of a
+#' user-defined reparametrization \eqn{p = \Phi(\theta)} via
+#' `sens1ini` (and \eqn{\Phi''(\theta)} via `sens2ini`), in which case the
+#' returned sensitivities are
+#' \eqn{\partial x / \partial \theta} and
+#' \eqn{\partial^{2} x / \partial \theta^2}.
+#' See the "Sensitivity with respect to a
+#' reparametrization" section of [solveODE()] for the math and the
+#' relevant shapes. The `nStack` argument controls the compile-time
+#' upper bound on the number of \eqn{\theta}-directions \eqn{M};
+#' passing `nStack = Inf` (the default) selects the heap-allocated
+#' version, which imposes no compile-time bound at the cost of dynamic
+#' memory allocation.
 #'
-#' If `deriv2 = TRUE` (which implies `deriv = TRUE`), nested dual numbers
-#' `F<F<double>>` are used. This allows the evaluation of \eqn{f} over the
-#' second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing **second-order
-#' sensitivities** directly through nested automatic differentiation.
+#' ## Events
 #'
-#' Fixed initial conditions or parameters (listed in `fixed`) are created as plain scalars
-#' and therefore do **not** contribute sensitivity components.
+#' Events are described by a `data.frame` with columns:
 #'
-#' If both `deriv = FALSE` and `deriv2 = FALSE`, plain doubles are used and no sensitivities
-#' are produced.
-#'
-#' ## Event handling
-#'
-#' Events are specified in a `data.frame` with the following columns:
-#'
-#' | Column | Description |
+#' | Column   | Description |
 #' |:--|:--|
-#' | `var` | Name of the affected variable |
-#' | `value` | Numeric value to apply at the event |
-#' | `method` | How the value is applied: `"replace"`, `"add"`, or `"multiply"` |
-#' | `time` | *(optional)* Time point at which the event occurs |
-#' | `root` | *(optional)* Root expression in terms of variables and `time` |
+#' | `var`    | Name of the affected variable |
+#' | `value`  | Expression applied at the event |
+#' | `method` | One of `"replace"`, `"add"`, or `"multiply"` |
+#' | `time`   | *(optional)* Event time |
+#' | `root`   | *(optional)* Root expression in terms of variables and `time` |
 #'
-#' Each event must define either `time` or `root`.
-#' Root-triggered events fire when the `root` expression crosses zero.
+#' Each event must define exactly one of `time` or `root`. Root-triggered
+#' events fire when the root expression crosses zero.
 #'
-#' ## Root function (rootfunc)
+#' ## Root function
 #'
-#' The `rootfunc` argument enables integration termination based on root-finding:
+#' The `rootfunc` argument enables integration termination via root
+#' finding:
 #'
-#' - **`"equilibrate"`**: Stops integration when the system reaches steady state.
-#'   The steady-state condition checks that all derivatives (including sensitivities
-#'   when `deriv = TRUE` or `deriv2 = TRUE`) fall below the `roottol` tolerance.
-#'   This is useful for equilibrating systems before further analysis.
+#' - `"equilibrate"` stops integration when the system reaches steady
+#'   state. The steady-state condition checks that all derivatives
+#'   (including sensitivities when `deriv = TRUE`) fall below `roottol`.
+#' - A character vector of expressions stops integration as soon as any
+#'   expression crosses zero. Variables, parameters and `time` may be used.
 #'
-#' - **Character vector of expressions**: Similar to deSolve's `rootfunc`, you can
-#'   specify one or more expressions (e.g., `"x - 0.5"` or `c("x - 0.5", "y - 1")`).
-#'   Integration stops when any expression crosses zero. Variables, parameters, and
-#'   `time` can be used in expressions.
+#' ## Output of the compiled solver
 #'
-#' ## Output
+#' The generated solver returns a named list. Output arrays are
+#' time-first, with the leading dimension indexing time:
 #'
-#' The generated solver function (accessible via `.Call`) returns a named list:
+#' - With `deriv = FALSE`: `time` (length \eqn{n_t}) and `variable`
+#'   (matrix \eqn{(n_t, n_x)} of \eqn{x_j(t_i)}).
+#' - With `deriv = TRUE`: additionally `sens1`, an array of shape
+#'   \eqn{(n_t, n_x, n_s)} containing
+#'   \eqn{\partial x_j(t_i)/\partial p_k}.
+#' - With `deriv2 = TRUE`: additionally `sens2`, an array of shape
+#'   \eqn{(n_t, n_x, n_s, n_s)} containing
+#'   \eqn{\partial^2 x_j(t_i)/\partial p_k \, \partial p_n}.
 #'
-#' All output arrays are **time-first**: the leading dimension indexes time.
+#' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the
+#' number of state variables, and \eqn{n_s} the number of sensitivity
+#' parameters (non-fixed initials and parameters).
 #'
-#' - `deriv = FALSE`, `deriv2 = FALSE`
-#'   Returns `list(time, variable)`
-#'   - `time`: numeric vector of length \eqn{n_t}
-#'   - `variable`: numeric matrix of shape \eqn{(n_t,n_x)}, containing \eqn{x_i(t_j)}
-#'
-#' - `deriv = TRUE`, `deriv2 = FALSE`
-#'   Returns `list(time, variable, sens1)`
-#'   - `sens1`: numeric array of shape \eqn{(n_t,n_x,n_s)}, containing
-#'     \eqn{\partial x_i(t_k)/\partial p_j}
-#'
-#' - `deriv = TRUE`, `deriv2 = TRUE`
-#'   Returns `list(time, variable, sens1, sens2)`
-#'   - `sens2`: numeric array of shape \eqn{(n_t,n_x,n_s,n_s)},
-#'     containing \eqn{\partial^2 x_i(t_k)/\partial p_j\,\partial p_k}
-#'
-#' Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
-#' variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
-#'
-#' @param rhs Named character vector of ODE right-hand sides; names must correspond to variables.
-#' @param events Optional `data.frame` describing events (see **Events**). Default: `NULL`.
-#' @param rootfunc Optional root function specification for integration termination.
-#'   Either `"equilibrate"` for steady-state detection, or a character vector of
-#'   expressions that trigger termination when crossing zero. Default: `NULL`.
-#' @param forcings Character vector of forcing function names used in `rhs`.
-#' @param fixed Character vector of fixed initial conditions or parameters (excluded from sensitivities).
-#' @param compile Logical. If `TRUE`, compiles and loads the generated C++ code.
-#' @param modelname Optional base name for the generated C++ source file
-#'   *and* for all generated C/C++ symbols (e.g. `solve_<modelname>`)
-#'   as well as the resulting shared library.
-#'   If `NULL`, a random identifier is used.
-#' @param outdir Directory where generated C++ source files are written. Defaults to `tempdir()`.
-#' @param deriv Logical. If `TRUE`, enable first-order sensitivities via dual numbers.
-#' @param deriv2 Logical. If `TRUE`, enable second-order sensitivities via nested dual numbers;
-#'   requires `deriv = TRUE`.
-#' @param nStack Controls the compile-time AD slab width.
-#'   * `NULL` *(default)* -- the AD width equals the number of non-fixed
-#'     (state + parameter) slots (`n_total_sens`); stack-allocated.
-#'   * positive integer `K` -- AD width is fixed to `K` at compile time
-#'     (stack-allocated `dual<double, K>` / `F<double, K>`). Suitable
-#'     when integrating with respect to a reparametrization
-#'     \eqn{p = \Phi(\theta)} of known compile-time upper bound `K`. At
-#'     `solveODE()` time, `sens1ini` may be supplied with up to `K`
-#'     columns; `M = ncol(sens1ini) <= K` per call.
-#'   * `Inf` -- heap-allocated AD (`dual<double, 0>` / `F<double, 0>`).
-#'     The AD width is determined at runtime from `ncol(sens1ini)`. Useful
-#'     when the parameter / theta dimension is only known at runtime;
-#'     `ad_backend = "dual"` makes this path much faster than the default
-#'     FADBAD heap because intermediates are bumped from a per-call
-#'     thread-local arena instead of allocated via `new[]`. Incompatible
-#'     with `deriv2 = TRUE`.
-#'
-#'   The choice between legacy sens1ini shape `[n_states, n_active]` and
-#'   full shape `[n_states + n_params, M]` is per-call at `solveODE()`
-#'   time, independent of `nStack`. Requires `deriv = TRUE` for any
-#'   non-default value.
-#' @param ad_backend Character string selecting the forward-AD library.
-#'   * `"dual"` *(default)* -- the in-tree `cppode::dual<double, N>` /
-#'     `cppode::dual<double, 0>` backend. Uses a thread-local arena
-#'     allocator for the dynamic-width path. Second-order
-#'     (`deriv2 = TRUE`) uses nested `cppode::dual<cppode::dual<double, N>, N>`,
-#'     analogous to FADBAD's nested layout but free of the FADBAD++
-#'     dependency.
-#'   * `"fadbad"` -- the legacy `fadbad::F<double, N>` /
-#'     `fadbad::F<fadbad::F<double, N>, N>` (nested) backend.
-#' @param includeTimeZero Logical. If `TRUE`, ensure that time `0` is included among integration times.
-#' @param useDenseOutput Logical. If `TRUE`, use dense output (Hermite interpolation).
-#' @param sparse Controls sparse LU factorization.
-#'   `NULL` (default) auto-selects based on Jacobian sparsity.
-#'   `TRUE` forces sparse LU; `FALSE` forces dense LU.
-#' @param method Character string selecting the integration method. One of:
-#'   * `"bdf"` *(default)* -- BDF/NDF, max order 5, stiff (see `useNDF`)
-#'   * `"adams"` -- Adams-Moulton PECE, max order 12, **non-stiff only**
-#'   * `"msoda"` -- BDF/NDF + Adams with LSODA-style auto-switching, max order 12
-#'   * `"rb4"` (or `"rosenbrock4"`) -- Rosenbrock4, fourth-order L-stable single-step
-#'   * `"tsit5"` -- Tsitouras 5(4) explicit RK with FSAL, **non-stiff only**
-#'
-#'   Use `"bdf"` for problems known to be stiff throughout, `"adams"` or `"tsit5"`
-#'   for problems known to be non-stiff, and `"msoda"` when stiffness varies in
-#'   time. `"rb4"` is a good alternative to BDF when the Jacobian is cheap and
-#'   Newton iteration overhead matters. `"tsit5"` is the fastest option for
-#'   non-stiff problems where function evaluations dominate.
-#' @param useNDF Logical. If `TRUE` (default), the stiff-side corrector uses
-#'   Klopfenstein-Shampine NDF kappa coefficients. If `FALSE`, classical BDF.
-#'   Applies to methods `"bdf"` and `"msoda"`; silently ignored for `"adams"`
-#'   and `"rb4"`.
-#' @param profile Logical. If `TRUE`, compile with profiling counters (`-DCPPODE_PROFILE`).
-#' @param stepTrace Logical. If `TRUE`, compile the solver with
-#'   `-DCPPODE_STEP_TRACE`, which makes the multistepper and the one-step
-#'   controller append one row per step attempt (order, step size, gamrat,
-#'   setup triggers, error-test norms, cumulative counters) into an in-memory
-#'   buffer. The buffer is returned to R as the `$trace` element of the
-#'   result from [solveODE()], which attaches it as a `data.frame` and
-#'   optionally writes it to a user-supplied CSV path (`traceFile` argument).
-#'   Intended for debugging and apples-to-apples comparisons against the
-#'   CVODE step trace.
+#' @param rhs Named character vector of ODE right-hand sides. Names
+#'   correspond to state variables.
+#' @param events Optional `data.frame` of event specifications. See
+#'   Details. Default `NULL`.
+#' @param rootfunc Optional root function specification. Either
+#'   `"equilibrate"` for steady-state detection, or a character vector of
+#'   expressions that trigger termination when crossing zero. Default
+#'   `NULL`.
+#' @param fixed Optional character vector of state or parameter names
+#'   treated as fixed (excluded from sensitivities at compile time).
+#' @param forcings Optional character vector of forcing-function names
+#'   that appear in `rhs`.
+#' @param compile Logical. If `TRUE` (default), compile and load the
+#'   generated C++ code.
+#' @param modelname Optional base name for the generated source file and
+#'   the corresponding C/C++ symbols (e.g. `solve_<modelname>`). If
+#'   `NULL`, a random identifier is used.
+#' @param outdir Directory in which the generated C++ source file is
+#'   written. Defaults to `tempdir()`.
+#' @param deriv Logical. If `TRUE` (default), compute first-order
+#'   sensitivities via dual numbers.
+#' @param deriv2 Logical. If `TRUE`, also compute second-order
+#'   sensitivities via nested dual numbers (implies `deriv = TRUE`).
+#'   Default `FALSE`.
+#' @param nStack Compile-time AD slab width.
+#'   \describe{
+#'     \item{`Inf` *(default)*}{Heap-allocated AD; the per-call sensitivity
+#'       dimension is determined at run time from `ncol(sens1ini)` in
+#'       [solveODE()]. Useful when the parameter or theta dimension is only
+#'       known at run time. Incompatible with `deriv2 = TRUE`; if both are
+#'       supplied, `nStack` is silently switched to the stack default.}
+#'     \item{Positive integer `K`}{AD width is fixed to `K` at compile time
+#'       (stack-allocated). Suitable when integrating with respect to a
+#'       reparametrization \eqn{p = \Phi(\theta)} of known compile-time
+#'       upper bound `K`. In [solveODE()], `sens1ini` may have up to `K`
+#'       columns.}
+#'     \item{`NULL`}{AD width equals the number of non-fixed (state +
+#'       parameter) slots; stack-allocated.}
+#'   }
+#'   The choice between legacy `sens1ini` shape and the full
+#'   reparametrization shape is per call at [solveODE()] time, independent
+#'   of `nStack`. Requires `deriv = TRUE`.
+#' @param derivMode Character; forward-AD backend used to compute
+#'   sensitivities. Either `"dual"` *(default)*, the package's in-tree
+#'   dual-number backend (with a thread-local arena allocator for the
+#'   heap-AD path), or `"fadbad"`, the legacy FADBAD++ backend.
+#' @param includeTimeZero Logical. If `TRUE` (default), ensure that
+#'   time `0` is included among the integration times.
+#' @param useDenseOutput Logical. If `TRUE` (default), use Hermite
+#'   dense output for user time points.
+#' @param sparse Logical or `NULL`. Controls sparse LU factorization.
+#'   `NULL` (default) auto-selects based on Jacobian sparsity; `TRUE`
+#'   forces sparse LU; `FALSE` forces dense LU. Sparse LU requires the
+#'   KLU linear solver to have been found at install time.
+#' @param method Character; integration method. One of `"bdf"`
+#'   (default), `"adams"`, `"rb4"` (or `"rosenbrock4"`), or `"tsit5"`.
+#'   Use `"bdf"` for stiff problems and `"adams"` or `"tsit5"` for
+#'   non-stiff problems; `"rb4"` is an alternative to BDF when the
+#'   Jacobian is cheap relative to the right-hand side.
+#' @param useNDF Logical. If `TRUE` (default), the BDF corrector uses
+#'   Klopfenstein-Shampine NDF kappa coefficients; if `FALSE`, classical
+#'   BDF is used. Applies to method `"bdf"`; ignored otherwise.
+#' @param profile Logical. If `TRUE`, compile with profiling counters.
+#'   Default `FALSE`.
+#' @param stepTrace Logical. If `TRUE`, compile the solver to record
+#'   per-step diagnostics (order, step size, error norms, cumulative
+#'   counters). The trace is returned as the `$trace` element of the
+#'   result from [solveODE()] and may be written to CSV via the
+#'   `traceFile` argument of that function. Intended for debugging.
 #' @param verbose Logical. If `TRUE`, print progress messages.
 #'
 #' @return
-#' The compiled model name (character string).
-#' The returned object carries a set of attributes that describe the compiled solver
-#' and its symbolic structure:
+#' The compiled model name (character string), with attributes describing
+#' the compiled solver and its symbolic structure:
 #'
-#' | Attribute | Type | Description |
+#' | Attribute     | Type         | Description |
 #' |:--|:--|:--|
-#' | `equations` | `character` | ODE right-hand side definitions |
-#' | `srcfile` | `character` | Path to the generated C++ source file |
-#' | `variables` | `character` | Names of the dynamic state variables |
-#' | `parameters` | `character` | Names of model parameters |
-#' | `forcings` | `character` | Names of forcing functions |
-#' | `events` | `data.frame` | Table of event specifications (if any) |
-#' | `rootfunc` | `character` | Root function specification (if any) |
-#' | `fixed` | `character` | Names of fixed initial conditions or parameters |
-#' | `jacobian` | `list` | Jacobian: `f.x` (character matrix) and `f.time` (time derivatives) |
-#' | `deriv` | `logical` | Whether first-order sensitivities (dual numbers) are enabled |
-#' | `deriv2` | `logical` | Whether second-order sensitivities (nested dual numbers) are enabled |
-#' | `sparse` | `logical` | Whether sparse LU factorization is used |
-#' | `dim_names` | `list` | Dimension names for arrays: `time`, `variable`, and `sens` |
-#' | `compileArgs` | `character` | Compiler flags (profile, step trace, KLU settings) |
+#' | `equations`   | `character`  | ODE right-hand side definitions |
+#' | `srcfile`     | `character`  | Path to the generated C++ source file |
+#' | `variables`   | `character`  | Names of the state variables |
+#' | `parameters`  | `character`  | Names of model parameters |
+#' | `forcings`    | `character`  | Names of forcing functions |
+#' | `events`      | `data.frame` | Event specifications, if any |
+#' | `rootfunc`    | `character`  | Root function specification, if any |
+#' | `fixed`       | `character`  | Names of fixed initial conditions or parameters |
+#' | `jacobian`    | `list`       | `f.x` (character matrix) and `f.time` (time derivatives) |
+#' | `deriv`       | `logical`    | Whether first-order sensitivities are enabled |
+#' | `deriv2`      | `logical`    | Whether second-order sensitivities are enabled |
+#' | `sparse`      | `logical`    | Whether sparse LU factorization is used |
+#' | `dimNames`    | `list`       | Dimension names for `time`, `variable`, and `sens` |
+#' | `compileArgs` | `character`  | Compiler flags |
+#'
+#' @references
+#' Shampine, L. F. and Reichelt, M. W. (1997). The MATLAB ODE Suite.
+#' \emph{SIAM Journal on Scientific Computing} \strong{18}(1), 1-22.
+#'
+#' Soederlind, G. (2003). Digital filters in adaptive time-stepping.
+#' \emph{ACM Transactions on Mathematical Software} \strong{29}(1), 1-26.
+#'
+#' Gustafsson, K., Lundh, M., and Soederlind, G. (1988). A PI stepsize
+#' control for the numerical solution of ordinary differential equations.
+#' \emph{BIT} \strong{28}(2), 270-287.
+#'
+#' Tsitouras, Ch. (2011). Runge-Kutta pairs of order 5(4) satisfying only
+#' the first column simplifying assumption. \emph{Computers and
+#' Mathematics with Applications} \strong{62}(2), 770-775.
 #'
 #' @example inst/examples/example_ODE.R
 #' @importFrom stats setNames
-#' @seealso [solveODE()] for a solver interface of compiled models
+#' @seealso [solveODE()] for the solver interface;
+#'   [CVODE()] for the SUNDIALS-backed alternative.
 #' @export
 CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE,
-                   nStack = NULL,
-                   ad_backend = c("dual", "fadbad"),
+                   nStack = Inf,
+                   derivMode = c("dual", "fadbad"),
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
                    sparse = NULL,
-                   method = c("bdf", "adams", "msoda", "rb4", "tsit5"),
+                   method = c("bdf", "adams", "rb4", "tsit5"),
                    useNDF = TRUE,
                    profile = FALSE, stepTrace = FALSE, verbose = FALSE) {
 
@@ -252,14 +248,14 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     deriv <- TRUE
   }
   method <- match.arg(method)
-  ad_backend <- match.arg(ad_backend)
+  derivMode <- match.arg(derivMode)
   if (method == "rb4") method <- "rosenbrock4"
-  # All multistep methods ("bdf", "adams", "msoda") are instantiations
-  # of the cppode::multistepper class template, selected at compile time
-  # via the multistep_method enum.  The single-step methods (rb4, tsit5)
+  # Both multistep methods ("bdf", "adams") are instantiations of the
+  # cppode::multistepper class template, selected at compile time via
+  # the multistep_method enum.  The single-step methods (rb4, tsit5)
   # use onestep_controller / onestep_dense_output.
   # The internal helper is_multistep() centralises the dispatch.
-  is_multistep <- function(m) m %in% c("bdf", "adams", "msoda")
+  is_multistep <- function(m) m %in% c("bdf", "adams")
   is_explicit  <- function(m) m %in% c("tsit5")
 
   # --- Clean up ODE definitions ---
@@ -335,11 +331,19 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   n_total_sens <- n_sens_initials + n_sens_params
 
   # --- Resolve nStack (compile-time AD slab width) ---
-  # NULL (default): stack-allocated with width = n_total_sens.
+  # Inf (default): heap-allocated AD (dual<double, 0> / F<double, 0>); width
+  #                determined at runtime from ncol(sens1ini). Incompatible with
+  #                deriv2 -- promoted to NULL silently in that case so the
+  #                default does not break second-order use.
+  # NULL:          stack-allocated with width = n_total_sens.
   # K (positive integer): stack with width K. The runtime per-call active
-  #                 sens dimension M = ncol(sens1ini) must satisfy M <= K.
-  # Inf: heap-allocated AD (dual<double, 0> / F<double, 0>); width determined
-  #                 at runtime from ncol(sens1ini). Incompatible with deriv2.
+  #                sens dimension M = ncol(sens1ini) must satisfy M <= K.
+  if (deriv2 && is.numeric(nStack) && length(nStack) == 1L && is.infinite(nStack)) {
+    nStack <- NULL  # heap AD is incompatible with deriv2; fall back to stack default
+  }
+  if (!deriv && is.numeric(nStack) && length(nStack) == 1L && is.infinite(nStack)) {
+    nStack <- NULL  # heap AD is meaningful only with deriv = TRUE
+  }
   if (is.null(nStack)) {
     nStack_width <- as.integer(n_total_sens)
     is_heap <- FALSE
@@ -389,7 +393,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     forcings_list = forcings,
     sparse = sparse,
     skip_jacobian = is_explicit(method),
-    ad_backend = ad_backend
+    derivMode = derivMode
   )
 
   ode_code <- codegen_result$ode_code
@@ -423,7 +427,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       num_type = numType,
       forcings_list = forcings,
       rhs_dict = as.list(setNames(rhs, variables)),
-      ad_backend = ad_backend
+      derivMode = derivMode
     )
 
     event_code <- paste(event_lines, collapse = "\n")
@@ -441,7 +445,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       n_states = n_variables,
       num_type = numType,
       forcings_list = forcings,
-      ad_backend = ad_backend
+      derivMode = derivMode
     )
 
     rootfunc_code <- paste(rootfunc_lines, collapse = "\n")
@@ -449,7 +453,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   }
 
   # --- Generate forcing initialization code ---
-  forcing_init_code <- paste(codegen$generate_forcing_init_code(n_forcings, numType, ad_backend = ad_backend), collapse = "\n")
+  forcing_init_code <- paste(codegen$generate_forcing_init_code(n_forcings, numType, derivMode = derivMode), collapse = "\n")
 
   # --- C++ includes ---
   includings <- c(
@@ -468,11 +472,11 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # case, an explicit positive integer when nStack = K, or 0 (heap spec) when
   # nStack = Inf. The runtime per-call active sens dimension M may be smaller
   # than N (with a stack of N empty slots ignored).
-  # Backend selection: "fadbad" -> fadbad::F<double, N> (legacy);
-  #                    "dual"   -> cppode::dual<double, N> (custom forward AD,
-  #                                arena-allocated for N=0).
+  # derivMode selection: "fadbad" -> fadbad::F<double, N> (legacy);
+  #                      "dual"   -> cppode::dual<double, N> (custom forward AD,
+  #                                  arena-allocated for N=0).
   if (deriv2) {
-    if (ad_backend == "dual") {
+    if (derivMode == "dual") {
       # Nested dual: cppode::dual<cppode::dual<double, N>, N> mirrors fadbad's
       # nested AD layout. The recursive AD-LU solver and traits already handle
       # arbitrary nesting, so no new specialisations are required.
@@ -489,7 +493,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       )
     }
   } else if (deriv) {
-    if (ad_backend == "dual") {
+    if (derivMode == "dual") {
       usings <- c(
         "using namespace cppode;",
         sprintf("using AD = cppode::dual<double, %d>;", nStack_width)
@@ -929,12 +933,11 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   # --- Integration setup ---
   # Stepper types: dense or sparse LU, Rosenbrock4 or one of the multistep
-  # methods (bdf / adams / msoda).  All multistep methods are instantiations
+  # methods (bdf / adams).  Both multistep methods are instantiations
   # of cppode::multistepper<Method, V, J, R>:
   #
   #   method == "bdf"    -> multistepper<multistep_method::bdf,    V, J, R>
   #   method == "adams"  -> multistepper<multistep_method::adams,  V, J, R>
-  #   method == "msoda"  -> multistepper<multistep_method::msoda,  V, J, R>
   #
   # NDF vs BDF is controlled at runtime via set_use_ndf_kappa().
   # Rosenbrock4 (method == "rosenbrock4") follows a separate code path.
@@ -947,7 +950,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     method_enum <- switch(method,
       "bdf"   = "cppode::multistep_method::bdf",
       "adams" = "cppode::multistep_method::adams",
-      "msoda" = "cppode::multistep_method::msoda",
       stop(sprintf("internal: unhandled multistep method '%s'", method))
     )
     sprintf("cppode::multistepper<%s, %s, %s, %s>",
@@ -984,7 +986,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   tsit5_AD2    <- "cppode::tsit5<AD2>"
 
   if (is_multistep(method)) {
-    # ---- Multistep stepper (bdf / adams / msoda) ----
+    # ---- Multistep stepper (bdf / adams) ----
     # All multistep methods reuse cppode::multistepper_controller -- the
     # controller is templated on the stepper type and works uniformly
     # with any multistepper instantiation.  The pid_mode integer is
@@ -1105,11 +1107,11 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
 
   # --- Initial step size estimation ---
   #
-  # Multistep methods (bdf/adams/msoda) use cppode_hin, a faithful port of
+  # Multistep methods (bdf/adams) use cppode_hin, a faithful port of
   # CVODES's cvHin algorithm.  Single-step methods (rb4, tsit5) use the
   # unified estimate_initial_dt with a method-specific ydd closure: analytic
   # (J*f + dfdt) for rb4, FD for tsit5.  order=1 is the right regime for
-  # all of these -- BDF/NDF/Adams/msoda start at q=1 by design, and for
+  # all of these -- BDF/NDF/Adams start at q=1 by design, and for
   # single-step methods the HNW formula with higher p would overestimate h
   # on stiff problems.
   method_order <- 1L
@@ -1530,7 +1532,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
   attr(modelname, "nStack")        <- if (is_heap) Inf else as.numeric(nStack_width)
-  attr(modelname, "ad_backend")    <- ad_backend
+  attr(modelname, "derivMode")     <- derivMode
   attr(modelname, "sparse")        <- use_sparse
   attr(modelname, "method")        <- method
   attr(modelname, "useNDF")        <- useNDF
@@ -1539,13 +1541,13 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # basis). solveODE() overrides this per call when sens1ini is supplied with
   # full Phi'(theta) shape (uses colnames(sens1ini) or theta1..M).
   if (deriv) {
-    attr(modelname, "dim_names") <- list(
+    attr(modelname, "dimNames") <- list(
       time = "time",
       variable = variables,
       sens = c(sens_initials, sens_params)
     )
   } else {
-    attr(modelname, "dim_names") <- list(
+    attr(modelname, "dimNames") <- list(
       time = "time",
       variable = variables
     )

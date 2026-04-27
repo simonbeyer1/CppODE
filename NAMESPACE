@@ -3,6 +3,7 @@
 S3method(diagnostics,default)
 export(CVODE)
 export(CppODE)
+export(compile)
 export(derivSymb)
 export(diagnostics)
 export(funCpp)

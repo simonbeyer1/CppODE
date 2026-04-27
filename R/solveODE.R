@@ -1,134 +1,192 @@
-#' Solver Interface for Ordinary Differential Equation Models
+#' Run a Compiled ODE Model
 #'
 #' @description
-#' Numerically integrates a compiled ODE model created by [CppODE()] over a
-#' specified time span.
+#' Numerically integrates a compiled ODE model created by [CppODE()] (or
+#' [CVODE()]) over a specified time span. Returns the state trajectory and,
+#' when the model was compiled with sensitivities, first- and (optionally)
+#' second-order parameter sensitivities.
 #'
-#' ## Sensitivity initial values, `fixed`, and reparametrization
+#' @details
+#' ## Sensitivity with respect to a reparametrization
 #'
-#' `sens1ini` and `sens2ini` describe how the *full* initial-condition and
-#' parameter vector depends on the sensitivity-column basis -- i.e., they are
-#' the Jacobian \eqn{\Phi'(\theta)} and Hessian \eqn{\Phi''(\theta)} of the
-#' reparametrization \eqn{p = \Phi(\theta)}. Two shapes are accepted, chosen
-#' per call from the matrix's row count:
+#' By default, the compiled solver computes sensitivities of the state
+#' trajectory \eqn{x(t)} with respect to the full input vector
+#' \eqn{p = (p_{\text{init}}, p_{\text{dyn}}) \in \mathbb{R}^{n_x + n_p}},
+#' i.e. all initial conditions stacked on all dynamic parameters. In
+#' fitting and identifiability workflows the quantity of interest is
+#' often instead the gradient with respect to a smaller set of free
+#' variables \eqn{\theta \in \mathbb{R}^{M}}, where the model inputs are
+#' obtained from a smooth reparametrization
+#'
+#' \deqn{p = \Phi(\theta) \in \mathbb{R}^{n_x + n_p}.}
+#'
+#' Typical examples are log-parametrization
+#' (\eqn{p_i = \exp \theta_i}) to enforce positivity, parameters that
+#' are shared across compartments or experimental conditions, and
+#' components of \eqn{p} that are held constant and therefore drop out
+#' of \eqn{\theta}.
+#'
+#' By the chain rule, the trajectory's first- and second-order
+#' sensitivities with respect to \eqn{\theta} are
+#'
+#' \deqn{\frac{\partial x(t)}{\partial \theta} \;=\;
+#'       \frac{\partial x(t)}{\partial p}\,\Phi'(\theta),}
+#'
+#' \deqn{\frac{\partial^{2} x(t)}{\partial \theta\,\partial \theta^{\top}}
+#'       \;=\;
+#'       \Phi'(\theta)^{\top}\,
+#'       \frac{\partial^{2} x(t)}{\partial p\,\partial p^{\top}}\,
+#'       \Phi'(\theta) \;+\;
+#'       \frac{\partial x(t)}{\partial p}\,\Phi''(\theta),}
+#'
+#' where \eqn{\Phi'(\theta)} is an \eqn{(n_x + n_p) \times M} Jacobian
+#' and \eqn{\Phi''(\theta)} is the corresponding
+#' \eqn{(n_x + n_p) \times M \times M} Hessian tensor (contracted on its
+#' first index in the formula above).
+#'
+#' Rather than first computing \eqn{\partial x(t)/\partial p} along all
+#' \eqn{n_x + n_p} canonical directions and contracting with
+#' \eqn{\Phi'(\theta)} afterwards, the solver applies the chain rule
+#' *inside* the AD pass: each of the \eqn{M} forward-AD directions is
+#' seeded with the corresponding column of \eqn{\Phi'(\theta)}, so the
+#' integrator directly returns
+#' \eqn{\partial x(t)/\partial \theta} (and analogously
+#' \eqn{\partial^{2} x(t)/\partial \theta\,\partial \theta^{\top}} when
+#' \eqn{\Phi''(\theta)} is supplied for the second-order seeds). The
+#' parameter sweep then has cost \eqn{O(M)} rather than
+#' \eqn{O(n_x + n_p)}, which is the main practical benefit when
+#' \eqn{M \ll n_x + n_p}.
+#'
+#' The default identity reparametrization \eqn{\Phi(\theta) = \theta}
+#' corresponds to \eqn{\Phi'(\theta) = I_{(n_x + n_p) \times (n_x + n_p)}}
+#' and \eqn{\Phi''(\theta) = 0}; this is the legacy seeding emitted when
+#' `sens1ini` / `sens2ini` are omitted, restricted to the active
+#' (non-fixed) sensitivity columns.
+#'
+#' ## Sensitivity initial values
+#'
+#' `sens1ini` and `sens2ini` are exactly \eqn{\Phi'(\theta)} and
+#' \eqn{\Phi''(\theta)} from the chain-rule derivation above, evaluated
+#' at the current \eqn{\theta}. Three shapes are accepted, selected per
+#' call from the row count and row names of the supplied matrix:
 #'
 #' - **Legacy shape** `[n_states, n_active]`: identity seeding on the
 #'   parameter block is implied. The active set equals the model's
-#'   sensitivity names minus `fixed`. This is the shape emitted by
-#'   `solveODE()` itself (`res$sens1[t, , ]`) and is directly usable as
-#'   `sens1ini` for warm-starting subsequent solves.
+#'   sensitivity names minus `fixed`. Detected when `nrow == n_states`
+#'   and row names are absent or are a permutation of `variables`. This
+#'   is the shape emitted by `solveODE()` itself (`res$sens1[t, , ]`) and
+#'   can therefore be used directly for warm-starting subsequent solves.
 #' - **Full shape** `[n_states + n_params, M]`: \eqn{\Phi'(\theta)}
-#'   directly. State rows (first `n_states`) seed state ICs; parameter rows
-#'   (next `n_params`) seed the dynamic parameters. The column count `M`
-#'   may vary across calls; under stack-mode AD it must satisfy
-#'   \eqn{M \le \mathtt{nStack}}. Runtime `fixed` is incompatible with
-#'   full-shape input -- express fixedness through zero rows of
-#'   \eqn{\Phi'(\theta)} instead.
+#'   directly. State rows seed state ICs; parameter rows seed the dynamic
+#'   parameters. The column count `M` may vary across calls; under
+#'   stack-mode AD it must satisfy \eqn{M \le \mathtt{nStack}}.
+#' - **Partial shape** `[k, M]` with `k < n_states + n_params`: row
+#'   names are required and must be a subset of
+#'   `c(variables, parameters)`. The supplied rows are placed at the
+#'   matching positions of \eqn{\Phi'(\theta)}; missing rows are zero-
+#'   padded, i.e. those slots are treated as fixed. This is the
+#'   row-name-driven equivalent of run-time `fixed`.
+#'
+#' Run-time `fixed` is incompatible with the full and partial shapes
+#' (those already encode fixedness via row presence / row values).
 #'
 #' Column names, when present, must match the relevant column basis
-#' (`active_sens` for legacy, user-chosen theta names for full-shape).
+#' (the active sensitivity names for the legacy shape, user-chosen theta
+#' names for the full / partial shapes).
 #'
-#' @param model A compiled ODE model object returned by [CppODE()].
-#' @param times Numeric vector of time points at which to return the solution.
-#'   Must be non-empty and contain only finite values.
+#' @param model A compiled ODE model returned by [CppODE()] or [CVODE()].
+#' @param times Numeric vector of time points at which to return the
+#'   solution. Must be non-empty and contain only finite values.
 #' @param parms Named numeric vector of initial conditions and parameters.
-#'   Names must include all of `c(attr(model, "variables"), attr(model, "parameters"))`.
-#' @param sens1ini Optional numeric matrix of first-order sensitivity initial
-#'   values, interpreted as the Jacobian \eqn{\Phi'(\theta)}. Accepts the
-#'   legacy shape `[n_states, n_active]` (auto-extended internally with an
-#'   identity block on the parameter rows) or the full shape
-#'   `[n_states + n_params, M]`. Row names, when present, must match the
-#'   relevant row basis; column names label the resulting sens output
-#'   columns. Default `NULL` uses identity seeding on the active sens basis.
-#' @param sens2ini Optional numeric array of second-order sensitivity initial
-#'   values, interpreted as the Hessian tensor \eqn{\Phi''(\theta)}. Shapes
-#'   analogous to `sens1ini`: `[n_states, n_active, n_active]` (legacy) or
-#'   `[n_states + n_params, M, M]` (full). Only allowed when
-#'   `attr(model, "deriv2") == TRUE`. Default `NULL` uses zero seeding
-#'   (correct when \eqn{\Phi} is linear-affine).
-#' @param fixed Optional character vector of sensitivity parameter names to treat
-#'   as fixed at runtime. These parameters will not have their dual-number
-#'   components allocated, so the integrator runs with a strictly smaller AD
-#'   state. Names must be a subset of `attr(model, "dim_names")$sens`. Unlike
-#'   compile-time `fixed` in [CppODE()], runtime fixed parameters can be changed
-#'   between calls without recompilation. Default `NULL` (all parameters active).
-#' @param forcings Optional named list of forcing function data. Each element
-#'   must be a `data.frame` (or coercible object) with columns `time` and `value`,
-#'   or a two-column matrix. Names must match `attr(model, "forcings")`.
-#'   Default `NULL`.
-#' @param abstol Absolute error tolerance for the integrator. Default `1e-6`.
-#' @param reltol Relative error tolerance for the integrator. Default `1e-6`.
-#' @param maxprogress Maximum number of consecutive integration steps without
-#'   time advance (i.e. consecutive rejected steps) before the solver aborts
-#'   with `CV_CONV_FAILURE` (`return_code = -4`). Default `50`. Very stiff
-#'   problems with sharp transients or discontinuities may legitimately reject
-#'   several steps in a row when the controller first adapts, so setting this
-#'   too low (e.g. `10`) can produce false positives; Boost.odeint's reference
-#'   value is `500`. Lower this for "fail fast" behaviour in optimisation
-#'   pipelines where a stuck solve should be rejected cheaply.
-#' @param maxsteps Maximum total number of integration steps. Default `1e6`.
-#' @param hini Initial step size; `0` (default) triggers automatic estimation.
-#' @param roottol Tolerance for root-finding in root-triggered events. Default `1e-6`.
-#' @param maxroot Maximum triggers per root event. Default `1`.
-#' @param usePID Character string selecting the step-size control
-#'   strategy for NDF/BDF. One of:
+#'   Names must include all of
+#'   `c(attr(model, "variables"), attr(model, "parameters"))`.
+#' @param sens1ini Optional numeric matrix of first-order sensitivity
+#'   initial values, interpreted as the Jacobian \eqn{\Phi'(\theta)}.
+#'   Accepts three shapes (see Details): legacy `[n_states, n_active]`
+#'   (auto-extended with identity on parameter rows), full
+#'   `[n_states + n_params, M]`, or partial `[k, M]` with row names
+#'   identifying a subset of `c(variables, parameters)` (missing rows
+#'   are zero-padded, i.e. implicitly fixed). Column names label the
+#'   resulting sensitivity output columns. Default `NULL` uses identity
+#'   seeding on the active sensitivity basis.
+#' @param sens2ini Optional numeric array of second-order sensitivity
+#'   initial values, interpreted as the Hessian tensor
+#'   \eqn{\Phi''(\theta)}. Shapes are analogous to those of `sens1ini`:
+#'   `[n_states, n_active, n_active]` (legacy),
+#'   `[n_states + n_params, M, M]` (full), or `[k, M, M]` with dim-1
+#'   names identifying a subset of `c(variables, parameters)` (partial,
+#'   zero-padded). Allowed only when `attr(model, "deriv2")` is `TRUE`.
+#'   Default `NULL` uses zero seeding (correct when \eqn{\Phi} is
+#'   linear-affine).
+#' @param fixed Optional character vector of sensitivity-parameter names
+#'   to treat as fixed at run time. The integrator then runs with a
+#'   smaller AD state. Names must be a subset of
+#'   `attr(model, "dimNames")$sens`. Unlike compile-time `fixed` in
+#'   [CppODE()], the run-time `fixed` set can be changed between calls
+#'   without recompilation. Incompatible with full / partial `sens1ini`
+#'   (those encode fixedness through row values or row presence).
+#'   Default `NULL` (all parameters active).
+#' @param forcings Optional named list of forcing-function data. Each
+#'   element must be a `data.frame` (or coercible object) with columns
+#'   `time` and `value`, or a two-column matrix. Names must match
+#'   `attr(model, "forcings")`. Default `NULL`.
+#' @param abstol Absolute error tolerance. Default `1e-6`.
+#' @param reltol Relative error tolerance. Default `1e-6`.
+#' @param maxprogress Maximum number of consecutive integration steps
+#'   without time advance (consecutive rejected steps) before the solver
+#'   aborts with `CV_CONV_FAILURE` (`return_code = -4`). Default `50`.
+#'   Lower values can be useful for fail-fast behaviour in optimisation
+#'   pipelines; very stiff problems with sharp transients may legitimately
+#'   reject several steps in a row when the controller first adapts.
+#' @param maxsteps Maximum total number of integration steps. Default
+#'   `1e6`.
+#' @param hini Initial step size; `0` (default) triggers automatic
+#'   estimation.
+#' @param roottol Tolerance for root finding in root-triggered events.
+#'   Default `1e-6`.
+#' @param maxroot Maximum number of triggers per root event. Default `1`.
+#' @param usePID Step-size control strategy for NDF/BDF. One of:
 #'   \describe{
-#'     \item{`"none"`}{(default) Classical CVODE-style I-controller
-#'       with the BIAS2 safety factor. This is what `solveODE` did
-#'       before the H211b experiments and is the recommended
-#'       baseline for stiff problems on KLU-equipped Jacobians.}
-#'     \item{`"intermediate"`}{Same I-controller and same order
-#'       selection as `"none"`, plus a geometric (log-space) low-pass
-#'       filter applied to the final step-size ratio:
-#'       \deqn{\log \eta_{\mathrm{filt}} = (1-\alpha)\log \eta + \alpha \log \eta_{n-1}}
-#'       with default \eqn{\alpha = 0.4}. The filter smooths the
-#'       step-size sequence without interfering with order changes
-#'       and resets its history on order changes, failures, and
-#'       events.}
+#'     \item{`"none"`}{(default) Classical CVODE-style I-controller with
+#'       the BIAS2 safety factor. Recommended baseline for stiff problems.}
+#'     \item{`"intermediate"`}{The same I-controller and order selection
+#'       as `"none"`, plus a geometric (log-space) low-pass filter on the
+#'       final step-size ratio. The filter resets on order changes,
+#'       failures, and events.}
 #'     \item{`"full"`}{Soederlind's H211b second-order digital filter
-#'       replaces the I-controller at the current order. The
-#'       order-decrease and order-increase candidates are lifted onto
-#'       the same safety-only scale as the H211b proposal so that
-#'       order selection is not biased against the filter path. Uses
-#'       a default safety factor of 0.8.}
+#'       replaces the I-controller at the current order. Uses a default
+#'       safety factor of 0.8.}
 #'   }
-#'   For Rosenbrock4 the value is silently forced to `"full"` because
-#'   Rosenbrock4 always uses its built-in Gustafsson PI controller and
-#'   has no toggle for it. Note that "PID" is a slight misnomer for
-#'   all of these -- H211b is a second-order digital filter and the
-#'   Gustafsson form is a PI controller, neither is a classical
-#'   PID -- but the name follows common usage in the adaptive-stepping
-#'   literature. References: Soederlind (2003) "Digital Filters in
-#'   Adaptive Time-Stepping", ACM TOMS 29(1); Soederlind & Wang (2006)
-#'   "Adaptive Time-Stepping and Computational Stability"; Gustafsson,
-#'   Lundh & Soederlind (1988) "A PI stepsize control for the numerical
-#'   solution of ordinary differential equations", BIT 28.
-#' @param onFailure How to react when the solver returns `return_code != 0`
-#'   (step limit hit, no progress, etc.). One of `"warn"` (default, historical
-#'   behaviour: emit a warning and return partial results up to `t_reached`),
-#'   `"stop"` (raise an error with the solver message; no partial results
-#'   are returned), or `"silent"` (return the partial result without any
-#'   signal). Use `"stop"` in optimisation pipelines where a silently
-#'   truncated trajectory would be misinterpreted as a valid prediction.
-#' @param traceFile Optional character. If the compiled model was built
-#'   with `stepTrace = TRUE` and a non-empty path is supplied here, the
-#'   per-step trace data.frame is also written to this CSV file in the
-#'   current working directory.  The trace is additionally attached to
-#'   the returned list as `$trace` regardless of whether a file path is
-#'   provided.  Ignored for models compiled without trace support (the
-#'   `$trace` element is `NULL` in that case).
+#'   For methods `"rb4"` and `"tsit5"` the value is silently set to
+#'   `"full"` because those methods always use their built-in PI
+#'   controller. The label "PID" follows common usage in the
+#'   adaptive-stepping literature.
+#' @param onFailure How to react when the solver returns a non-zero
+#'   return code. One of `"warn"` (default; emit a warning and return
+#'   partial results up to `t_reached`), `"stop"` (raise an error with
+#'   the solver message and no partial results), or `"silent"` (return
+#'   the partial result without any signal).
+#' @param traceFile Optional character giving a CSV file path. If the
+#'   model was compiled with `stepTrace = TRUE` and a non-empty path is
+#'   supplied, the per-step trace `data.frame` is written to that path.
+#'   The trace is also attached to the returned list as `$trace`. Ignored
+#'   for models compiled without trace support (`$trace` is `NULL` in
+#'   that case).
 #'
-#' @return A named list with components `time`, `variable`, `diagnostics`,
-#'   and, when `attr(model, "deriv") == TRUE`, `sens1`, and additionally
-#'   `sens2` when `attr(model, "deriv2") == TRUE`. All output arrays are
-#'   **time-first**: `variable` is `[n_t, n_x]`, `sens1` is `[n_t, n_x, n_s]`,
-#'   and `sens2` is `[n_t, n_x, n_s, n_s]`. Dimension names of `sens1`/`sens2`
-#'   reflect only the active (non-fixed) sensitivity parameters. The
-#'   `diagnostics` element is a list with solver statistics (see
-#'   [diagnostics()]). When the model was compiled with `stepTrace = TRUE`,
-#'   an additional `$trace` data.frame with per-step diagnostics is attached.
+#' @return
+#' A named list with components `time`, `variable`, `diagnostics`, and,
+#' when `attr(model, "deriv")` is `TRUE`, `sens1`, plus `sens2` when
+#' `attr(model, "deriv2")` is `TRUE`. Output arrays are time-first:
+#' `variable` is `[n_t, n_x]`, `sens1` is `[n_t, n_x, n_s]`, and
+#' `sens2` is `[n_t, n_x, n_s, n_s]`. The dimension names of `sens1`
+#' and `sens2` reflect the active (non-fixed) sensitivity parameters.
+#' The `diagnostics` element is a list of solver statistics (see
+#' [diagnostics()]). When the model was compiled with `stepTrace = TRUE`,
+#' an additional `$trace` `data.frame` with per-step diagnostics is
+#' attached.
 #'
-#' @seealso [CppODE()] for model specification and compilation.
+#' @seealso [CppODE()] and [CVODE()] for model compilation;
+#'   [diagnostics()] for printing solver statistics.
 #'
 #' @export
 solveODE <- function(model, times, parms,
@@ -145,7 +203,7 @@ solveODE <- function(model, times, parms,
 
   ## --- Unpack model attributes ---
   stopifnot(is.character(model), length(model) == 1L)
-  required_attrs <- c("variables", "parameters", "forcings", "deriv", "deriv2", "dim_names")
+  required_attrs <- c("variables", "parameters", "forcings", "deriv", "deriv2", "dimNames")
   missing_attrs <- setdiff(required_attrs, names(attributes(model)))
   if (length(missing_attrs))
     stop("'model' is missing attributes: ", paste(missing_attrs, collapse = ", "))
@@ -155,7 +213,7 @@ solveODE <- function(model, times, parms,
   forcing_names <- attr(model, "forcings")
   deriv         <- attr(model, "deriv")
   deriv2        <- attr(model, "deriv2")
-  all_sens      <- if (deriv) attr(model, "dim_names")$sens else character(0)
+  all_sens      <- if (deriv) attr(model, "dimNames")$sens else character(0)
   nStack_attr   <- attr(model, "nStack")
   backend       <- attr(model, "backend")  # "cvode" for CVODE, NULL/other for native
   is_cvode      <- identical(backend, "cvode")
@@ -164,20 +222,32 @@ solveODE <- function(model, times, parms,
   n_params  <- length(parameters)
   n_phi_rows <- n_states + n_params
 
-  ## --- Detect sens1ini shape per call (legacy vs full Phi'(theta)) ---
-  ## - Full shape  [n_phi_rows, M] (the auto-extended Phi'(theta) we hand
-  ##   down to C++): user supplied a parameter Jacobian directly.
-  ## - Legacy shape [n_states, n_active]: identity-on-active-params
-  ##   reparametrization is implied; auto-extended below.
-  ## - NULL: identity on the whole non-fixed sens basis (default).
+  ## --- Detect sens1ini shape per call ---
+  ## Three accepted shapes:
+  ## - Legacy [n_states, n_active]: implicit identity on parameter rows.
+  ##   Detected by nrow == n_states and rownames absent or all in `variables`.
+  ## - Full Phi' [n_phi_rows, M]: parameter rows supplied explicitly.
+  ## - Partial Phi' [k, M], k < n_phi_rows: rownames identify which rows are
+  ##   supplied; missing rows are padded with zeros (= implicit fixed).
+  ## NULL means identity seeding on the whole non-fixed sens basis.
+  ## Vector form is treated as legacy/full as today (M = n_active, no partial).
   if (!is.null(sens1ini) && !deriv)
     stop("'sens1ini' supplied but model has deriv = FALSE")
   if (!is.null(sens2ini) && !deriv2)
     stop("'sens2ini' supplied but model has deriv2 = FALSE")
 
-  sens1ini_is_full <- !is.null(sens1ini) &&
-    (is.matrix(sens1ini) || (is.array(sens1ini) && length(dim(sens1ini)) == 2L)) &&
-    nrow(sens1ini) == n_phi_rows && n_phi_rows != n_states
+  is_2d_sens1 <- !is.null(sens1ini) &&
+    (is.matrix(sens1ini) ||
+       (is.array(sens1ini) && length(dim(sens1ini)) == 2L))
+  sens1ini_is_legacy <-
+    is_2d_sens1 && n_phi_rows != n_states && nrow(sens1ini) == n_states && {
+      rn <- rownames(sens1ini)
+      is.null(rn) || all(rn %in% variables)
+    }
+  ## "is_full" here means "user supplied a Phi' (full or partial)" — anything
+  ## that is not legacy. Used to gate runtime `fixed` and to drive
+  ## n_theta_active / sens2ini coupling.
+  sens1ini_is_full <- is_2d_sens1 && !sens1ini_is_legacy
 
   ## --- Runtime fixed: incompatible with full-shape sens1ini ---
   fixed_indices <- integer(0)
@@ -234,51 +304,84 @@ solveODE <- function(model, times, parms,
   }
 
   ## --- Coerce sens1ini to flat [n_phi_rows, n_theta_active] ---
+  ## Performance: skip column/row reorder when the order already matches
+  ## (the common case in optimisation loops where the same shape is reused).
+  ## Legacy padding uses one preallocated zero matrix + indexed assignment
+  ## rather than rbind (which would allocate twice).
   coerce_sens1ini <- function(x, n_cols, col_names, arg) {
     if (!is.numeric(x)) stop("'", arg, "' must be numeric")
-    if (is.matrix(x) || (is.array(x) && length(dim(x)) == 2)) {
-      if (nrow(x) == n_states && ncol(x) == n_cols && n_phi_rows != n_states) {
-        ## Legacy shape: reorder rows + cols if named, append identity-on-params.
-        if (!is.null(rownames(x))) {
-          if (!setequal(rownames(x), variables))
-            stop("'", arg, "' row names must match variables")
-          x <- x[variables, , drop = FALSE]
-        }
-        if (!is.null(colnames(x))) {
-          if (!setequal(colnames(x), col_names))
-            stop("'", arg, "' column names must match active sens: ",
-                 paste(col_names, collapse = ", "))
-          x <- x[, col_names, drop = FALSE]
-        }
-        pad <- build_param_identity(col_names)
-        return(as.double(rbind(unname(x), unname(pad))))
-      }
-      if (nrow(x) != n_phi_rows || ncol(x) != n_cols)
-        stop(sprintf("'%s' must be [%d, %d] (Phi' full shape) or [%d, %d] (legacy)",
-                     arg, n_phi_rows, n_cols, n_states, n_cols))
-      if (!is.null(rownames(x))) {
-        expected_rows <- c(variables, parameters)
-        if (!setequal(rownames(x), expected_rows))
-          stop("'", arg, "' row names must be c(variables, parameters)")
-        x <- x[expected_rows, , drop = FALSE]
-      }
-      if (!is.null(colnames(x))) {
-        if (!setequal(colnames(x), col_names))
-          stop("'", arg, "' column names must match: ", paste(col_names, collapse = ", "))
-        x <- x[, col_names, drop = FALSE]
-      }
-      as.double(x)
-    } else {
+
+    is_2d <- is.matrix(x) || (is.array(x) && length(dim(x)) == 2L)
+    if (!is_2d) {
+      ## Vector form: legacy if length == n_states*n_cols, else full.
+      ## (Partial-row form requires names and is therefore matrix-only.)
       if (length(x) == n_states * n_cols && n_phi_rows != n_states) {
-        xmat <- matrix(as.double(x), nrow = n_states, ncol = n_cols)
-        pad  <- build_param_identity(col_names)
-        return(as.double(rbind(xmat, unname(pad))))
+        out <- matrix(0, n_phi_rows, n_cols)
+        out[seq_len(n_states), ] <- x
+        out[(n_states + 1L):n_phi_rows, ] <- build_param_identity(col_names)
+        return(as.double(out))
       }
       if (length(x) != n_phi_rows * n_cols)
-        stop(sprintf("'%s' must have length %d (n_phi_rows * n_cols)",
-                     arg, n_phi_rows * n_cols))
-      as.double(x)
+        stop(sprintf("'%s' must have length %d (n_phi_rows * n_cols) or %d (legacy)",
+                     arg, n_phi_rows * n_cols, n_states * n_cols))
+      return(as.double(x))
     }
+
+    nr <- nrow(x); nc <- ncol(x)
+    rn <- rownames(x); cn <- colnames(x)
+    expected_rows <- c(variables, parameters)
+
+    ## Column reorder/check (once, regardless of row interpretation).
+    if (!is.null(cn)) {
+      if (!setequal(cn, col_names))
+        stop("'", arg, "' column names must match: ",
+             paste(col_names, collapse = ", "))
+      if (!identical(cn, col_names))
+        x <- x[, col_names, drop = FALSE]
+    } else if (nc != n_cols) {
+      stop(sprintf("'%s' must have %d columns", arg, n_cols))
+    }
+
+    ## Full Phi' shape: [n_phi_rows, n_cols].
+    if (nr == n_phi_rows) {
+      if (!is.null(rn)) {
+        if (!setequal(rn, expected_rows))
+          stop("'", arg, "' row names must be c(variables, parameters)")
+        if (!identical(rn, expected_rows))
+          x <- x[expected_rows, , drop = FALSE]
+      }
+      return(as.double(x))
+    }
+
+    ## Legacy shape: [n_states, n_cols], no rownames or all-variable rownames.
+    if (nr == n_states && n_phi_rows != n_states &&
+        (is.null(rn) || all(rn %in% variables))) {
+      if (!is.null(rn)) {
+        if (!setequal(rn, variables))
+          stop("'", arg, "' row names must match variables (legacy shape)")
+        if (!identical(rn, variables))
+          x <- x[variables, , drop = FALSE]
+      }
+      out <- matrix(0, n_phi_rows, n_cols)
+      out[seq_len(n_states), ] <- x
+      out[(n_states + 1L):n_phi_rows, ] <- build_param_identity(col_names)
+      return(as.double(out))
+    }
+
+    ## Partial-row shape: rownames required, subset of c(variables, parameters).
+    ## Missing rows are padded with zeros (= implicit fixed for those slots).
+    if (is.null(rn))
+      stop(sprintf(
+        "'%s' has shape [%d, %d]; expected [%d, %d] (full Phi'), [%d, %d] (legacy), or a partial-row matrix with rownames identifying a subset of c(variables, parameters)",
+        arg, nr, nc, n_phi_rows, n_cols, n_states, n_cols))
+    bad <- setdiff(rn, expected_rows)
+    if (length(bad))
+      stop("'", arg, "' has unknown row names: ", paste(bad, collapse = ", "))
+    if (anyDuplicated(rn))
+      stop("'", arg, "' has duplicate row names")
+    out <- matrix(0, n_phi_rows, n_cols)
+    out[match(rn, expected_rows), ] <- x
+    as.double(out)
   }
 
   ## --- Build sens1ini for the C++ side ---
@@ -303,43 +406,82 @@ solveODE <- function(model, times, parms,
 
   if (!is.null(sens2ini)) {
     if (!is.numeric(sens2ini)) stop("'sens2ini' must be numeric")
-    ## Legacy [n_states, n_active, n_active] is accepted only when sens1ini
-    ## is legacy / NULL (then Phi'' = 0 on the param block, correct for
-    ## affine Phi). Full [n_phi_rows, M, M] is the unified shape.
+    ## Legacy [n_states, M, M] is accepted only when sens1ini is legacy / NULL
+    ## (then Phi'' = 0 on the param block, correct for affine Phi). Full
+    ## [n_phi_rows, M, M] is the unified shape; partial [k, M, M] is allowed
+    ## with dim-1 names identifying a subset of c(variables, parameters)
+    ## (missing rows = zero, i.e. implicit fixed). Partial coexists with
+    ## partial sens1ini and with full sens1ini -- the row interpretation is
+    ## independent because the C++ side receives the padded full tensor.
     legacy_d2_ok <- !sens1ini_is_full && n_phi_rows != n_states
+    expected_rows <- c(variables, parameters)
+
     if (is.array(sens2ini) && length(dim(sens2ini)) == 3) {
-      if (all(dim(sens2ini) == c(n_states, n_theta_active, n_theta_active)) && legacy_d2_ok) {
-        dn <- dimnames(sens2ini)
-        if (!is.null(dn[[1]])) sens2ini <- sens2ini[variables, , , drop = FALSE]
-        if (!is.null(dn[[2]])) sens2ini <- sens2ini[, sens_col_names, , drop = FALSE]
-        if (!is.null(dn[[3]])) sens2ini <- sens2ini[, , sens_col_names, drop = FALSE]
+      d <- dim(sens2ini); nr <- d[1L]; nc1 <- d[2L]; nc2 <- d[3L]
+      dn <- dimnames(sens2ini)
+      rn  <- if (length(dn) >= 1L) dn[[1L]] else NULL
+      cn1 <- if (length(dn) >= 2L) dn[[2L]] else NULL
+      cn2 <- if (length(dn) >= 3L) dn[[3L]] else NULL
+
+      if (nc1 != n_theta_active || nc2 != n_theta_active)
+        stop(sprintf("'sens2ini' must have dim 2 and 3 equal to %d", n_theta_active))
+
+      ## Column reorder/check on dims 2 and 3 (once each).
+      if (!is.null(cn1)) {
+        if (!setequal(cn1, sens_col_names))
+          stop("'sens2ini' dim 2 must match sens columns")
+        if (!identical(cn1, sens_col_names))
+          sens2ini <- sens2ini[, sens_col_names, , drop = FALSE]
+      }
+      if (!is.null(cn2)) {
+        if (!setequal(cn2, sens_col_names))
+          stop("'sens2ini' dim 3 must match sens columns")
+        if (!identical(cn2, sens_col_names))
+          sens2ini <- sens2ini[, , sens_col_names, drop = FALSE]
+      }
+
+      ## Full shape: [n_phi_rows, M, M].
+      if (nr == n_phi_rows) {
+        if (!is.null(rn)) {
+          if (!setequal(rn, expected_rows))
+            stop("'sens2ini' dim 1 must be c(variables, parameters)")
+          if (!identical(rn, expected_rows))
+            sens2ini <- sens2ini[expected_rows, , , drop = FALSE]
+        }
+        sens2ini <- as.double(sens2ini)
+
+      ## Legacy shape: [n_states, M, M], state-only or no rownames.
+      } else if (nr == n_states && legacy_d2_ok &&
+                 (is.null(rn) || all(rn %in% variables))) {
+        if (!is.null(rn)) {
+          if (!setequal(rn, variables))
+            stop("'sens2ini' dim 1 must match variables (legacy shape)")
+          if (!identical(rn, variables))
+            sens2ini <- sens2ini[variables, , , drop = FALSE]
+        }
         full <- array(0, dim = c(n_phi_rows, n_theta_active, n_theta_active))
         full[seq_len(n_states), , ] <- sens2ini
         sens2ini <- as.double(full)
-      } else if (all(dim(sens2ini) == c(n_phi_rows, n_theta_active, n_theta_active))) {
-        dn <- dimnames(sens2ini)
-        if (!is.null(dn[[1]])) {
-          expected_rows <- c(variables, parameters)
-          if (!setequal(dn[[1]], expected_rows))
-            stop("'sens2ini' dim 1 must be c(variables, parameters)")
-          sens2ini <- sens2ini[expected_rows, , , drop = FALSE]
-        }
-        if (!is.null(dn[[2]])) {
-          if (!setequal(dn[[2]], sens_col_names))
-            stop("'sens2ini' dim 2 must match sens columns")
-          sens2ini <- sens2ini[, sens_col_names, , drop = FALSE]
-        }
-        if (!is.null(dn[[3]])) {
-          if (!setequal(dn[[3]], sens_col_names))
-            stop("'sens2ini' dim 3 must match sens columns")
-          sens2ini <- sens2ini[, , sens_col_names, drop = FALSE]
-        }
-        sens2ini <- as.double(sens2ini)
+
+      ## Partial-row shape: dim-1 names required, subset of expected_rows.
       } else {
-        stop(sprintf("'sens2ini' must be [%d, %d, %d] (Phi'' full shape)",
-                     n_phi_rows, n_theta_active, n_theta_active))
+        if (is.null(rn))
+          stop(sprintf(
+            "'sens2ini' has shape [%d, %d, %d]; expected [%d, %d, %d] (full Phi''), [%d, %d, %d] (legacy), or a partial-row array with dim-1 names identifying a subset of c(variables, parameters)",
+            nr, nc1, nc2, n_phi_rows, n_theta_active, n_theta_active,
+            n_states, n_theta_active, n_theta_active))
+        bad <- setdiff(rn, expected_rows)
+        if (length(bad))
+          stop("'sens2ini' has unknown dim-1 names: ", paste(bad, collapse = ", "))
+        if (anyDuplicated(rn))
+          stop("'sens2ini' has duplicate dim-1 names")
+        full <- array(0, dim = c(n_phi_rows, n_theta_active, n_theta_active))
+        full[match(rn, expected_rows), , ] <- sens2ini
+        sens2ini <- as.double(full)
       }
+
     } else {
+      ## Vector form (no partial — needs names). Same as before.
       len <- length(sens2ini)
       if (len == n_phi_rows * n_theta_active^2) {
         sens2ini <- as.double(sens2ini)
@@ -483,15 +625,16 @@ solveODE <- function(model, times, parms,
 #' Print Solver Diagnostics
 #'
 #' @description
-#' Prints a summary of solver diagnostics.
+#' Prints a summary of the solver diagnostics returned by [solveODE()].
 #'
-#' @param result A list returned by [solveODE()], containing a `diagnostics` element.
+#' @param result A list returned by [solveODE()], containing a
+#'   `diagnostics` element.
 #'
-#' @return Invisibly returns the diagnostics list.
+#' @return Invisibly returns the `diagnostics` list.
 #'
 #' @examples
 #' \dontrun{
-#' res <- solveODE(model, times, params)
+#' res <- solveODE(model, times, parms)
 #' diagnostics(res)
 #' }
 #'
@@ -549,7 +692,6 @@ diagnostics.default <- function(result) {
     switch(diag$method %||% "bdf",
            bdf         = if (isFALSE(diag$useNDF)) "BDF" else "NDF",
            adams       = "ADAMS",
-           msoda       = "MSODA",
            rosenbrock4 = "ROSENBROCK4",
            tsit5       = "TSIT5",
            toupper(diag$method))

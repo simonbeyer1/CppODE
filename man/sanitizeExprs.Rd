@@ -2,7 +2,7 @@
 % Please edit documentation in R/symbolics.R
 \name{sanitizeExprs}
 \alias{sanitizeExprs}
-\title{Sanitize expressions for SymPy compatibility}
+\title{Sanitize Expressions for SymPy Compatibility}
 \usage{
 sanitizeExprs(exprs)
 }
@@ -13,13 +13,10 @@ sanitizeExprs(exprs)
 Character vector with sanitized expressions.
 }
 \description{
-Scans character expressions for reserved Python keywords and replaces them
-with the same name plus an underscore appended.
-}
-\details{
-Function names like \code{min}, \code{max}, \code{abs}, and \code{sum} are
-left untouched, since they are valid in SymPy.
-
-A warning is emitted for each replacement performed.
+Scans character expressions for reserved Python keywords and
+replaces each occurrence with the keyword followed by an underscore.
+Function names like \code{min}, \code{max}, \code{abs}, and
+\code{sum} are left untouched because they are valid in SymPy. A
+warning is emitted for each replacement.
 }
 \keyword{internal}

@@ -26,7 +26,7 @@ ss_pA <- unname(pars["k1"]) * ss_R / (unname(pars["k2"]) + unname(pars["k1"]) * 
 ss_A  <- total - ss_pA
 
 stiff_methods   <- c("bdf", "rb4")
-all_methods     <- c("bdf", "adams", "msoda", "rb4", "tsit5")
+all_methods     <- c("bdf", "adams", "rb4", "tsit5")
 
 # -- Basic equilibrate: reaches correct steady state ---------------------------
 

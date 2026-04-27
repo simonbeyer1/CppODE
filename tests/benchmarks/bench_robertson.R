@@ -66,7 +66,7 @@ cat("deSolve lsoda: OK (", nrow(ref_lsoda), "rows )\n")
 ref <- ref_vode
 
 # --- CppODE methods to test --------------------------------------------------
-methods <- c("bdf", "msoda", "rb4")
+methods <- c("bdf", "rb4")
 
 cat("\n============================================================\n")
 cat("Compiling CppODE models for all methods\n")

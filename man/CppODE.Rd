@@ -2,7 +2,7 @@
 % Please edit documentation in R/CppODE.R
 \name{CppODE}
 \alias{CppODE}
-\title{Generate C++ code for ODE models with events and parameter sensitivities}
+\title{Generate and Compile a C++ ODE Solver}
 \usage{
 CppODE(
   rhs,
@@ -15,12 +15,12 @@ CppODE(
   outdir = tempdir(),
   deriv = TRUE,
   deriv2 = FALSE,
-  nStack = NULL,
-  ad_backend = c("dual", "fadbad"),
+  nStack = Inf,
+  derivMode = c("dual", "fadbad"),
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
-  method = c("bdf", "adams", "msoda", "rb4", "tsit5"),
+  method = c("bdf", "adams", "rb4", "tsit5"),
   useNDF = TRUE,
   profile = FALSE,
   stepTrace = FALSE,
@@ -28,267 +28,240 @@ CppODE(
 )
 }
 \arguments{
-\item{rhs}{Named character vector of ODE right-hand sides; names must correspond to variables.}
+\item{rhs}{Named character vector of ODE right-hand sides. Names
+correspond to state variables.}
 
-\item{events}{Optional \code{data.frame} describing events (see \strong{Events}). Default: \code{NULL}.}
+\item{events}{Optional \code{data.frame} of event specifications. See
+Details. Default \code{NULL}.}
 
-\item{rootfunc}{Optional root function specification for integration termination.
-Either \code{"equilibrate"} for steady-state detection, or a character vector of
-expressions that trigger termination when crossing zero. Default: \code{NULL}.}
+\item{rootfunc}{Optional root function specification. Either
+\code{"equilibrate"} for steady-state detection, or a character vector of
+expressions that trigger termination when crossing zero. Default
+\code{NULL}.}
 
-\item{fixed}{Character vector of fixed initial conditions or parameters (excluded from sensitivities).}
+\item{fixed}{Optional character vector of state or parameter names
+treated as fixed (excluded from sensitivities at compile time).}
 
-\item{forcings}{Character vector of forcing function names used in \code{rhs}.}
+\item{forcings}{Optional character vector of forcing-function names
+that appear in \code{rhs}.}
 
-\item{compile}{Logical. If \code{TRUE}, compiles and loads the generated C++ code.}
+\item{compile}{Logical. If \code{TRUE} (default), compile and load the
+generated C++ code.}
 
-\item{modelname}{Optional base name for the generated C++ source file
-\emph{and} for all generated C/C++ symbols (e.g. \verb{solve_<modelname>})
-as well as the resulting shared library.
-If \code{NULL}, a random identifier is used.}
+\item{modelname}{Optional base name for the generated source file and
+the corresponding C/C++ symbols (e.g. \verb{solve_<modelname>}). If
+\code{NULL}, a random identifier is used.}
 
-\item{outdir}{Directory where generated C++ source files are written. Defaults to \code{tempdir()}.}
+\item{outdir}{Directory in which the generated C++ source file is
+written. Defaults to \code{tempdir()}.}
 
-\item{deriv}{Logical. If \code{TRUE}, enable first-order sensitivities via dual numbers.}
+\item{deriv}{Logical. If \code{TRUE} (default), compute first-order
+sensitivities via dual numbers.}
 
-\item{deriv2}{Logical. If \code{TRUE}, enable second-order sensitivities via nested dual numbers;
-requires \code{deriv = TRUE}.}
+\item{deriv2}{Logical. If \code{TRUE}, also compute second-order
+sensitivities via nested dual numbers (implies \code{deriv = TRUE}).
+Default \code{FALSE}.}
 
-\item{nStack}{Controls the compile-time AD slab width.
-\itemize{
-\item \code{NULL} \emph{(default)} -- the AD width equals the number of non-fixed
-(state + parameter) slots (\code{n_total_sens}); stack-allocated.
-\item positive integer \code{K} -- AD width is fixed to \code{K} at compile time
-(stack-allocated \verb{dual<double, K>} / \verb{F<double, K>}). Suitable
-when integrating with respect to a reparametrization
-\eqn{p = \Phi(\theta)} of known compile-time upper bound \code{K}. At
-\code{solveODE()} time, \code{sens1ini} may be supplied with up to \code{K}
-columns; \code{M = ncol(sens1ini) <= K} per call.
-\item \code{Inf} -- heap-allocated AD (\verb{dual<double, 0>} / \verb{F<double, 0>}).
-The AD width is determined at runtime from \code{ncol(sens1ini)}. Useful
-when the parameter / theta dimension is only known at runtime;
-\code{ad_backend = "dual"} makes this path much faster than the default
-FADBAD heap because intermediates are bumped from a per-call
-thread-local arena instead of allocated via \code{new[]}. Incompatible
-with \code{deriv2 = TRUE}.
+\item{nStack}{Compile-time AD slab width.
+\describe{
+\item{\code{Inf} \emph{(default)}}{Heap-allocated AD; the per-call sensitivity
+dimension is determined at run time from \code{ncol(sens1ini)} in
+\code{\link[=solveODE]{solveODE()}}. Useful when the parameter or theta dimension is only
+known at run time. Incompatible with \code{deriv2 = TRUE}; if both are
+supplied, \code{nStack} is silently switched to the stack default.}
+\item{Positive integer \code{K}}{AD width is fixed to \code{K} at compile time
+(stack-allocated). Suitable when integrating with respect to a
+reparametrization \eqn{p = \Phi(\theta)} of known compile-time
+upper bound \code{K}. In \code{\link[=solveODE]{solveODE()}}, \code{sens1ini} may have up to \code{K}
+columns.}
+\item{\code{NULL}}{AD width equals the number of non-fixed (state +
+parameter) slots; stack-allocated.}
 }
+The choice between legacy \code{sens1ini} shape and the full
+reparametrization shape is per call at \code{\link[=solveODE]{solveODE()}} time, independent
+of \code{nStack}. Requires \code{deriv = TRUE}.}
 
-The choice between legacy sens1ini shape \verb{[n_states, n_active]} and
-full shape \verb{[n_states + n_params, M]} is per-call at \code{solveODE()}
-time, independent of \code{nStack}. Requires \code{deriv = TRUE} for any
-non-default value.}
+\item{derivMode}{Character; forward-AD backend used to compute
+sensitivities. Either \code{"dual"} \emph{(default)}, the package's in-tree
+dual-number backend (with a thread-local arena allocator for the
+heap-AD path), or \code{"fadbad"}, the legacy FADBAD++ backend.}
 
-\item{ad_backend}{Character string selecting the forward-AD library.
-\itemize{
-\item \code{"dual"} \emph{(default)} -- the in-tree \verb{cppode::dual<double, N>} /
-\verb{cppode::dual<double, 0>} backend. Uses a thread-local arena
-allocator for the dynamic-width path. Second-order
-(\code{deriv2 = TRUE}) uses nested \verb{cppode::dual<cppode::dual<double, N>, N>},
-analogous to FADBAD's nested layout but free of the FADBAD++
-dependency.
-\item \code{"fadbad"} -- the legacy \verb{fadbad::F<double, N>} /
-\verb{fadbad::F<fadbad::F<double, N>, N>} (nested) backend.
-}}
+\item{includeTimeZero}{Logical. If \code{TRUE} (default), ensure that
+time \code{0} is included among the integration times.}
 
-\item{includeTimeZero}{Logical. If \code{TRUE}, ensure that time \code{0} is included among integration times.}
+\item{useDenseOutput}{Logical. If \code{TRUE} (default), use Hermite
+dense output for user time points.}
 
-\item{useDenseOutput}{Logical. If \code{TRUE}, use dense output (Hermite interpolation).}
+\item{sparse}{Logical or \code{NULL}. Controls sparse LU factorization.
+\code{NULL} (default) auto-selects based on Jacobian sparsity; \code{TRUE}
+forces sparse LU; \code{FALSE} forces dense LU. Sparse LU requires the
+KLU linear solver to have been found at install time.}
 
-\item{sparse}{Controls sparse LU factorization.
-\code{NULL} (default) auto-selects based on Jacobian sparsity.
-\code{TRUE} forces sparse LU; \code{FALSE} forces dense LU.}
+\item{method}{Character; integration method. One of \code{"bdf"}
+(default), \code{"adams"}, \code{"rb4"} (or \code{"rosenbrock4"}), or \code{"tsit5"}.
+Use \code{"bdf"} for stiff problems and \code{"adams"} or \code{"tsit5"} for
+non-stiff problems; \code{"rb4"} is an alternative to BDF when the
+Jacobian is cheap relative to the right-hand side.}
 
-\item{method}{Character string selecting the integration method. One of:
-\itemize{
-\item \code{"bdf"} \emph{(default)} -- BDF/NDF, max order 5, stiff (see \code{useNDF})
-\item \code{"adams"} -- Adams-Moulton PECE, max order 12, \strong{non-stiff only}
-\item \code{"msoda"} -- BDF/NDF + Adams with LSODA-style auto-switching, max order 12
-\item \code{"rb4"} (or \code{"rosenbrock4"}) -- Rosenbrock4, fourth-order L-stable single-step
-\item \code{"tsit5"} -- Tsitouras 5(4) explicit RK with FSAL, \strong{non-stiff only}
-}
+\item{useNDF}{Logical. If \code{TRUE} (default), the BDF corrector uses
+Klopfenstein-Shampine NDF kappa coefficients; if \code{FALSE}, classical
+BDF is used. Applies to method \code{"bdf"}; ignored otherwise.}
 
-Use \code{"bdf"} for problems known to be stiff throughout, \code{"adams"} or \code{"tsit5"}
-for problems known to be non-stiff, and \code{"msoda"} when stiffness varies in
-time. \code{"rb4"} is a good alternative to BDF when the Jacobian is cheap and
-Newton iteration overhead matters. \code{"tsit5"} is the fastest option for
-non-stiff problems where function evaluations dominate.}
+\item{profile}{Logical. If \code{TRUE}, compile with profiling counters.
+Default \code{FALSE}.}
 
-\item{useNDF}{Logical. If \code{TRUE} (default), the stiff-side corrector uses
-Klopfenstein-Shampine NDF kappa coefficients. If \code{FALSE}, classical BDF.
-Applies to methods \code{"bdf"} and \code{"msoda"}; silently ignored for \code{"adams"}
-and \code{"rb4"}.}
-
-\item{profile}{Logical. If \code{TRUE}, compile with profiling counters (\code{-DCPPODE_PROFILE}).}
-
-\item{stepTrace}{Logical. If \code{TRUE}, compile the solver with
-\code{-DCPPODE_STEP_TRACE}, which makes the multistepper and the one-step
-controller append one row per step attempt (order, step size, gamrat,
-setup triggers, error-test norms, cumulative counters) into an in-memory
-buffer. The buffer is returned to R as the \verb{$trace} element of the
-result from \code{\link[=solveODE]{solveODE()}}, which attaches it as a \code{data.frame} and
-optionally writes it to a user-supplied CSV path (\code{traceFile} argument).
-Intended for debugging and apples-to-apples comparisons against the
-CVODE step trace.}
+\item{stepTrace}{Logical. If \code{TRUE}, compile the solver to record
+per-step diagnostics (order, step size, error norms, cumulative
+counters). The trace is returned as the \verb{$trace} element of the
+result from \code{\link[=solveODE]{solveODE()}} and may be written to CSV via the
+\code{traceFile} argument of that function. Intended for debugging.}
 
 \item{verbose}{Logical. If \code{TRUE}, print progress messages.}
 }
 \value{
-The compiled model name (character string).
-The returned object carries a set of attributes that describe the compiled solver
-and its symbolic structure:\tabular{lll}{
+The compiled model name (character string), with attributes describing
+the compiled solver and its symbolic structure:\tabular{lll}{
    Attribute \tab Type \tab Description \cr
    \code{equations} \tab \code{character} \tab ODE right-hand side definitions \cr
    \code{srcfile} \tab \code{character} \tab Path to the generated C++ source file \cr
-   \code{variables} \tab \code{character} \tab Names of the dynamic state variables \cr
+   \code{variables} \tab \code{character} \tab Names of the state variables \cr
    \code{parameters} \tab \code{character} \tab Names of model parameters \cr
    \code{forcings} \tab \code{character} \tab Names of forcing functions \cr
-   \code{events} \tab \code{data.frame} \tab Table of event specifications (if any) \cr
-   \code{rootfunc} \tab \code{character} \tab Root function specification (if any) \cr
+   \code{events} \tab \code{data.frame} \tab Event specifications, if any \cr
+   \code{rootfunc} \tab \code{character} \tab Root function specification, if any \cr
    \code{fixed} \tab \code{character} \tab Names of fixed initial conditions or parameters \cr
-   \code{jacobian} \tab \code{list} \tab Jacobian: \code{f.x} (character matrix) and \code{f.time} (time derivatives) \cr
-   \code{deriv} \tab \code{logical} \tab Whether first-order sensitivities (dual numbers) are enabled \cr
-   \code{deriv2} \tab \code{logical} \tab Whether second-order sensitivities (nested dual numbers) are enabled \cr
+   \code{jacobian} \tab \code{list} \tab \code{f.x} (character matrix) and \code{f.time} (time derivatives) \cr
+   \code{deriv} \tab \code{logical} \tab Whether first-order sensitivities are enabled \cr
+   \code{deriv2} \tab \code{logical} \tab Whether second-order sensitivities are enabled \cr
    \code{sparse} \tab \code{logical} \tab Whether sparse LU factorization is used \cr
-   \code{dim_names} \tab \code{list} \tab Dimension names for arrays: \code{time}, \code{variable}, and \code{sens} \cr
-   \code{compileArgs} \tab \code{character} \tab Compiler flags (profile, step trace, KLU settings) \cr
+   \code{dimNames} \tab \code{list} \tab Dimension names for \code{time}, \code{variable}, and \code{sens} \cr
+   \code{compileArgs} \tab \code{character} \tab Compiler flags \cr
 }
 }
 \description{
-This function generates and compiles a C++ solver for systems of ordinary differential
-equations (ODEs) of the form
+Generates C++ source code for a system of ordinary differential equations
+(ODEs) of the form
 
-\deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}}}
+\deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}},}
 
-Four integration methods are available, all sharing a common Nordsieck-based
-multistep machinery (the \code{multistepper} template) plus Rosenbrock4:\tabular{lllll}{
-   Method \tab Family \tab Max order \tab Stiff? \tab Auto-switching \cr
-   \code{"bdf"} \emph{(default)} \tab BDF/NDF \tab 5 \tab Stiff \tab -- \cr
-   \code{"adams"} \tab Adams-Moulton (PECE) \tab 12 \tab Non-stiff \tab -- \cr
-   \code{"msoda"} \tab BDF/NDF + Adams with LSODA-style switching \tab 12 \tab Both \tab yes \cr
-   \code{"rb4"} \tab Rosenbrock4 (L-stable, single-step) \tab 4 \tab Stiff \tab -- \cr
-   \code{"tsit5"} \tab Tsitouras 5(4) (explicit RK, FSAL) \tab 5 \tab Non-stiff \tab -- \cr
+where the parameter vector \eqn{p = (p_{\text{init}}, p_{\text{dyn}})}
+concatenates the initial conditions \eqn{p_{\text{init}}} and the
+dynamic parameters \eqn{p_{\text{dyn}}} that appear in the right-hand
+side. \code{\link[=solveODE]{solveODE()}} takes this combined \code{p} as the \code{parms} argument.
+
+The generated C++ is compiled into a shared library and loaded for use
+with \code{\link[=solveODE]{solveODE()}}. Optionally, first- and second-order sensitivities of
+the state trajectory with respect to every component of \eqn{p} are
+computed via forward-mode automatic differentiation (AD) on dual numbers
+in a single integration pass.
+}
+\details{
+\subsection{Methods}{
+
+Four integration methods are available:
+
+\tabular{llrl}{
+\strong{Method} \tab \strong{Family} \tab \strong{Order} \tab \strong{Type} \cr
+\code{"bdf"} \emph{(default)} \tab BDF / NDF                          \tab 5  \tab Stiff     \cr
+\code{"adams"}                \tab Adams-Moulton (PECE)               \tab 12 \tab Non-stiff \cr
+\code{"rb4"}                  \tab Rosenbrock4 (L-stable, single-step)\tab 4  \tab Stiff     \cr
+\code{"tsit5"}                \tab Tsitouras 5(4) (explicit RK, FSAL) \tab 5  \tab Non-stiff \cr
 }
 
+For BDF, \code{useNDF = TRUE} (default) selects Shampine's NDF kappa
+modification (Shampine and Reichelt 1997), which is typically about
+10\\% faster than classical BDF. Adams-Moulton (PECE) requires no
+Newton iteration and is significantly cheaper per step on non-stiff
+problems but stalls on stiff ones. Rosenbrock4 is a fourth-order
+L-stable single-step method (Boost.Odeint origin) that uses one
+Jacobian evaluation and one LU factorization per step. Tsit5
+(Tsitouras 2011) is a fifth-order explicit Runge-Kutta method with
+an embedded fourth-order error estimator and FSAL property; it is
+the method of choice for non-stiff problems with expensive RHS
+evaluations.
 
-\strong{BDF} is a variable-order (1..5) Nordsieck multistep method. By default
-(\code{useNDF = TRUE}) it uses Shampine's NDF kappa modification (Shampine &
-Reichelt, SIAM J. Sci. Comput. 18(1), 1997, Table 1) which is typically
-~10\% faster than classical BDF. Set \code{useNDF = FALSE} for classical BDF.
-
-\strong{Adams} is a variable-order (1..12) Adams-Moulton method with PECE
-(Predict-Evaluate-Correct-Evaluate) iteration. It is explicit in the sense
-that no Newton iteration / linear solve is required, which makes it
-significantly cheaper per step on \strong{non-stiff} problems. On stiff problems
-it will fail or stall -- use BDF or MSODA instead.
-
-\strong{MSODA} (Multistep Solver for ODEs with Automatic method switching) starts
-in Adams mode and dynamically switches to BDF/NDF when stiffness is detected,
-and back to Adams when the problem becomes non-stiff again. The detection
-logic is a faithful port of the LSODA switching heuristic (Petzold 1983),
-driven by the dominant eigenvalue estimate \code{pdest} from the PECE iteration
-rate and the matrix 1-norm \verb{pnorm = ||J||_1} from the cached Jacobian. Use
-MSODA when the problem has phases of differing stiffness -- for example, slow
-drift followed by a fast transient. The \code{useNDF} flag controls whether the
-stiff side uses NDF or classical BDF coefficients.
-
-\strong{Rosenbrock4} is a fourth-order L-stable single-step method derived from
-Boost.Odeint. It uses one Jacobian evaluation and one LU factorization per
-step but no Newton iteration, which can be advantageous for problems where
-the Jacobian is cheap relative to the right-hand side.
-
-\strong{Tsit5} (Tsitouras 2011) is a 5th-order explicit Runge-Kutta method with
-an embedded 4th-order error estimator and FSAL (First Same As Last) property.
-It requires only function evaluations (no Jacobian or linear algebra) and is
-the method of choice for \strong{non-stiff} problems where function evaluations are
-expensive. On stiff problems it will fail or stall -- use BDF or Rb4 instead.
-
-All steppers support dense output, error control, sparse and dense LU factorization,
-\strong{time-based} and \strong{root-triggered events}, and, optionally,
-\strong{first- and second-order sensitivities} by evaluating the \emph{same system} with
-\strong{dual number} types provided by
-\href{https://uning.dk/fadbad.html}{\strong{FADBAD++}}.
-\subsection{Sensitivity Computation}{
-
-If \code{deriv = TRUE}, all state variables and parameters are represented as
-\href{https://en.wikipedia.org/wiki/Dual_number}{\strong{dual numbers}} of type \verb{F<double>}.
-The ODE right-hand side \eqn{f} is evaluated on these dual numbers; due to the chain rule
-encoded in dual number arithmetic, the \strong{derivative components propagate automatically}
-through every operation in \eqn{f}. Consequently, the numerical integration solves
-\emph{exactly the same} initial value problem, only over the dual number algebra
-\eqn{\mathbb{D}}, yielding both the state trajectories and their first derivatives
-in a single pass.
-
-If \code{deriv2 = TRUE} (which implies \code{deriv = TRUE}), nested dual numbers
-\verb{F<F<double>>} are used. This allows the evaluation of \eqn{f} over the
-second-order dual algebra \eqn{\mathbb{D} \otimes \mathbb{D}}, providing \strong{second-order
-sensitivities} directly through nested automatic differentiation.
-
-Fixed initial conditions or parameters (listed in \code{fixed}) are created as plain scalars
-and therefore do \strong{not} contribute sensitivity components.
-
-If both \code{deriv = FALSE} and \code{deriv2 = FALSE}, plain doubles are used and no sensitivities
-are produced.
+All steppers support dense (Hermite) output, error control, sparse
+and dense LU factorization, time- and root-triggered events, and
+optional sensitivities.
 }
 
-\subsection{Event handling}{
+\subsection{Sensitivity computation}{
 
-Events are specified in a \code{data.frame} with the following columns:\tabular{ll}{
+If \code{deriv = TRUE}, state variables and parameters are represented as
+dual numbers and the right-hand side is evaluated on those dual
+numbers. Derivative components propagate automatically through every
+operation, so the integrator solves the same initial-value problem
+over the dual-number algebra and returns state trajectories and first
+sensitivities together. With \code{deriv2 = TRUE}, nested dual numbers
+additionally yield second-order sensitivities. Variables and
+parameters listed in \code{fixed} are stored as plain scalars and do not
+contribute sensitivity components.
+
+Sensitivities are reported with respect to whichever basis the
+AD seeds are initialised in. By default this is the canonical
+\eqn{p}-basis (initial conditions stacked on dynamic parameters),
+but \code{\link[=solveODE]{solveODE()}} also accepts a Jacobian \eqn{\Phi'(\theta)} of a
+user-defined reparametrization \eqn{p = \Phi(\theta)} via
+\code{sens1ini} (and \eqn{\Phi''(\theta)} via \code{sens2ini}), in which case the
+returned sensitivities are
+\eqn{\partial x / \partial \theta} and
+\eqn{\partial^{2} x / \partial \theta^2}.
+See the "Sensitivity with respect to a
+reparametrization" section of \code{\link[=solveODE]{solveODE()}} for the math and the
+relevant shapes. The \code{nStack} argument controls the compile-time
+upper bound on the number of \eqn{\theta}-directions \eqn{M};
+passing \code{nStack = Inf} (the default) selects the heap-allocated
+version, which imposes no compile-time bound at the cost of dynamic
+memory allocation.
+}
+
+\subsection{Events}{
+
+Events are described by a \code{data.frame} with columns:\tabular{ll}{
    Column \tab Description \cr
    \code{var} \tab Name of the affected variable \cr
-   \code{value} \tab Numeric value to apply at the event \cr
-   \code{method} \tab How the value is applied: \code{"replace"}, \code{"add"}, or \code{"multiply"} \cr
-   \code{time} \tab \emph{(optional)} Time point at which the event occurs \cr
+   \code{value} \tab Expression applied at the event \cr
+   \code{method} \tab One of \code{"replace"}, \code{"add"}, or \code{"multiply"} \cr
+   \code{time} \tab \emph{(optional)} Event time \cr
    \code{root} \tab \emph{(optional)} Root expression in terms of variables and \code{time} \cr
 }
 
 
-Each event must define either \code{time} or \code{root}.
-Root-triggered events fire when the \code{root} expression crosses zero.
+Each event must define exactly one of \code{time} or \code{root}. Root-triggered
+events fire when the root expression crosses zero.
 }
 
-\subsection{Root function (rootfunc)}{
+\subsection{Root function}{
 
-The \code{rootfunc} argument enables integration termination based on root-finding:
+The \code{rootfunc} argument enables integration termination via root
+finding:
 \itemize{
-\item \strong{\code{"equilibrate"}}: Stops integration when the system reaches steady state.
-The steady-state condition checks that all derivatives (including sensitivities
-when \code{deriv = TRUE} or \code{deriv2 = TRUE}) fall below the \code{roottol} tolerance.
-This is useful for equilibrating systems before further analysis.
-\item \strong{Character vector of expressions}: Similar to deSolve's \code{rootfunc}, you can
-specify one or more expressions (e.g., \code{"x - 0.5"} or \code{c("x - 0.5", "y - 1")}).
-Integration stops when any expression crosses zero. Variables, parameters, and
-\code{time} can be used in expressions.
+\item \code{"equilibrate"} stops integration when the system reaches steady
+state. The steady-state condition checks that all derivatives
+(including sensitivities when \code{deriv = TRUE}) fall below \code{roottol}.
+\item A character vector of expressions stops integration as soon as any
+expression crosses zero. Variables, parameters and \code{time} may be used.
 }
 }
 
-\subsection{Output}{
+\subsection{Output of the compiled solver}{
 
-The generated solver function (accessible via \code{.Call}) returns a named list:
-
-All output arrays are \strong{time-first}: the leading dimension indexes time.
+The generated solver returns a named list. Output arrays are
+time-first, with the leading dimension indexing time:
 \itemize{
-\item \code{deriv = FALSE}, \code{deriv2 = FALSE}
-Returns \code{list(time, variable)}
-\itemize{
-\item \code{time}: numeric vector of length \eqn{n_t}
-\item \code{variable}: numeric matrix of shape \eqn{(n_t,n_x)}, containing \eqn{x_i(t_j)}
-}
-\item \code{deriv = TRUE}, \code{deriv2 = FALSE}
-Returns \code{list(time, variable, sens1)}
-\itemize{
-\item \code{sens1}: numeric array of shape \eqn{(n_t,n_x,n_s)}, containing
-\eqn{\partial x_i(t_k)/\partial p_j}
-}
-\item \code{deriv = TRUE}, \code{deriv2 = TRUE}
-Returns \code{list(time, variable, sens1, sens2)}
-\itemize{
-\item \code{sens2}: numeric array of shape \eqn{(n_t,n_x,n_s,n_s)},
-containing \eqn{\partial^2 x_i(t_k)/\partial p_j\,\partial p_k}
-}
+\item With \code{deriv = FALSE}: \code{time} (length \eqn{n_t}) and \code{variable}
+(matrix \eqn{(n_t, n_x)} of \eqn{x_j(t_i)}).
+\item With \code{deriv = TRUE}: additionally \code{sens1}, an array of shape
+\eqn{(n_t, n_x, n_s)} containing
+\eqn{\partial x_j(t_i)/\partial p_k}.
+\item With \code{deriv2 = TRUE}: additionally \code{sens2}, an array of shape
+\eqn{(n_t, n_x, n_s, n_s)} containing
+\eqn{\partial^2 x_j(t_i)/\partial p_k \, \partial p_n}.
 }
 
-Here \eqn{n_t} is the number of output time points, \eqn{n_x} the number of state
-variables, and \eqn{n_s} the number of sensitivity parameters (non-fixed initials and parameters).
+Here \eqn{n_t} is the number of output time points, \eqn{n_x} the
+number of state variables, and \eqn{n_s} the number of sensitivity
+parameters (non-fixed initials and parameters).
 }
 }
 \examples{
@@ -325,6 +298,22 @@ head(res$sens1[, "B", ])   # Sensitivities of B(t) w.r.t. parameters
 res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }
 }
+\references{
+Shampine, L. F. and Reichelt, M. W. (1997). The MATLAB ODE Suite.
+\emph{SIAM Journal on Scientific Computing} \strong{18}(1), 1-22.
+
+Soederlind, G. (2003). Digital filters in adaptive time-stepping.
+\emph{ACM Transactions on Mathematical Software} \strong{29}(1), 1-26.
+
+Gustafsson, K., Lundh, M., and Soederlind, G. (1988). A PI stepsize
+control for the numerical solution of ordinary differential equations.
+\emph{BIT} \strong{28}(2), 270-287.
+
+Tsitouras, Ch. (2011). Runge-Kutta pairs of order 5(4) satisfying only
+the first column simplifying assumption. \emph{Computers and
+Mathematics with Applications} \strong{62}(2), 770-775.
+}
 \seealso{
-\code{\link[=solveODE]{solveODE()}} for a solver interface of compiled models
+\code{\link[=solveODE]{solveODE()}} for the solver interface;
+\code{\link[=CVODE]{CVODE()}} for the SUNDIALS-backed alternative.
 }

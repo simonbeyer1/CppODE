@@ -1,92 +1,106 @@
-#' Generate Algebraic Model Functions with Optional C++ Backend and Derivatives
+#' Compile Algebraic Functions with Optional Symbolic and AD Derivatives
 #'
 #' @description
-#' Generates functions for evaluating a system of algebraic expressions and,
-#' optionally, their Jacobian and Hessian matrices. Model evaluation can be
-#' performed either via generated and compiled C++ code for improved performance
-#' or via a pure R fallback.
+#' Generates functions for evaluating a system of algebraic expressions
+#' and, optionally, their Jacobian and Hessian. Model evaluation runs
+#' through generated and compiled C++ code for performance; a pure R
+#' fallback is also available when compilation is skipped.
+#'
+#' @details
+#' When \code{compile = TRUE}, the generated source is compiled by
+#' \code{\link{compile}()} and loaded. The returned helper functions
+#' accept an \code{attach.input} argument that passes through inputs
+#' that are not part of the model equations:
+#' \itemize{
+#'   \item Unknown variables (vectors of length matching the number of
+#'     observations) are appended to the outputs; their Jacobian
+#'     columns are zero and their Hessian slices are zero.
+#'   \item Unknown parameters (scalars) are appended (broadcast over
+#'     observations); their Jacobian is the identity (the parameter
+#'     differentiated against itself), and the Hessian is zero.
+#' }
+#' For the AD path (\code{jac_chain}) pass-through derivatives are
+#' pulled from the upstream seeds: extra-variable rows are taken from
+#' \code{dX[name, theta, ]} and extra-parameter rows from
+#' \code{dP[name, theta]}; symbols absent from both seeds contribute
+#' zero rows.
 #'
 #' @param eqns Named character vector or list of algebraic expressions.
 #'   Names define the output variables. If unnamed, default names
-#'   \code{f1}, \code{f2}, \ldots are assigned.
-#' @param variables Character vector of variable names supplied per observation.
-#'   Defaults to all symbols found in \code{eqns} not listed in \code{parameters}.
-#' @param parameters Character vector of parameter names (constant across observations).
+#'   \code{f1}, \code{f2}, \ldots are used.
+#' @param variables Character vector of variable names supplied per
+#'   observation. Defaults to all symbols found in \code{eqns} that are
+#'   not listed in \code{parameters}.
+#' @param parameters Character vector of parameter names (constant
+#'   across observations).
 #' @param fixed Optional character vector of symbols to treat as fixed
 #'   (excluded from derivative computation).
-#' @param modelname Optional base name for generated C++ symbols and files.
-#' @param outdir Directory for generated C++ source files. Defaults to \code{tempdir()}.
-#' @param compile Logical; if \code{TRUE}, compile and load generated C++ code.
+#' @param modelname Optional base name for generated C++ symbols and
+#'   files.
+#' @param outdir Directory for generated C++ source files. Defaults to
+#'   \code{tempdir()}.
+#' @param compile Logical; if \code{TRUE}, compile and load the
+#'   generated C++ code. Default \code{FALSE}.
 #' @param verbose Logical; if \code{TRUE}, print progress messages.
-#' @param convenient Logical; if \code{TRUE}, return wrappers accepting named arguments.
-#' @param deriv Logical; if \code{TRUE}, enable derivative computation
-#'   (Jacobian and/or AD-chained derivatives, controlled by \code{derivMode}).
-#' @param deriv2 Logical; if \code{TRUE}, enable Hessian computation (implies \code{deriv}).
-#'   Only the symbolic path produces a Hessian; if \code{derivMode = "ad"} and
-#'   \code{deriv2 = TRUE}, \code{derivMode} is promoted to \code{"both"}.
-#' @param derivMode One of \code{"symbolic"}, \code{"ad"}, \code{"both"}, \code{"none"}.
-#'   Controls which derivative entry points are generated when \code{deriv = TRUE}:
-#'   \itemize{
-#'     \item \code{"symbolic"} (default): classical symbolic Jacobian (and Hessian if
-#'       \code{deriv2}) via SymPy; exposed as \code{jac}/\code{hess}.
-#'     \item \code{"ad"}: forward-mode AD entry \code{jac_chain} that takes upstream
-#'       seeds \code{dX} (state sensitivities per obs) and \code{dP} (parameter
-#'       transform Jacobian) and returns value plus chain-ruled \code{dY/dtheta}
-#'       in one pass. Skips SymPy differentiation for this model.
-#'     \item \code{"both"}: emit all entries.
-#'     \item \code{"none"}: no derivatives (equivalent to \code{deriv = FALSE}).
+#'   Default \code{FALSE}.
+#' @param convenient Logical; if \code{TRUE} (default), return wrappers
+#'   that accept named arguments rather than the low-level
+#'   \code{(vars, params)} signature.
+#' @param deriv Logical; if \code{TRUE} (default), enable derivative
+#'   computation. When both \code{deriv} and \code{deriv2} are
+#'   \code{FALSE}, no derivative entry points are generated and
+#'   \code{derivMode} has no effect.
+#' @param deriv2 Logical; if \code{TRUE}, enable Hessian computation
+#'   (implies \code{deriv}). Hessians are only produced by the symbolic
+#'   path; if \code{derivMode != "symbolic"} and \code{deriv2 = TRUE},
+#'   \code{derivMode} is forced to \code{"symbolic"} with a warning.
+#'   Default \code{FALSE}.
+#' @param derivMode Character; one of \code{"dual"} (default),
+#'   \code{"fadbad"}, or \code{"symbolic"}. Selects how derivatives are
+#'   generated when \code{deriv = TRUE} or \code{deriv2 = TRUE}:
+#'   \describe{
+#'     \item{\code{"dual"}}{Forward-mode AD via the in-tree
+#'       \code{cppode::dual} backend (arena-allocated heap AD). Emits the
+#'       chain-ruled entry \code{jac_chain} that takes upstream seeds
+#'       \code{dX} (state sensitivities per observation) and \code{dP}
+#'       (parameter-transform Jacobian) and returns the value together
+#'       with \code{dY/dtheta} in one pass.}
+#'     \item{\code{"fadbad"}}{Same chain-ruled \code{jac_chain} entry,
+#'       implemented on top of the legacy FADBAD++ \code{F<double>}
+#'       backend.}
+#'     \item{\code{"symbolic"}}{Classical symbolic Jacobian (and
+#'       Hessian if \code{deriv2}) via SymPy; exposed as \code{jac} and
+#'       \code{hess}.}
 #'   }
 #'
 #' @return
-#' A list with components \code{func}, \code{jac}, \code{hess}, and \code{jac_chain}
-#' (NULL when not generated), carrying the following attributes:
-#' \code{equations} (original expressions),
-#' \code{variables} (variables),
-#' \code{parameters} (parameters),
-#' \code{fixed} (fixed symbols),
-#' \code{modelname} (C++ identifier),
-#' \code{srcfile} (source file),
-#' \code{jacobian.symb}, \code{hessian.symb} (symbolic derivatives).
+#' A list with components \code{func}, \code{jac}, \code{hess}, and
+#' \code{jac_chain} (\code{NULL} when not generated), with attributes
+#' \code{equations} (original expressions), \code{variables},
+#' \code{parameters}, \code{fixed}, \code{modelname} (C++ identifier),
+#' \code{srcfile} (path to the generated source file), and, when
+#' applicable, \code{jacobian.symb} and \code{hessian.symb} (symbolic
+#' derivatives).
 #'
-#' @details
-#' The function generates C++ code for efficient evaluation of algebraic
-#' expressions. When \code{compile = TRUE}, the code is compiled using
-#' \code{\link{compile}} and the shared library is loaded.
-#'
-#' The \code{attach.input} argument allows pass-through of additional inputs
-#' that are not part of the model equations:
-#' \itemize{
-#'   \item Unknown variables (vectors with length matching \code{n_obs}) are
-#'     appended to outputs. Their Jacobian columns are zero (no model
-#'     dependence). Their Hessian slices are zero.
-#'   \item Unknown parameters (scalar values) are appended to outputs
-#'     (broadcast across observations). Their Jacobian shows identity
-#'     (derivative of parameter w.r.t. itself is 1). Their Hessian is zero.
-#' }
-#' For the AD path (\code{jac_chain}), pass-through derivatives are pulled
-#' from the upstream seeds: extra-variable rows take their entry from
-#' \code{dX[name, theta, ]} (state passthrough), extra-parameter rows take
-#' \code{dP[name, theta]} broadcast across observations (parameter
-#' passthrough). Symbols absent from both seeds contribute zero rows.
-#'
-#' @seealso \code{\link{compile}} for compilation, \code{\link{derivSymb}}
-#'   for symbolic differentiation.
+#' @seealso \code{\link{compile}} for compilation;
+#'   \code{\link{derivSymb}} for symbolic differentiation.
 #'
 #' @export
 funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parameters = NULL,
                    fixed = NULL, modelname = NULL, outdir = tempdir(), compile = FALSE,
                    verbose = FALSE, convenient = TRUE, deriv = TRUE, deriv2 = FALSE,
-                   derivMode = c("symbolic", "ad", "both", "none")) {
+                   derivMode = c("dual", "fadbad", "symbolic")) {
 
   derivMode <- match.arg(derivMode)
   if (deriv2 && !deriv) { warning("deriv2 requires deriv. Setting deriv = TRUE."); deriv <- TRUE }
-  if (!deriv) derivMode <- "none"
-  if (deriv2 && derivMode == "ad") {
-    warning("deriv2 requires the symbolic path. Promoting derivMode to 'both'.")
-    derivMode <- "both"
+  if (deriv2 && derivMode != "symbolic") {
+    warning(sprintf("deriv2 = TRUE requires derivMode = 'symbolic' (Hessian only available via the symbolic path). Forcing derivMode from '%s' to 'symbolic'.", derivMode))
+    derivMode <- "symbolic"
   }
-  want_symbolic <- derivMode %in% c("symbolic", "both")
-  want_ad       <- derivMode %in% c("ad", "both")
+  emit_deriv    <- deriv || deriv2
+  want_symbolic <- emit_deriv && derivMode == "symbolic"
+  want_ad       <- emit_deriv && derivMode %in% c("dual", "fadbad")
+  ad_backend    <- if (want_ad) derivMode else NA_character_
 
   outnames <- names(eqns) %||% paste0("f", seq_along(eqns))
   if (!is.null(fixed)) { variables <- setdiff(variables, fixed); parameters <- union(parameters, fixed) }
@@ -156,6 +170,7 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
   codegen$generate_fun_cpp(exprs = setNames(as.list(eqns), outnames), variables = as.list(variables),
                            parameters = as.list(parameters), jacobian = toList(sym_jac), hessian = toHess(sym_hess),
                            ad = want_ad,
+                           ad_backend = if (want_ad) ad_backend else "fadbad",
                            modelname = modelname, outdir = normalizePath(outdir, "/", FALSE), version = as.character(utils::packageVersion("CppODE")))
 
   # --- Attach helpers ---
@@ -248,7 +263,7 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
     if (length(fixed_rt) && n_theta > 0) dP_mat[match(fixed_rt, parameters), ] <- 0
 
     funsym <- paste0(modelname, "_eval_ad")
-    if (!is.loaded(funsym)) stop("AD entry '", funsym, "' is not loaded. Did you compile with derivMode in {'ad','both'}?")
+    if (!is.loaded(funsym)) stop("AD entry '", funsym, "' is not loaded. Did you compile with derivMode in {'dual','fadbad'}?")
     out <- .C(funsym,
               x        = as.double(M),
               p        = as.double(p),

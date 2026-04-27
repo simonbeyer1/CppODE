@@ -217,22 +217,22 @@ _FADBAD_FN_PATTERN = re.compile(
     r'asinh|acosh|atanh|exp|log|sqrt|pow|abs|min|max)\b'
 )
 
-# Selected by each top-level generate_* call (see _set_ad_backend below).
-# Module-global because passing ad_backend through every internal helper
+# Selected by each top-level generate_* call (see _set_deriv_mode below).
+# Module-global because passing derivMode through every internal helper
 # would touch dozens of signatures; the module is invoked serially per
 # CppODE() compile via reticulate, so global state is safe here.
 _AD_PREFIX = "fadbad"
 
-def _set_ad_backend(ad_backend):
+def _set_deriv_mode(derivMode):
     """Set the AD-namespace prefix used by std:: -> {prefix}:: substitutions.
     Called at the start of every public generate_* function."""
     global _AD_PREFIX
-    if ad_backend == "dual":
+    if derivMode == "dual":
         _AD_PREFIX = "cppode"
-    elif ad_backend == "fadbad":
+    elif derivMode == "fadbad":
         _AD_PREFIX = "fadbad"
     else:
-        raise ValueError(f"unknown ad_backend: {ad_backend!r} (expected 'dual' or 'fadbad')")
+        raise ValueError(f"unknown derivMode: {derivMode!r} (expected 'dual' or 'fadbad')")
 
 # Precompiled whitespace collapse pattern
 _WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -382,9 +382,9 @@ def generate_ode_cpp(
     forcings_list=None,
     sparse=None,
     skip_jacobian=False,
-    ad_backend="fadbad",
+    derivMode="fadbad",
 ):
-    _set_ad_backend(ad_backend)
+    _set_deriv_mode(derivMode)
     """
     Generate C++ code for ODE system and Jacobian.
     
@@ -1392,9 +1392,9 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
 # Forcing initialization code generation
 # =====================================================================
 
-def generate_forcing_init_code(n_forcings, num_type="AD", ad_backend="fadbad"):
+def generate_forcing_init_code(n_forcings, num_type="AD", derivMode="fadbad"):
     """Generate C++ code to initialize PchipForcing objects from R raw data."""
-    _set_ad_backend(ad_backend)
+    _set_deriv_mode(derivMode)
     return [
         "",
         "  // --- Initialize forcings (PCHIP interpolation) ---",
@@ -1682,8 +1682,8 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
     return dg_dx_lines, dg_dt_lines, g_dot_dot_lines
 def generate_event_code(events_df, states_list, params_list, n_states,
                         num_type="AD", forcings_list=None, rhs_dict=None,
-                        ad_backend="fadbad"):
-    _set_ad_backend(ad_backend)
+                        derivMode="fadbad"):
+    _set_deriv_mode(derivMode)
     """
     Generate C++ initialization lines for fixed-time and root events.
 
@@ -1903,8 +1903,8 @@ def generate_event_code(events_df, states_list, params_list, n_states,
 
 def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
                            num_type="AD", forcings_list=None,
-                           ad_backend="fadbad"):
-    _set_ad_backend(ad_backend)
+                           derivMode="fadbad"):
+    _set_deriv_mode(derivMode)
     """
     Generate C++ code for root function based termination.
     

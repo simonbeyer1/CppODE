@@ -18,21 +18,12 @@
  3. On success: complete step, prepare next step, set eta
 
  Works for any multistepper instantiation — pure BDF (with optional
- NDF kappa), pure Adams, and MSODA (automatic switching) — and for
- both double and AD types.
-
- On Adams-mode soft PECE non-convergence in an MSODA instantiation,
- the controller treats the failure as a stiffness signal and switches
- the underlying stepper to the BDF/NDF family immediately, rather than
- retrying with a reduced h (which would never succeed on a stiff
- problem and would ultimately burn the MXNCF retry budget without
- ever reaching the LSODA on_step_accepted switch test).
+ NDF kappa) and pure Adams — and for both double and AD types.
 
  References:
  - Shampine & Reichelt, "The MATLAB ODE Suite",
    SIAM J. Sci. Comput. 18(1), 1997 (NDF kappa modification)
  - Hairer & Wanner, "Solving ODEs II", Ch. III
- - Petzold 1983 / Hindmarsh LSODA (mode switching heuristic)
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -52,51 +43,6 @@
 namespace cppode {
 
 // (scalar_value lives in cppode::ndf_detail, defined in cppode_multistepper.hpp)
-
-// ============================================================================
-//  SFINAE helper — detect whether the wrapped stepper is a switching
-//  multistepper instantiation.  Used by the ncf-failure path to treat
-//  soft PECE non-convergence as a stiffness signal.
-//
-//  We gate on the static `has_switching` member of the stepper, NOT on
-//  the mere existence of in_adams_mode() / switch_to_bdf_family().
-//  The multistepper template defines those methods for ALL
-//  instantiations; they are no-ops for non-switching ones.  A member-
-//  existence check would therefore succeed for pure Adams, the switch
-//  helper would return `true` after a no-op, the ncf loop would reset
-//  its counter, and pure Adams would spin forever on any soft non-
-//  convergence.  Gating on `has_switching` prevents this.
-// ============================================================================
-
-template<class S, class = void>
-struct stepper_has_switching_member : std::false_type {};
-
-template<class S>
-struct stepper_has_switching_member<S, std::void_t<
-  decltype(S::has_switching)>>
-  : std::integral_constant<bool, S::has_switching> {};
-
-template<class S>
-inline bool stepper_in_adams_mode(const S& st) {
-  if constexpr (stepper_has_switching_member<S>::value) {
-    return st.in_adams_mode();
-  } else {
-    (void)st;
-    return false;
-  }
-}
-
-template<class S>
-inline bool try_switch_stepper_to_bdf(S& st, int new_q) {
-  if constexpr (stepper_has_switching_member<S>::value) {
-    if (st.in_adams_mode()) {
-      st.switch_to_bdf_family(new_q);
-      return true;
-    }
-  }
-  (void)st; (void)new_q;
-  return false;
-}
 
 // ============================================================================
 //  multistepper_controller<Stepper>
@@ -361,47 +307,6 @@ public:
         ++ncf;
         m_stepper.set_etamax(1.0);   // prevent h increase after recovery
 
-        // ----------------------------------------------------------------
-        //  Adams-mode soft-fail → stiffness signal
-        //
-        //  When the wrapped stepper is a switching multistepper currently
-        //  in Adams mode, a non-converged PECE corrector is the LSODA
-        //  cheap stiffness indicator: the fixed-point iteration cannot
-        //  exist because |h * lambda * l[1]| >= 1 for the dominant
-        //  eigenvalue.  Hard divergence (del > 2*delp) is only one of
-        //  several manifestations — soft non-convergence within max_iter
-        //  is just as informative.  Rather than retry with a smaller h
-        //  (which on stiff problems just produces another non-convergence
-        //  and ultimately MXNCF → fail without ever calling
-        //  on_step_accepted, so the LSODA switch test is never reached),
-        //  switch the stepper to the BDF/NDF family right here and retry
-        //  the same step with the stiff corrector.
-        //
-        //  The SFINAE helpers below collapse to no-ops for non-switching
-        //  instantiations (pure bdf / adams), so this code is free on
-        //  those code paths.
-        // ----------------------------------------------------------------
-        if (stepper_in_adams_mode(m_stepper)) {
-          const int new_q = std::min(m_stepper.current_order(), 5);
-          if (try_switch_stepper_to_bdf(m_stepper, new_q)) {
-            // Force a Jacobian setup on the next step (the BDF corrector
-            // needs a valid LU); reset the ncf counter so the freshly
-            // switched stepper gets a clean slate of MXNCF retries.
-            m_stepper.invalidate_lu();
-            // Long cooldown: PECE non-convergence is a hard stiffness
-            // signal.  The default ICOUNT_RESET=20 is too short and
-            // causes BDF↔Adams flip-flop on problems like VdP where
-            // BDF's error test makes Adams LOOK efficient at q=2 but
-            // Adams can't handle the step size for stability.
-            m_stepper.set_icount(100);
-            ncf = 0;
-            nflag = NFlag::prev_conv_fail;
-            reset_filter_history();
-            ++m_n_rejected;
-            continue;   // retry: now in BDF/NDF mode
-          }
-        }
-
         // Max convergence failures → unrecoverable
         if (ncf >= ndf_constants::MXNCF) {
           ++m_n_rejected;
@@ -438,16 +343,6 @@ public:
 
         // Snapshot Nordsieck for dense output BEFORE order/stepsize changes
         m_stepper.prepare_dense_output();
-
-        // Mode-switching hook — only present for ndf++/bdf++ instantiations.
-        // The if-constexpr ensures the call is completely absent from the
-        // generated code for pure NDF, pure BDF, and pure Adams steppers.
-        // Must run after complete_step so the switching logic sees the
-        // updated zn[] / m_q / m_h, but before prepare_next_step so a
-        // mode switch can influence the next-step order/h decision.
-        if constexpr (std::decay_t<decltype(m_stepper)>::has_switching) {
-          m_stepper.on_step_accepted(system, t_new);
-        }
 
         // --- Order/step-size selection ---
         prepare_next_step(dsm);
@@ -886,7 +781,6 @@ public:
     switch (stepper_type::method) {
       case M::bdf:    return "CppODE BDF";
       case M::adams:  return "CppODE Adams";
-      case M::msoda:  return "CppODE MSODA";
     }
     return "CppODE multistep";
   }
