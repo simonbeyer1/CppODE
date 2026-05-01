@@ -21,40 +21,37 @@ CVODE(
 )
 }
 \arguments{
-\item{rhs}{Named character vector of ODE right-hand sides. Names
-correspond to state variables.}
+\item{rhs}{Named character vector of ODE right-hand sides. Names are
+the state variables.}
 
-\item{events}{Optional \code{data.frame} of event specifications. See
-Details. Default \code{NULL}.}
+\item{events}{Optional event \code{data.frame}. See Details.}
 
-\item{rootfunc}{Optional root function specification. Either
-\code{"equilibrate"} for steady-state detection, or a character vector of
-expressions that trigger termination when crossing zero. Default
-\code{NULL}.}
+\item{rootfunc}{Optional root specification: \code{"equilibrate"}, or a
+character vector of expressions whose zero crossings terminate
+integration.}
 
 \item{fixed}{Optional character vector of state or parameter names
-treated as fixed (excluded from sensitivities at compile time).}
+excluded from sensitivities at compile time.}
 
 \item{forcings}{Optional character vector of forcing-function names
 that appear in \code{rhs}.}
 
-\item{compile}{Logical. If \code{TRUE} (default), compile and load the
-generated C++ code.}
+\item{compile}{Logical. Compile and load the generated C++ code.}
 
 \item{modelname}{Optional base name for the generated source file and
-the corresponding C/C++ symbols (e.g. \verb{solve_<modelname>}). If
-\code{NULL}, a random identifier is used.}
+compiled symbols (\verb{solve_<modelname>}). A random identifier is used
+when \code{NULL}.}
 
-\item{outdir}{Directory in which the generated C++ source file is
-written. Defaults to \code{tempdir()}.}
+\item{outdir}{Directory for the generated C++ source. Default
+\code{tempdir()}.}
 
-\item{deriv}{Logical. If \code{TRUE} (default), compute first-order
-sensitivities via dual numbers.}
+\item{deriv}{Logical. Compute first-order sensitivities via dual
+numbers.}
 
-\item{sparse}{Logical or \code{NULL}. Controls sparse LU factorization.
-\code{NULL} (default) auto-selects based on Jacobian sparsity; \code{TRUE}
-forces sparse LU; \code{FALSE} forces dense LU. Sparse LU requires the
-KLU linear solver to have been found at install time.}
+\item{sparse}{Logical or \code{NULL}. \code{NULL} auto-selects sparse vs. dense
+LU from the Jacobian sparsity pattern; \code{TRUE} forces sparse, \code{FALSE}
+forces dense. Sparse LU requires the KLU linear solver to have been
+found at install time.}
 
 \item{method}{One of \code{"bdf"} (default) or \code{"adams"}.}
 
@@ -64,7 +61,7 @@ trace \code{data.frame} is attached as \verb{$trace} to the result of
 of that function). Not supported together with \code{events} or
 \code{rootfunc}. Default \code{FALSE}.}
 
-\item{verbose}{Logical. If \code{TRUE}, print progress messages.}
+\item{verbose}{Logical. Print progress messages.}
 }
 \value{
 The compiled model name (character string), with the same attribute

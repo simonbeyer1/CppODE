@@ -16,10 +16,7 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
 
 This vignette is the minimal entry point into **CppODE**: a 2-state,
 non-stiff system with no events, focused on how to define a model,
-compile it, and read out **forward-mode AD parameter sensitivities**
-(FADBAD++). For a 15-state stiff example with event-driven ligand
-dosing and sensitivity propagation across event boundaries, see
-`vignette("CppODE_CascadeSignaling", package = "CppODE")`.
+compile it, and read out **forward-mode AD parameter sensitivities**.
 
 As a simple example from theoretical ecology, we use the classic
 **Lotka–Volterra** predator–prey model:
@@ -167,18 +164,3 @@ ggplot(df_alpha, aes(x = time, y = value, colour = Sensitivity)) +
   theme(legend.position = "top")
 ```
 
-## Summary
-
-- **CppODE** generates and compiles C++ code for the ODE system at runtime.
-- Sensitivities are computed automatically via forward-mode AD (FADBAD++) —
-  no manual derivation of sensitivity equations required.
-- Results are numerically exact (machine precision, no finite differences).
-
-For a stiff 15-state MAPK signaling cascade with a time-triggered
-ligand bolus and sensitivities that survive the event jump via the
-analytical saltation matrix, see
-`vignette("CppODE_CascadeSignaling", package = "CppODE")`.
-
-```{r session}
-sessionInfo()
-```
