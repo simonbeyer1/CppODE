@@ -10,3 +10,4 @@
 ^README\.html$
 ^\.positai$
 ^\.claude$
+^CLAUDE\.md$

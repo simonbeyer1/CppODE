@@ -30,7 +30,8 @@ Suggests:
     testthat,
     knitr,
     rmarkdown,
+    R.rsp,
     ggplot2,
     tidyr,
     dplyr
-VignetteBuilder: knitr
+VignetteBuilder: knitr, R.rsp

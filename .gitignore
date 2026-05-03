@@ -37,6 +37,16 @@ doc/
 Meta/
 vignettes/*.html
 vignettes/*.R
+
+# LaTeX intermediates from dev/render-methods.R (Methods source bundle)
+dev/methods/*.tex
+dev/methods/*.aux
+dev/methods/*.log
+dev/methods/*.out
+dev/methods/*.toc
+dev/methods/*.bbl
+dev/methods/*.blg
+dev/methods/*.synctex.gz
 /doc/
 /Meta/
 
