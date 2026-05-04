@@ -7,9 +7,10 @@ Description: Generates, compiles, and runs 'C++' solvers for systems of ordinary
     differential equations. Includes a variable-order BDF integrator with
     LAPACK/KLU linear algebra and a Rosenbrock4 method derived from
     'Boost.Numeric.Odeint'. First- and second-order parameter sensitivities are
-    computed automatically via forward-mode automatic differentiation using the
-    'FADBAD++' library. Supports time-based and root-triggered events, symbolic
-    Jacobian generation, and sparse matrix factorization for large systems.
+    computed automatically via forward-mode automatic differentiation using
+    in-tree dual numbers. Supports time-based and root-triggered events,
+    symbolic Jacobian generation, and sparse matrix factorization for large
+    systems.
 Language: en-US
 License: MIT + file LICENSE
 SystemRequirements: C++17; Python (>= 3.8) with SymPy; optional system

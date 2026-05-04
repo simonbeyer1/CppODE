@@ -295,7 +295,7 @@ CPPODE_DEFINE_ET_UNARY_OP(Asinh, asinh(xv),  T(1) / sqrt(xv * xv + T(1)));
 CPPODE_DEFINE_ET_UNARY_OP(Acosh, acosh(xv),  T(1) / sqrt(xv * xv - T(1)));
 CPPODE_DEFINE_ET_UNARY_OP(Atanh, atanh(xv),  T(1) / (T(1) - xv * xv));
 
-// abs: derivative sign(x); 0 at x=0 (FADBAD parity, cppode_dual_math.hpp:371).
+// abs: derivative sign(x); 0 at x=0 (cppode_dual_math.hpp:371).
 struct AbsOp {
   template<class T> static void compute(const T& xv, T& y, T& fp) {
     using std::abs;

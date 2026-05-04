@@ -21,10 +21,13 @@
 #include <cmath>
 #include <type_traits>
 
+#include <cstring>
+
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_odeint_compat.hpp>
 #include <cppode/cppode_ad_lu.hpp>       // for ad_lu::scalar_type_t
 #include <cppode/cppode_dual_slab.hpp>
+#include <cppode/cppode_stage_matrix.hpp>
 #include <cppode/cppode_profiler.hpp>
 
 namespace cppode {
@@ -99,19 +102,27 @@ public:
     m_n_sens = n_sens;
     if constexpr (detail::is_dynamic_dual<value_type>::value) {
       if (n_sens == 0) return;
-      auto prime = [n_sens](auto& wrapped, auto& slab) {
-        if (!wrapped.m_v.empty())
-          slab.prime(wrapped.m_v,
-                     static_cast<unsigned>(wrapped.m_v.size()), n_sens);
-      };
-      prime(m_k1,   m_k1_slab);
-      prime(m_k2,   m_k2_slab);
-      prime(m_k3,   m_k3_slab);
-      prime(m_k4,   m_k4_slab);
-      prime(m_k5,   m_k5_slab);
-      prime(m_k6,   m_k6_slab);
-      prime(m_k7,   m_k7_slab);
-      prime(m_xtmp, m_xtmp_slab);
+
+      // Bind the seven k stages into one contiguous tangent block via
+      // m_K. This lets the FSAL recycle (copy stage 7 -> stage 1
+      // between steps) be a flat std::memcpy on the column-7 slice
+      // instead of a per-element copy + slab pointer swap.
+      const std::size_t n_k = m_k1.m_v.size();
+      bool ks_ready = (n_k > 0)
+                   && (m_k2.m_v.size() == n_k) && (m_k3.m_v.size() == n_k)
+                   && (m_k4.m_v.size() == n_k) && (m_k5.m_v.size() == n_k)
+                   && (m_k6.m_v.size() == n_k) && (m_k7.m_v.size() == n_k);
+      if (ks_ready) {
+        std::array<std::vector<value_type>*, 7> facades{
+          &m_k1.m_v, &m_k2.m_v, &m_k3.m_v, &m_k4.m_v,
+          &m_k5.m_v, &m_k6.m_v, &m_k7.m_v
+        };
+        m_K.prime(facades, static_cast<unsigned>(n_k), n_sens);
+      }
+
+      if (!m_xtmp.m_v.empty())
+        m_xtmp_slab.prime(m_xtmp.m_v,
+                          static_cast<unsigned>(m_xtmp.m_v.size()), n_sens);
     }
   }
 
@@ -142,9 +153,32 @@ public:
     // --- Resize scratch vectors ---
     resize_if_needed(n);
 
-    // --- Stage 1 (FSAL: reuse k7 from previous accepted step) ---
+    // --- Stage 1 (FSAL: reuse k7 from the previous accepted step) ---
+    //
+    // With the unified stage matrix m_K, m_k1.m_v[i].tan_ always points
+    // to physical column 0 of the tangent buffer, and m_k7's tan_ to
+    // column 6 — these bindings stay stable across steps. To reuse the
+    // previous step's k7 as the new step's k1 we copy m_k7 -> m_k1: a
+    // per-element value copy plus a flat memcpy of the column-6 tangent
+    // slice into column 0. After this copy m_k1 holds f(x, t) and the
+    // rest of the step assembly reads m_k1 unchanged.
     if (m_fsal_valid && m_k1.m_v.size() == n) {
-      // k1 already holds f(x, t) from the previous step's k7
+      if constexpr (detail::is_dynamic_dual<value_type>::value) {
+        // Per-element value copy preserves the dual's tan_ binding to
+        // physical column 0 (operator=(const dual&) zeros tangents and
+        // copies values, but here we keep the slab-bound form intact —
+        // see dual<T,N>::operator=(const dual&)).
+        for (size_t i = 0; i < n; ++i) m_k1.m_v[i].x() = m_k7.m_v[i].x();
+        using inner = typename value_type::value_type;
+        const std::size_t per = m_K.slot_stride();
+        if (per > 0) {
+          std::memcpy(m_K.tangent_block_data() + 0 * per,
+                      m_K.tangent_block_data() + 6 * per,
+                      per * sizeof(inner));
+        }
+      } else {
+        for (size_t i = 0; i < n; ++i) m_k1.m_v[i] = m_k7.m_v[i];
+      }
     } else {
       deriv_func(x, m_k1.m_v, t);
       ++m_n_fevals;
@@ -162,41 +196,41 @@ public:
     // --- Stage 2:  xtmp = x + h*a21 * k1 ---
     vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
     vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab,
-                       h_s * a21, m_k1.m_v, m_k1_slab);
+                       h_s * a21, m_k1.m_v, m_K.slab(0));
     deriv_func(m_xtmp.m_v, m_k2.m_v, t + c2 * h);
     ++m_n_fevals;
 
     // --- Stage 3:  xtmp = x + h*(a31*k1 + a32*k2) ---
     vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a31, m_k1.m_v, m_k1_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a32, m_k2.m_v, m_k2_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a31, m_k1.m_v, m_K.slab(0));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a32, m_k2.m_v, m_K.slab(1));
     deriv_func(m_xtmp.m_v, m_k3.m_v, t + c3 * h);
     ++m_n_fevals;
 
     // --- Stage 4 ---
     vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a41, m_k1.m_v, m_k1_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a42, m_k2.m_v, m_k2_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a43, m_k3.m_v, m_k3_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a41, m_k1.m_v, m_K.slab(0));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a42, m_k2.m_v, m_K.slab(1));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a43, m_k3.m_v, m_K.slab(2));
     deriv_func(m_xtmp.m_v, m_k4.m_v, t + c4 * h);
     ++m_n_fevals;
 
     // --- Stage 5 ---
     vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a51, m_k1.m_v, m_k1_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a52, m_k2.m_v, m_k2_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a53, m_k3.m_v, m_k3_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a54, m_k4.m_v, m_k4_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a51, m_k1.m_v, m_K.slab(0));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a52, m_k2.m_v, m_K.slab(1));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a53, m_k3.m_v, m_K.slab(2));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a54, m_k4.m_v, m_K.slab(3));
     deriv_func(m_xtmp.m_v, m_k5.m_v, t + c5 * h);
     ++m_n_fevals;
 
     // --- Stage 6 ---
     vec_copy_with_slab(m_xtmp.m_v, m_xtmp_slab, x, m_x_in_unslabbed);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a61, m_k1.m_v, m_k1_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a62, m_k2.m_v, m_k2_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a63, m_k3.m_v, m_k3_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a64, m_k4.m_v, m_k4_slab);
-    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a65, m_k5.m_v, m_k5_slab);
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a61, m_k1.m_v, m_K.slab(0));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a62, m_k2.m_v, m_K.slab(1));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a63, m_k3.m_v, m_K.slab(2));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a64, m_k4.m_v, m_K.slab(3));
+    vec_axpy_with_slab(m_xtmp.m_v, m_xtmp_slab, h_s * a65, m_k5.m_v, m_K.slab(4));
     deriv_func(m_xtmp.m_v, m_k6.m_v, t + c6 * h);
     ++m_n_fevals;
 
@@ -240,26 +274,20 @@ public:
 
   void prepare_dense_output()
   {
-    // After an accepted step, mark FSAL as valid:
-    // k7 from this step becomes k1 for the next step.
-    // We swap k7 → k1 so the next do_step picks it up.
+    // After an accepted step, mark FSAL as valid. With the unified
+    // stage matrix the FSAL recycle (k7 -> next step's k1) is handled
+    // by an explicit memcpy at the start of the next do_step rather
+    // than by a vector/slab swap here, so prepare_dense_output is just
+    // a flag flip.
     //
-    // For the slab-aware heap path we must swap the slabs alongside the
-    // vectors. The dual elements keep their tan_ pointers under std::swap,
-    // so post-vector-swap m_k1.m_v[i].tan_ still points into m_k7_slab's
-    // storage. By also swapping the slabs themselves (which transfers the
-    // backing std::vector buffer pointer), m_k1_slab's storage now sits
-    // exactly where the swapped duals' tan_ pointers expect it — keeping
-    // vec_*_with_slab BLAS paths reading the correct memory.
-    std::swap(m_k1.m_v, m_k7.m_v);
-    if constexpr (detail::is_dynamic_dual<value_type>::value) {
-      std::swap(m_k1_slab, m_k7_slab);
-    }
-    m_fsal_valid = true;
-
+    // Convention used by calc_state below:
+    //   m_k1 = f(x_old, t_old)   (= old k1, set at start of just-accepted step)
+    //   m_k7 = f(x_new, t_new)   (= old k7, set at end of just-accepted step)
+    //
     // Dense output coefficients are computed lazily in calc_state
     // from the stored k1..k7 stages.  The stages must not be
     // overwritten until the next do_step call.
+    m_fsal_valid = true;
   }
 
   template<class TimeArg, class StateOut>
@@ -268,10 +296,7 @@ public:
       const state_type& x_old, TimeArg t_old,
       const state_type& x_new, TimeArg t_new)
   {
-    // Note: after prepare_dense_output, k1 and k7 have been swapped.
-    // So m_k1 holds the OLD k7 (= f(x_new, t_new)) and m_k7 holds
-    // the old k1 (= f(x_old, t_old)).  For the interpolant we need
-    // f_old = old k1 = m_k7  and  f_new = old k7 = m_k1.
+    // m_k1 holds f(x_old, t_old); m_k7 holds f(x_new, t_new).
 
     const size_t n = x_old.size();
     // Use TimeArg (not time_type) so AD derivative components propagate.
@@ -279,8 +304,6 @@ public:
     const TimeArg s = (t - t_old) / h;   // theta in [0, 1]
 
     // Hermite cubic interpolation using endpoint values and derivatives.
-    // After prepare_dense_output(), m_k7 = old k1 = f(x_old, t_old)
-    // and m_k1 = old k7 = f(x_new, t_new).
 
     const TimeArg s1 = TimeArg(1) - s;
     const TimeArg s2 = s * s;
@@ -292,8 +315,8 @@ public:
       //   H10 = s(1-s)^2         = s - 2s^2 + s^3
       //   H01 = s^2(3 - 2s)      = 3s^2 - 2s^3
       //   H11 = s^2(s - 1)       = s^3 - s^2
-      value_type f_old = m_k7.m_v[i];   // after swap: old k1
-      value_type f_new = m_k1.m_v[i];   // after swap: old k7
+      value_type f_old = m_k1.m_v[i];   // f(x_old, t_old) = step-start k1
+      value_type f_new = m_k7.m_v[i];   // f(x_new, t_new) = step-end k7
 
       x[i] = x_old[i] * (s1_2 * (TimeArg(1) + TimeArg(2) * s))
            + x_new[i] * (s2 * (TimeArg(3) - TimeArg(2) * s))
@@ -381,10 +404,11 @@ private:
   wrapped_deriv_type m_k1, m_k2, m_k3, m_k4, m_k5, m_k6, m_k7;
   wrapped_deriv_type m_xtmp;   // scratch for stage evaluation
 
-  // SoA tangent slabs for the dynamic-dual heap path.
-  detail::tangent_slab<value_type> m_k1_slab, m_k2_slab, m_k3_slab,
-                                   m_k4_slab, m_k5_slab, m_k6_slab,
-                                   m_k7_slab;
+  // Unified [(7) × n × n_cols] tangent block backing all 7 stages.
+  // Each m_k*.m_v[i].tan_ is bound into the matching column via
+  // prime_external() inside m_K.prime(); per-stage slab views are
+  // accessed as m_K.slab(j) wherever vec_*_with_slab needs them.
+  detail::stage_matrix<value_type, 7> m_K;
   detail::tangent_slab<value_type> m_xtmp_slab;
   // Permanently-empty stub for the externally-owned input state x (controller
   // owns it; it is not slab-bound here). vec_*_with_slab sees primed=false

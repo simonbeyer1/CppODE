@@ -23,9 +23,10 @@ This module provides entry points for generating C++ code:
 
     SFINAE dispatch at compile time:
       - double:  plain event action, no saltation needed
-      - F<double> (AD):  analytical saltation, correct first-order sensitivities
-      - F<F<double>> (AD2): analytical saltation, correct second-order via
-        FADBAD's quotient rule on dt* = -g / g_dot
+      - cppode::dual<double, N> (AD):  analytical saltation, correct first-order
+        sensitivities
+      - cppode::dual2nd<double, N> (AD2): analytical saltation, correct
+        second-order via the dual quotient rule on dt* = -g / g_dot
 
 - generate_rootfunc_code(...)
     Generates C++ code for root function based termination.
@@ -61,7 +62,7 @@ def _get_safe_parse_dict():
     Explicitly overrides SymPy singletons (S, I, N, O, Q, C) that would
     otherwise shadow user symbols with the same name.
     exp10/exp2 are mapped to exp(x*log(10/2)) so that AD codegen
-    never emits pow(10, x), which can be problematic with FADBAD++ types.
+    never emits pow(10, x), which can be problematic with AD types.
     """
     return {
         # Override problematic SymPy singletons
@@ -209,30 +210,15 @@ _MATH_MACRO_PATTERN = re.compile(
     "|".join(re.escape(k) for k in sorted(_MATH_MACRO_MAP.keys(), key=len, reverse=True))
 )
 
-# Precompiled regex for std:: -> {prefix}:: replacement (single-pass).
-# {prefix} is "fadbad" (legacy backend) or "cppode" (dual backend), selected
-# per generate_* call via the module-level _AD_PREFIX variable.
-_FADBAD_FN_PATTERN = re.compile(
+# Precompiled regex for std:: -> cppode:: math-function replacement
+# (single-pass). The cppode namespace provides AD-aware overloads for the
+# in-tree dual / dual2nd types via cppode_dual_math.hpp.
+_AD_FN_PATTERN = re.compile(
     r'\bstd::(sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|'
     r'asinh|acosh|atanh|exp|log|sqrt|pow|abs|min|max)\b'
 )
 
-# Selected by each top-level generate_* call (see _set_deriv_mode below).
-# Module-global because passing derivMode through every internal helper
-# would touch dozens of signatures; the module is invoked serially per
-# CppODE() compile via reticulate, so global state is safe here.
-_AD_PREFIX = "fadbad"
-
-def _set_deriv_mode(derivMode):
-    """Set the AD-namespace prefix used by std:: -> {prefix}:: substitutions.
-    Called at the start of every public generate_* function."""
-    global _AD_PREFIX
-    if derivMode == "dual":
-        _AD_PREFIX = "cppode"
-    elif derivMode == "fadbad":
-        _AD_PREFIX = "fadbad"
-    else:
-        raise ValueError(f"unknown derivMode: {derivMode!r} (expected 'dual' or 'fadbad')")
+_AD_PREFIX = "cppode"
 
 # Precompiled whitespace collapse pattern
 _WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -242,12 +228,12 @@ _WHITESPACE_PATTERN = re.compile(r"\s+")
 # nested parentheses (up to 2 levels) or simple identifiers.
 def _optimize_pow2(cpp_str):
     """Replace std::pow(expr, 2.0) with (expr)*(expr) for performance.
-    Also handles fadbad::pow for AD types.
+    Also handles cppode::pow for AD types.
 
     Uses parenthesis-counting instead of regex to avoid catastrophic
     backtracking on deeply nested expressions.
     """
-    for prefix in ("std::pow(", "fadbad::pow(", "cppode::pow("):
+    for prefix in ("std::pow(", "cppode::pow("):
         result = []
         i = 0
         plen = len(prefix)
@@ -315,7 +301,7 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
     
     Optimizations over the naive approach:
     - Reusable CXX17CodePrinter instance (avoids per-call printer setup)
-    - Precompiled single-pass regex for std:: -> fadbad:: replacement
+    - Precompiled single-pass regex for std:: -> cppode:: math replacement
     - Precompiled single-pass regex for math macro replacement
     - Precompiled whitespace collapse pattern
     """
@@ -355,7 +341,7 @@ def _to_cpp(expr, states, params, n_states, num_type, forcings=None, use_initial
     
     # Single-pass std:: -> {prefix}:: replacement for AD types (precompiled regex)
     if num_type in ("AD", "AD2"):
-        cpp_code = _FADBAD_FN_PATTERN.sub(lambda m: f'{_AD_PREFIX}::{m.group(1)}', cpp_code)
+        cpp_code = _AD_FN_PATTERN.sub(lambda m: f'{_AD_PREFIX}::{m.group(1)}', cpp_code)
     
     # Single-pass symbol replacement (cached regex)
     replacer = _get_replacer(
@@ -382,9 +368,7 @@ def generate_ode_cpp(
     forcings_list=None,
     sparse=None,
     skip_jacobian=False,
-    derivMode="fadbad",
 ):
-    _set_deriv_mode(derivMode)
     """
     Generate C++ code for ODE system and Jacobian.
     
@@ -1237,7 +1221,7 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
         cpp = printer.doprint(sympy_expr).replace("\n", " ")
         cpp = _MATH_MACRO_PATTERN.sub(lambda m: _MATH_MACRO_MAP[m.group(0)], cpp)
         if num_type in ("AD", "AD2"):
-            cpp = _FADBAD_FN_PATTERN.sub(lambda m: f'{_AD_PREFIX}::{m.group(1)}', cpp)
+            cpp = _AD_FN_PATTERN.sub(lambda m: f'{_AD_PREFIX}::{m.group(1)}', cpp)
         return cpp
 
     template_cpp = {}  # canonical -> {rhs_cpp, jac_cpp: {j: str}, time_deriv_cpp}
@@ -1392,9 +1376,8 @@ def _try_template_dedup(odes_list, states_list, params_list, n_states, num_type,
 # Forcing initialization code generation
 # =====================================================================
 
-def generate_forcing_init_code(n_forcings, num_type="AD", derivMode="fadbad"):
+def generate_forcing_init_code(n_forcings, num_type="AD"):
     """Generate C++ code to initialize PchipForcing objects from R raw data."""
-    _set_deriv_mode(derivMode)
     return [
         "",
         "  // --- Initialize forcings (PCHIP interpolation) ---",
@@ -1681,9 +1664,7 @@ def _generate_root_gradient_lambdas(root_expr, states_list, params_list,
 
     return dg_dx_lines, dg_dt_lines, g_dot_dot_lines
 def generate_event_code(events_df, states_list, params_list, n_states,
-                        num_type="AD", forcings_list=None, rhs_dict=None,
-                        derivMode="fadbad"):
-    _set_deriv_mode(derivMode)
+                        num_type="AD", forcings_list=None, rhs_dict=None):
     """
     Generate C++ initialization lines for fixed-time and root events.
 
@@ -1902,9 +1883,7 @@ def generate_event_code(events_df, states_list, params_list, n_states,
 # =====================================================================
 
 def generate_rootfunc_code(rootfunc, states_list, params_list, n_states,
-                           num_type="AD", forcings_list=None,
-                           derivMode="fadbad"):
-    _set_deriv_mode(derivMode)
+                           num_type="AD", forcings_list=None):
     """
     Generate C++ code for root function based termination.
     

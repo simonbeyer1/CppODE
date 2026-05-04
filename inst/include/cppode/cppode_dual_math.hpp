@@ -8,7 +8,7 @@
  Convention:
  - Result tangent for unary y = f(x):    y.tan[i] = f'(x.val) * x.tan[i]
  - Result tangent for binary y = f(a,b): y.tan[i] = f_a * a.tan[i] + f_b * b.tan[i]
- - Comparisons fall back to .x() (FADBAD-compatible).
+ - Comparisons fall back to .x().
 
  Copyright (C) 2026 Simon Beyer
  */
@@ -386,7 +386,7 @@ CPPODE_DEFINE_UNARY(atanh, atanh(xv), T(1) / (T(1) - xv * xv))
 #undef CPPODE_DEFINE_UNARY
 
 // =============================================================================
-// abs: piecewise linear, derivative sign(x); at x=0 we return 0 (FADBAD parity)
+// abs: piecewise linear, derivative sign(x); at x=0 we return 0
 // =============================================================================
 template<class T, unsigned N, CPPODE_EAGER_GATE(T, N)>
 inline dual<T, N> abs(const dual<T, N>& a) {
@@ -497,7 +497,7 @@ inline dual<T, N> clamp(const dual<T, N>& a, const L& lo, const H& hi) {
 }
 
 // =============================================================================
-// Comparisons (always on .x() — FADBAD parity)
+// Comparisons (always on .x())
 // =============================================================================
 template<class T, unsigned N>
 inline bool operator==(const dual<T, N>& a, const dual<T, N>& b) { return a.x() == b.x(); }
@@ -548,6 +548,39 @@ inline bool operator>=(const dual<T, N>& a, const U& b) { return a.x() >= static
 template<class T, unsigned N, class U,
          std::enable_if_t<std::is_arithmetic_v<U>, int> = 0>
 inline bool operator>=(const U& a, const dual<T, N>& b) { return static_cast<T>(a) >= b.x(); }
+
+// =============================================================================
+// max_abs_all_levels(v) — recursive |.| sweep over a value plus all of its
+// tangent slots. For a plain double this is just |v|; for cppode::dual<T,N>
+// it walks into .x() and .d(j); for nested dual<dual<...>,N> the recursion
+// happens via the inner dual<T,N> overload, so the sweep covers value +
+// 1st-order tangents + 2nd-order tangents.
+// =============================================================================
+
+template<class T>
+inline std::enable_if_t<std::is_arithmetic_v<T>, double>
+max_abs_all_levels(const T& v) { return std::abs(static_cast<double>(v)); }
+
+template<class T, unsigned N>
+inline double max_abs_all_levels(const dual<T, N>& v) {
+  auto& vm = const_cast<dual<T, N>&>(v);
+  double m = max_abs_all_levels(vm.x());
+  unsigned nd = vm.size();
+  for (unsigned i = 0; i < nd; ++i)
+    m = std::max(m, max_abs_all_levels(vm.d(i)));
+  return m;
+}
+
+// max_abs_all_levels_vec(v) — vector wrapper. Used by integrate_times to
+// evaluate the equilibrate stop condition across both states and all AD
+// levels of dxdt.
+template<class State>
+inline double max_abs_all_levels_vec(const State& v) {
+  double m = 0.0;
+  for (std::size_t i = 0; i < v.size(); ++i)
+    m = std::max(m, max_abs_all_levels(v[i]));
+  return m;
+}
 
 } // namespace cppode
 

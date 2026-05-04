@@ -16,7 +16,6 @@ CppODE(
   deriv = TRUE,
   deriv2 = FALSE,
   nStack = Inf,
-  derivMode = c("dual", "fadbad"),
   includeTimeZero = TRUE,
   useDenseOutput = TRUE,
   sparse = NULL,
@@ -66,9 +65,6 @@ case. A positive integer \code{K} fixes the width to \code{K} at compile time
 (stack-allocated); \code{solveODE()} then accepts \code{sens1ini} with up to
 \code{K} columns. \code{NULL} uses width \code{length(c(variables, parameters)) - length(fixed)}. Requires \code{deriv = TRUE}.}
 
-\item{derivMode}{Forward-AD backend: \code{"dual"} (default, in-tree) or
-\code{"fadbad"} (legacy FADBAD++).}
-
 \item{includeTimeZero}{Logical. Ensure that time \code{0} is included among
 the integration times.}
 
@@ -98,7 +94,7 @@ The compiled model name (character) carrying the attributes
 used by \code{\link[=solveODE]{solveODE()}}: \code{equations}, \code{srcfile}, \code{variables},
 \code{parameters}, \code{forcings}, \code{events}, \code{rootfunc}, \code{fixed}, \code{jacobian}
 (with components \code{f.x} and \code{f.time}), \code{deriv}, \code{deriv2}, \code{nStack},
-\code{derivMode}, \code{sparse}, \code{method}, \code{useNDF}, \code{dimNames}, \code{compileArgs}.
+\code{sparse}, \code{method}, \code{useNDF}, \code{dimNames}, \code{compileArgs}.
 }
 \description{
 Generates C++ source code for a system of ordinary differential equations,

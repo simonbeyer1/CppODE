@@ -1,6 +1,6 @@
 /*
  Main header for CppODE – ODE integration and sensitivity calculation
- using FADBAD++ automatic differentiation.
+ using in-tree forward-mode dual numbers for automatic differentiation.
 
  The stepper architecture (Rosenbrock4, NDF/BDF) is derived from Boost.Odeint
  by Karsten Ahnert, Mario Mulansky, and Christoph Koke (2011–2015),
@@ -23,18 +23,7 @@
 #include <functional>
 
 // ============================================================================
-//  FADBAD++ (legacy AD backend)
-// ============================================================================
-#include <fadbad++/fadiff.h>
-
-// ============================================================================
-//  FADBAD++ extensions
-// ============================================================================
-#include <cppode/cppode_fadiff_extensions.hpp>
-
-// ============================================================================
-//  cppode::dual / cppode::dual2nd (custom forward AD backend)
-//  Selected at codegen time via the R-side `derivMode` argument.
+//  cppode::dual / cppode::dual2nd (forward-mode AD backend)
 // ============================================================================
 #include <cppode/cppode_dual_math.hpp>
 #include <cppode/cppode_dual_expr.hpp>

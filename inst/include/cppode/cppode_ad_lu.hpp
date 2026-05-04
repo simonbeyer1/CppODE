@@ -2,7 +2,7 @@
  AD-aware dense LU solver for CppODE — LAPACK backend.
 
  Uses dgetrf/dgetrs from R's bundled LAPACK for the base case.
- AD types (F<T>, F<F<T>>, ...) are handled by recursive IFT peeling.
+ Nested AD types (dual<dual<T,N>,N>) are handled by recursive IFT peeling.
 
  BLAS-3 optimization: IFT derivative propagation uses batched
  dgetrs (nrhs = n_derivs) instead of n_derivs separate solves.
@@ -23,7 +23,6 @@
 
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_ad_traits.hpp>
-#include <fadbad++/fadiff.h>
 
 // LAPACK declarations via R's headers (handles ILP64 automatically)
 #include <R_ext/BLAS.h>
@@ -185,9 +184,9 @@ private:
 };
 
 // ============================================================================
-//  dense_lu_solver<F<Inner>> — Recursive AD case (IFT peeling)
+//  dense_lu_solver<AD_T> — Recursive AD case (IFT peeling)
 //
-//  Given W·x = b (all entries F<Inner>):
+//  Given W·x = b (all entries dual<Inner,N>):
 //    Value:   W_val · x_val = b_val       (solved recursively)
 //    Deriv j: W_val · dx_j  = db_j - dW_j · x_val  (reuses factorization)
 //
@@ -206,9 +205,9 @@ private:
 //    6. BLAS-3 batched solve: dgetrs with nrhs = n_derivs (unchanged).
 // ============================================================================
 
-// Generic AD specialization: works for fadbad::F<Inner,N> and cppode::dual<Inner,N>.
-// The body uses only the FADBAD-compatible accessor surface (.x(), .d(j),
-// .size(), .diff(), operator[], .depend()) which both backends provide.
+// Generic AD specialization for cppode::dual<Inner,N>.
+// The body uses only the standard accessor surface (.x(), .d(j),
+// .size(), .diff(), operator[], .depend()).
 template<class AD_T>
 class dense_lu_solver<AD_T, std::enable_if_t<is_ad<AD_T>::value>>
 {
@@ -241,7 +240,7 @@ public:
       //  here instead of on every solve() call.
       //
       //  m_W_stored is NOT needed — all derivative information lives
-      //  in m_dW_block.  This saves an n×n F<double,N> deep copy.
+      //  in m_dW_block.  This saves an n×n dual<double,N> deep copy.
       // ============================================================
 
       // Determine n_derivs
@@ -272,7 +271,7 @@ public:
 
     } else {
       // ============================================================
-      //  Inner = F<...> (nested AD): store full AD matrix for the
+      //  Inner = dual<...> (nested AD): store full AD matrix for the
       //  generic element-wise IFT path.
       // ============================================================
       if (m_W_stored.rows() != n) {
@@ -307,7 +306,7 @@ public:
         n_derivs = std::max(m_n_derivs_cached, max_deriv_size(b));
       }
     } else {
-      // Inner = F<...>: need to scan both b and W_stored
+      // Inner = dual<...>: need to scan both b and W_stored
       if constexpr (N > 0) {
         n_derivs = N;
       } else {
@@ -370,7 +369,7 @@ private:
   //    m_dW_block was pre-extracted in factorize().  Only the dgemv
   //    call remains — no per-solve extraction overhead.
   //
-  //  Inner = F<...> (nested AD):
+  //  Inner = dual<...> (nested AD):
   //    Single pass over m_W_stored (element-wise loop).
   // ================================================================
 
@@ -401,9 +400,9 @@ private:
 
     } else {
       // =============================================================
-      //  Generic path: nested AD types (Inner = F<...>)
+      //  Generic path: nested AD types (Inner = dual<...>)
       //
-      //  Single pass over W_stored — each F<Inner,N> element is
+      //  Single pass over W_stored — each dual<Inner,N> element is
       //  touched exactly once.
       // =============================================================
 

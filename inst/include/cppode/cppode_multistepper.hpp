@@ -62,6 +62,7 @@
 #define CPPODE_MULTISTEPPER_HPP_INCLUDED
 
 #include <cstddef>
+#include <cstring>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -79,6 +80,7 @@
 #include <cppode/cppode_ad_lu.hpp>          // ad_lu::is_ad — used by adams_pece_solve
 #include <cppode/cppode_ad_traits.hpp>
 #include <cppode/cppode_dual_slab.hpp>
+#include <cppode/cppode_nordsieck_block.hpp>
 
 namespace cppode {
 
@@ -336,7 +338,7 @@ void adams_set_coefficients(
 //  the `diverged` flag so the stepper can switch to NDF immediately.
 //
 //  AD handling: corrector is pure arithmetic on f and the Nordsieck
-//  slots, so FADBAD++ types propagate sensitivities transparently.
+//  slots, so dual types propagate sensitivities transparently.
 // ============================================================================
 
 struct pece_result {
@@ -648,18 +650,41 @@ public:
     m_n_sens = n_sens;
     if constexpr (detail::is_dynamic_dual<value_type>::value) {
       if (n_sens == 0) return;
+
+      // The nordsieck_block needs all K facade vectors to be the same
+      // length; bail out (defer until a later prepare_sensitivities call)
+      // if any slot is still empty.  This mirrors the per-slot empty()
+      // guard the per-slab loop used to do.
+      bool zn_ready = true;
+      const std::size_t n_zn = m_zn[0].m_v.size();
       for (int j = 0; j <= max_order + 1; ++j) {
-        if (!m_zn[j].m_v.empty())
-          m_zn_slab[j].prime(m_zn[j].m_v,
-                             static_cast<unsigned>(m_zn[j].m_v.size()),
-                             n_sens);
+        if (m_zn[j].m_v.empty() || m_zn[j].m_v.size() != n_zn) {
+          zn_ready = false; break;
+        }
       }
+      if (zn_ready) {
+        std::array<std::vector<value_type>*, max_order + 2> facades{};
+        for (int j = 0; j <= max_order + 1; ++j) facades[j] = &m_zn[j].m_v;
+        m_zn_block.prime(facades,
+                         static_cast<unsigned>(n_zn),
+                         n_sens);
+      }
+
+      bool znd_ready = true;
+      const std::size_t n_znd = m_zn_dense[0].m_v.size();
       for (int j = 0; j <= max_order; ++j) {
-        if (!m_zn_dense[j].m_v.empty())
-          m_zn_dense_slab[j].prime(m_zn_dense[j].m_v,
-                                   static_cast<unsigned>(m_zn_dense[j].m_v.size()),
-                                   n_sens);
+        if (m_zn_dense[j].m_v.empty() || m_zn_dense[j].m_v.size() != n_znd) {
+          znd_ready = false; break;
+        }
       }
+      if (znd_ready) {
+        std::array<std::vector<value_type>*, max_order + 1> facades{};
+        for (int j = 0; j <= max_order; ++j) facades[j] = &m_zn_dense[j].m_v;
+        m_zn_dense_block.prime(facades,
+                               static_cast<unsigned>(n_znd),
+                               n_sens);
+      }
+
       if (!m_acor.m_v.empty())
         m_acor_slab.prime(m_acor.m_v,
                           static_cast<unsigned>(m_acor.m_v.size()), n_sens);
@@ -1312,10 +1337,60 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     if (m_q == 1 && m_nst > 1) m_tau[2] = m_tau[1];
     m_tau[1] = m_h;
 
-    for (int j = 0; j <= m_q; ++j)
-      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
-                         static_cast<double>(m_l[j]),
-                         m_acor.m_v, m_acor_slab);
+    // Nordsieck rank-1 update: zn[j] += l[j] * acor for j ∈ [0, q].
+    // Mathematically Z[:, 0:q+1] += outer(acor, l[0:q+1]) on both the
+    // value layer (dual.x() per element) and the tangent layer (the
+    // unified n*M × (q+1) tangent matrix in m_zn_block).
+    {
+      const int qp1 = m_q + 1;
+
+      if constexpr (detail::is_dynamic_dual<value_type>::value) {
+        using inner_t = typename value_type::value_type;
+
+        // Value layer: per-element loop on the inline .x() field.
+        for (int j = 0; j < qp1; ++j) {
+          const inner_t lj = static_cast<inner_t>(m_l[j]);
+          auto& zj = m_zn[j].m_v;
+          const auto& acor_v = m_acor.m_v;
+          for (size_t i = 0; i < n; ++i)
+            zj[i].x() += lj * acor_v[i].x();
+        }
+
+        // Tangent layer: single dger across the whole [n*slab_cols × (q+1)]
+        // block when the slabs are primed and the inner type is double
+        // (BLAS only applies to plain doubles; nested-dual deriv2 falls
+        // back to per-slot vec_axpy_with_slab).  For static-N AD the
+        // slab columns equal N (≥ m_n_sens); the inactive trailing
+        // columns are zero so the dger zero-propagates correctly.
+        if constexpr (std::is_same_v<inner_t, double>) {
+          if (m_zn_block.primed() && m_acor_slab.primed() && m_n_sens > 0
+              && m_zn_block.slot_stride() == m_acor_slab.tangent_size())
+          {
+            std::array<double, max_order + 2> ll{};
+            for (int j = 0; j < qp1; ++j) ll[j] = static_cast<double>(m_l[j]);
+            int M_ = static_cast<int>(m_zn_block.slot_stride());
+            int N_ = qp1;
+            int inc = 1;
+            double one = 1.0;
+            F77_CALL(dger)(&M_, &N_, &one,
+                           m_acor_slab.tangent_data(), &inc,
+                           ll.data(), &inc,
+                           m_zn_block.tangent_block_data(), &M_);
+          }
+        } else {
+          for (int j = 0; j < qp1; ++j)
+            vec_axpy_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
+                               static_cast<double>(m_l[j]),
+                               m_acor.m_v, m_acor_slab);
+        }
+      } else {
+        // Plain double value_type: existing per-slot path.
+        for (int j = 0; j < qp1; ++j)
+          vec_axpy_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
+                             static_cast<double>(m_l[j]),
+                             m_acor.m_v, m_acor_slab);
+      }
+    }
 
     m_qwait--;
     if (m_qwait == 1 && m_q != q_max_current()) {
@@ -1434,10 +1509,35 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     }
     if (dense_resized && m_n_sens != 0)
       prepare_sensitivities(m_n_sens);
+
+    // Value layer: per-element dual = dual copy.  Only the first (q+1)
+    // slots are alive — leave the rest untouched (consistent with the
+    // legacy per-slot loop, which only ran for j ∈ [0, q]).
     for (int j = 0; j <= m_q; ++j) {
-      vec_copy_with_slab(m_zn_dense[j].m_v, m_zn_dense_slab[j],
-                         m_zn[j].m_v,       m_zn_slab[j]);
+      auto& dst = m_zn_dense[j].m_v;
+      const auto& src = m_zn[j].m_v;
+      for (size_t i = 0; i < n; ++i) dst[i] = src[i];
     }
+
+    // Tangent layer: when both blocks are primed and the active block
+    // shape matches, a single std::memcpy of the (q+1) leading slots'
+    // tangent storage replaces the (q+1) per-slot vec_copy_with_slab
+    // calls. Slots [q+1, max_order] hold stale tangents but they're
+    // never read — eval_dense_into() only touches slots [0, m_q_dense].
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      using inner_t = typename value_type::value_type;
+      if (m_zn_block.primed() && m_zn_dense_block.primed() &&
+          m_zn_block.n_rows() == m_zn_dense_block.n_rows() &&
+          m_zn_block.n_cols() == m_zn_dense_block.n_cols())
+      {
+        const std::size_t copy_slots = static_cast<std::size_t>(m_q + 1);
+        const std::size_t per_slot   = m_zn_block.slot_stride();
+        std::memcpy(m_zn_dense_block.tangent_block_data(),
+                    m_zn_block.tangent_block_data(),
+                    copy_slots * per_slot * sizeof(inner_t));
+      }
+    }
+
     m_q_dense = m_q;
     m_h_dense = m_h;
     m_tn_dense = m_tn_current;
@@ -1673,7 +1773,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
       using S = typename value_type::value_type;
 
       const bool slab_path = m_dense_x_scratch_slab.primed()
-                          && m_zn_dense_slab[0].primed();
+                          && m_zn_dense_block.slab(0).primed();
 
       if (slab_path) {
         // --- Values: scalar Horner directly into scratch.x() ---
@@ -1697,7 +1797,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
             int len = static_cast<int>(total);
             int inc = 1;
             F77_CALL(dcopy)(&len,
-                            const_cast<double*>(m_zn_dense_slab[q].tangent_data()), &inc,
+                            const_cast<double*>(m_zn_dense_block.slab(q).tangent_data()), &inc,
                             xp, &inc);
             // for j: x_slab = x_slab * s + zj_slab
             const double s_d = static_cast<double>(s);
@@ -1706,15 +1806,15 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
               double a = s_d;
               F77_CALL(dscal)(&len, &a, xp, &inc);
               F77_CALL(daxpy)(&len, const_cast<double*>(&one),
-                              const_cast<double*>(m_zn_dense_slab[j].tangent_data()),
+                              const_cast<double*>(m_zn_dense_block.slab(j).tangent_data()),
                               &inc, xp, &inc);
             }
           } else {
-            const S* zp = m_zn_dense_slab[q].tangent_data();
+            const S* zp = m_zn_dense_block.slab(q).tangent_data();
             for (std::size_t k = 0; k < total; ++k) xp[k] = zp[k];
             const S s_v = static_cast<S>(s);
             for (int j = q - 1; j >= 0; --j) {
-              const S* zjp = m_zn_dense_slab[j].tangent_data();
+              const S* zjp = m_zn_dense_block.slab(j).tangent_data();
               for (std::size_t k = 0; k < total; ++k)
                 xp[k] = xp[k] * s_v + zjp[k];
             }
@@ -1750,25 +1850,119 @@ private:
 
   // ====================================================================
   //  ndfPredict / ndfRestore / ndfSet / ndfRescale
+  //
+  //  ndfPredict applies the Nordsieck Pascal shift. As a matrix op the
+  //  loop `for k ∈ [1, q]: for j ∈ [q, k]: zn[j-1] += zn[j]` is
+  //  Z := Z @ P where P is the (q+1) × (q+1) lower-triangular unit-Pascal
+  //  matrix P[i, j] = C(i, j) for i >= j (viewing Z as a
+  //  states×slots matrix with slot j as column j). ndfRestore is the
+  //  inverse, P_inv[i, j] = (-1)^(i-j) * C(i, j).
+  //
+  //  When the tangent block is primed and the inner type is plain
+  //  double, the (n*M) × (q+1) tangent matrix is updated in one dtrmm
+  //  call. Value layer stays per-element (the .x() fields aren't
+  //  contiguous across slots — they live inside the dual struct).
+  //  Nested-dual deriv2 falls back to the legacy per-slot loop.
   // ====================================================================
 
-  void ndfPredict(size_t n)
-  {
-    for (int k = 1; k <= m_q; ++k)
-      for (int j = m_q; j >= k; --j)
-        vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_slab[j - 1],
-                           1.0,
-                           m_zn[j].m_v, m_zn_slab[j]);
+private:
+  static constexpr int LM = max_order + 2;
+
+  static const std::array<double, LM * LM>& pascal_predict_table_() {
+    // Column-major (i, j) -> P[j*LM + i] = C(i, j) for i >= j else 0.
+    static const std::array<double, LM * LM> P = []() {
+      std::array<double, LM * LM> p{};
+      long long binom[LM][LM] = {};
+      for (int i = 0; i < LM; ++i) {
+        binom[i][0] = 1;
+        for (int j = 1; j <= i; ++j)
+          binom[i][j] = binom[i-1][j-1] + (j <= i-1 ? binom[i-1][j] : 0);
+      }
+      for (int j = 0; j < LM; ++j)
+        for (int i = j; i < LM; ++i)
+          p[static_cast<std::size_t>(j) * LM + i] = static_cast<double>(binom[i][j]);
+      return p;
+    }();
+    return P;
   }
 
-  void ndfRestore(size_t n)
-  {
-    for (int k = 1; k <= m_q; ++k)
-      for (int j = m_q; j >= k; --j)
-        vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_slab[j - 1],
-                           -1.0,
-                           m_zn[j].m_v, m_zn_slab[j]);
+  static const std::array<double, LM * LM>& pascal_restore_table_() {
+    static const std::array<double, LM * LM> P = []() {
+      std::array<double, LM * LM> p{};
+      long long binom[LM][LM] = {};
+      for (int i = 0; i < LM; ++i) {
+        binom[i][0] = 1;
+        for (int j = 1; j <= i; ++j)
+          binom[i][j] = binom[i-1][j-1] + (j <= i-1 ? binom[i-1][j] : 0);
+      }
+      for (int j = 0; j < LM; ++j)
+        for (int i = j; i < LM; ++i)
+          p[static_cast<std::size_t>(j) * LM + i]
+            = ((i - j) % 2 == 0 ? 1.0 : -1.0) * static_cast<double>(binom[i][j]);
+      return p;
+    }();
+    return P;
   }
+
+  // Pascal shift driver for both predict (sign=+1) and restore (sign=-1).
+  void apply_pascal_shift_(size_t n, bool restore)
+  {
+    if (m_q < 1) return;
+
+    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      using inner_t = typename value_type::value_type;
+      const double sign = restore ? -1.0 : 1.0;
+
+      // Value layer: per-element legacy loop on .x().
+      for (int k = 1; k <= m_q; ++k)
+        for (int j = m_q; j >= k; --j) {
+          auto& zlow = m_zn[j - 1].m_v;
+          const auto& zup = m_zn[j].m_v;
+          for (size_t i = 0; i < n; ++i)
+            zlow[i].x() += static_cast<inner_t>(sign) * zup[i].x();
+        }
+
+      // Tangent layer: single dtrmm across the (n*slab_cols) × (q+1)
+      // block. Static-N: slab cols = N (≥ m_n_sens); dynamic-N: = M.
+      // The Pascal P is unit lower-triangular so trailing inactive
+      // tangent columns (which are zero by construction) stay zero.
+      if constexpr (std::is_same_v<inner_t, double>) {
+        if (m_zn_block.primed() && m_n_sens > 0) {
+          const auto& P = restore ? pascal_restore_table_()
+                                  : pascal_predict_table_();
+          char side = 'R', uplo = 'L', transa = 'N', diag = 'U';
+          int M_ = static_cast<int>(m_zn_block.slot_stride());
+          int N_ = m_q + 1;
+          int lda = LM;
+          int ldb = M_;
+          double one = 1.0;
+          F77_CALL(dtrmm)(&side, &uplo, &transa, &diag,
+                          &M_, &N_, &one,
+                          const_cast<double*>(P.data()), &lda,
+                          m_zn_block.tangent_block_data(), &ldb
+                          FCONE FCONE FCONE FCONE);
+        }
+      } else {
+        // Nested-dual / non-double inner: legacy per-slot path.
+        for (int k = 1; k <= m_q; ++k)
+          for (int j = m_q; j >= k; --j)
+            vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_block.slab(j - 1),
+                               sign,
+                               m_zn[j].m_v, m_zn_block.slab(j));
+      }
+    } else {
+      const double sign = restore ? -1.0 : 1.0;
+      for (int k = 1; k <= m_q; ++k)
+        for (int j = m_q; j >= k; --j)
+          vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_block.slab(j - 1),
+                             sign,
+                             m_zn[j].m_v, m_zn_block.slab(j));
+    }
+  }
+
+public:
+  void ndfPredict(size_t n) { apply_pascal_shift_(n, /*restore=*/false); }
+  void ndfRestore(size_t n) { apply_pascal_shift_(n, /*restore=*/true);  }
 
   // ====================================================================
   //  ndfSet
@@ -1895,7 +2089,7 @@ private:
   {
     time_type factor = m_eta;
     for (int j = 1; j <= m_q; ++j) {
-      vec_scale_with_slab(m_zn[j].m_v, m_zn_slab[j],
+      vec_scale_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
                           static_cast<double>(factor));
       factor *= m_eta;
     }
@@ -1928,9 +2122,9 @@ private:
     for (size_t i = 0; i < n; ++i)
       m_zn[m_L].m_v[i] = value_type(A1) * m_zn[max_order].m_v[i];
     for (int j = 2; j <= m_q; ++j)
-      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
                          static_cast<double>(ll[j]),
-                         m_zn[m_L].m_v, m_zn_slab[m_L]);
+                         m_zn[m_L].m_v, m_zn_block.slab(m_L));
   }
 
   void ndfDecreaseOrder()
@@ -1947,9 +2141,9 @@ private:
         ll[i] = ll[i] * xi + ll[i - 1];
     }
     for (int j = 2; j < m_q; ++j)
-      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
                          -static_cast<double>(ll[j]),
-                         m_zn[m_q].m_v, m_zn_slab[m_q]);
+                         m_zn[m_q].m_v, m_zn_block.slab(m_q));
   }
 
   // ====================================================================
@@ -2000,9 +2194,9 @@ private:
       m_l[j + 1] = time_type(m_q) * (m_l[j] / time_type(j + 1));
 
     for (int j = 2; j < m_q; ++j)
-      vec_axpy_with_slab(m_zn[j].m_v, m_zn_slab[j],
+      vec_axpy_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
                          -static_cast<double>(m_l[j]),
-                         m_zn[m_q].m_v, m_zn_slab[m_q]);
+                         m_zn[m_q].m_v, m_zn_block.slab(m_q));
   }
 
   // ====================================================================
@@ -2053,12 +2247,16 @@ private:
   wrapped_state_type m_dense_x_scratch;
   std::vector<double> m_ewt;  // CVODE-style error weights from pre-prediction zn[0]
 
-  // SoA tangent slabs for the dynamic-dual heap path (empty stubs otherwise).
-  // Each slab owns a contiguous [n_states × n_sens] block; the corresponding
-  // wrapped_*_type's dual elements have their tan_ pointers bound into one
-  // row each. Sized once per solve via prepare_sensitivities(); never grown.
-  std::array<detail::tangent_slab<value_type>, max_order + 2> m_zn_slab;
-  std::array<detail::tangent_slab<value_type>, max_order + 1> m_zn_dense_slab;
+  // SoA tangent storage for the dynamic-dual heap path (empty stubs
+  // otherwise). The Nordsieck history (m_zn) and dense-output snapshots
+  // (m_zn_dense) each live in one contiguous [(K) × n_states × n_sens]
+  // block via nordsieck_block, so BLAS-3 (dtrmm for Pascal shifts, dger
+  // for the rank-1 complete_step update) can operate across all K slots
+  // in one call. Per-slot ops (vec_axpy_with_slab, vec_copy_with_slab,
+  // …) keep working unchanged via the slab views exposed by .slab(j).
+  // Sized once per solve via prepare_sensitivities(); never grown.
+  detail::nordsieck_block<value_type, max_order + 2> m_zn_block;
+  detail::nordsieck_block<value_type, max_order + 1> m_zn_dense_block;
   detail::tangent_slab<value_type> m_acor_slab, m_y_slab, m_tempv_slab, m_ftemp_slab;
   detail::tangent_slab<value_type> m_dense_x_scratch_slab;
   unsigned m_n_sens = 0;

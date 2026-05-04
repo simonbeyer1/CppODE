@@ -67,8 +67,6 @@
 #'   (stack-allocated); `solveODE()` then accepts `sens1ini` with up to
 #'   `K` columns. `NULL` uses width `length(c(variables, parameters)) -
 #'   length(fixed)`. Requires `deriv = TRUE`.
-#' @param derivMode Forward-AD backend: `"dual"` (default, in-tree) or
-#'   `"fadbad"` (legacy FADBAD++).
 #' @param includeTimeZero Logical. Ensure that time `0` is included among
 #'   the integration times.
 #' @param useDenseOutput Logical. Use Hermite dense output for user time
@@ -90,7 +88,7 @@
 #'   used by [solveODE()]: `equations`, `srcfile`, `variables`,
 #'   `parameters`, `forcings`, `events`, `rootfunc`, `fixed`, `jacobian`
 #'   (with components `f.x` and `f.time`), `deriv`, `deriv2`, `nStack`,
-#'   `derivMode`, `sparse`, `method`, `useNDF`, `dimNames`, `compileArgs`.
+#'   `sparse`, `method`, `useNDF`, `dimNames`, `compileArgs`.
 #'
 #' @example inst/examples/example_ODE.R
 #' @importFrom stats setNames
@@ -104,7 +102,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
                    compile = TRUE, modelname = NULL, outdir = tempdir(),
                    deriv = TRUE, deriv2 = FALSE,
                    nStack = Inf,
-                   derivMode = c("dual", "fadbad"),
                    includeTimeZero = TRUE, useDenseOutput = TRUE,
                    sparse = NULL,
                    method = c("bdf", "adams", "rb4", "tsit5"),
@@ -117,7 +114,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     deriv <- TRUE
   }
   method <- match.arg(method)
-  derivMode <- match.arg(derivMode)
   if (method == "rb4") method <- "rosenbrock4"
   # Both multistep methods ("bdf", "adams") are instantiations of the
   # cppode::multistepper class template, selected at compile time via
@@ -261,8 +257,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     fixed_params = fixed_params,
     forcings_list = forcings,
     sparse = sparse,
-    skip_jacobian = is_explicit(method),
-    derivMode = derivMode
+    skip_jacobian = is_explicit(method)
   )
 
   ode_code <- codegen_result$ode_code
@@ -295,8 +290,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       n_states = n_variables,
       num_type = numType,
       forcings_list = forcings,
-      rhs_dict = as.list(setNames(rhs, variables)),
-      derivMode = derivMode
+      rhs_dict = as.list(setNames(rhs, variables))
     )
 
     event_code <- paste(event_lines, collapse = "\n")
@@ -313,8 +307,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       params_list = params,
       n_states = n_variables,
       num_type = numType,
-      forcings_list = forcings,
-      derivMode = derivMode
+      forcings_list = forcings
     )
 
     rootfunc_code <- paste(rootfunc_lines, collapse = "\n")
@@ -322,7 +315,7 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   }
 
   # --- Generate forcing initialization code ---
-  forcing_init_code <- paste(codegen$generate_forcing_init_code(n_forcings, numType, derivMode = derivMode), collapse = "\n")
+  forcing_init_code <- paste(codegen$generate_forcing_init_code(n_forcings, numType), collapse = "\n")
 
   # --- C++ includes ---
   includings <- c(
@@ -341,38 +334,19 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # case, an explicit positive integer when nStack = K, or 0 (heap spec) when
   # nStack = Inf. The runtime per-call active sens dimension M may be smaller
   # than N (with a stack of N empty slots ignored).
-  # derivMode selection: "fadbad" -> fadbad::F<double, N> (legacy);
-  #                      "dual"   -> cppode::dual<double, N> (custom forward AD,
-  #                                  arena-allocated for N=0).
+  # AD type: cppode::dual<double, N> (custom forward AD, arena-allocated
+  # for N=0); deriv2 nests two layers (cppode::dual<cppode::dual<...>, N>).
   if (deriv2) {
-    if (derivMode == "dual") {
-      # Nested dual: cppode::dual<cppode::dual<double, N>, N> mirrors fadbad's
-      # nested AD layout. The recursive AD-LU solver and traits already handle
-      # arbitrary nesting, so no new specialisations are required.
-      usings <- c(
-        "using namespace cppode;",
-        sprintf("using AD = cppode::dual<double, %d>;", nStack_width),
-        sprintf("using AD2 = cppode::dual<cppode::dual<double, %d>, %d>;", nStack_width, nStack_width)
-      )
-    } else {
-      usings <- c(
-        "using namespace cppode;",
-        sprintf("using AD = fadbad::F<double, %d>;", nStack_width),
-        sprintf("using AD2 = fadbad::F<fadbad::F<double, %d>, %d>;", nStack_width, nStack_width)
-      )
-    }
+    usings <- c(
+      "using namespace cppode;",
+      sprintf("using AD = cppode::dual<double, %d>;", nStack_width),
+      sprintf("using AD2 = cppode::dual<cppode::dual<double, %d>, %d>;", nStack_width, nStack_width)
+    )
   } else if (deriv) {
-    if (derivMode == "dual") {
-      usings <- c(
-        "using namespace cppode;",
-        sprintf("using AD = cppode::dual<double, %d>;", nStack_width)
-      )
-    } else {
-      usings <- c(
-        "using namespace cppode;",
-        sprintf("using AD = fadbad::F<double, %d>;", nStack_width)
-      )
-    }
+    usings <- c(
+      "using namespace cppode;",
+      sprintf("using AD = cppode::dual<double, %d>;", nStack_width)
+    )
   } else {
     usings <- c(
       "using namespace cppode;"
@@ -407,10 +381,10 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     "",
     "  // RAII scope for the cppode::dual arena: snapshots the bump pointer on",
     "  // entry and restores it on exit so the arena is recycled between",
-    "  // solveODE() calls. No-op for the FADBAD backend (just reads/writes a",
-    "  // few thread_local fields). Within one solveODE call the arena grows",
-    "  // naturally; live state in x / full_params / stepper buffers points",
-    "  // into it and stays valid until this scope ends.",
+    "  // solveODE() calls (just reads/writes a few thread_local fields).",
+    "  // Within one solveODE call the arena grows naturally; live state in",
+    "  // x / full_params / stepper buffers points into it and stays valid",
+    "  // until this scope ends.",
     "  cppode::dual_arena::scope _cppode_arena_scope;",
     "",
     "  StepChecker checker(INTEGER(maxprogressSEXP)[0], INTEGER(maxstepsSEXP)[0]);",
@@ -565,9 +539,9 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   # block per vector. Subsequent .diff(idx, n_sens) calls and codegen-emitted
   # dxdt[i] = expr materialisations then write into the slab — SoA-friendly,
   # zero per-RHS arena traffic, and the W-matrix factorise reads neighbouring
-  # tangents from one cache line. For non-dynamic-dual num types (static N
-  # dual<S, N!=0>, fadbad::F<>, double) the slab is the empty stub so the
-  # prime() calls compile to no-ops.
+  # tangents from one cache line. For non-dynamic-dual num types (e.g.
+  # nested dual<dual<...>, N>, plain double) the slab is the empty stub
+  # so the prime() calls compile to no-ops.
   if (deriv) {
     externC <- c(
       externC,
@@ -621,9 +595,9 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "          x[i].x().diff(ai);  // identity: d(ai) = 1",
       "        }",
       "        // Second-order sensitivities (outer layer): seed from Phi'' or zeros.",
-      "        // FADBAD note: .diff(idx) is DESTRUCTIVE (zeros m_diff, sets [idx]=1,",
-      "        // m_depend=true). We therefore call diff(0) ONCE per layer to arm",
-      "        // m_depend, then use .d() (non-destructive accessor) to write values.",
+      "        // Note: .diff(idx) is DESTRUCTIVE (zeros tangents, sets [idx]=1,",
+      "        // depend=true). We therefore call diff(0) ONCE per layer to arm",
+      "        // depend, then use .d() (non-destructive accessor) to write values.",
       "        if (has_sens2ini) {",
       "          if (n_sens > 0) {",
       "            x[i].diff(0);  // arm outer m_depend",
@@ -1401,7 +1375,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   attr(modelname, "deriv")         <- deriv
   attr(modelname, "deriv2")        <- deriv2
   attr(modelname, "nStack")        <- if (is_heap) Inf else as.numeric(nStack_width)
-  attr(modelname, "derivMode")     <- derivMode
   attr(modelname, "sparse")        <- use_sparse
   attr(modelname, "method")        <- method
   attr(modelname, "useNDF")        <- useNDF

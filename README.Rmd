@@ -20,7 +20,7 @@ knitr::opts_chunk$set(
 <!-- badges: end -->
 
 **Automated C++ code generation for ODE integration with sensitivity
-calculation using FADBAD++.**
+calculation via in-tree forward-mode dual numbers.**
 
 CppODE generates, compiles, and runs C++ solvers for ODE systems, with
 optional first- and second-order parameter sensitivities computed
@@ -28,13 +28,21 @@ automatically via forward-mode automatic differentiation.
 
 ## Features
 
-- **BDF solver** (variable-order 1–5, variable-step, Nordsieck form) adapted from
-  [SUNDIALS/CVODE](https://computing.llnl.gov/projects/sundials), with dense LU via R's
-  LAPACK interface or sparse LU via KLU (bundled SuiteSparse)
+- **BDF/NDF and Adams multistep solvers** (variable-order 1–5,
+  variable-step, Nordsieck form) adapted from
+  [SUNDIALS/CVODE](https://computing.llnl.gov/projects/sundials), with
+  dense LU via R's LAPACK interface or sparse LU via KLU (bundled
+  SuiteSparse)
 - **Rosenbrock4 solver** extended from [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/doc/html/index.html)
-- **Automatic differentiation** — FADBAD++ dual numbers for exact
+- **Tsit5 solver** — 7-stage explicit FSAL Runge–Kutta (Tsitouras
+  2011) with embedded error estimate and dense output
+- **Automatic differentiation** — in-tree dual numbers for exact
   first- and second-order parameter sensitivities in a single
   integration pass
+- **BLAS-accelerated sensitivities** — stacked tangent blocks let the
+  Nordsieck Pascal shift (`dtrmm`), step completion (`dger`) and
+  Tsit5/RB4 stage assembly (`dgemv`) run as Level-2/3 BLAS, paying off
+  for systems with many parameters
 - **Event handling** — time-based and root-triggered events with
   saltation matrix corrections for sensitivity continuity
 - **Symbolic Jacobian** — automatically derived and compiled as

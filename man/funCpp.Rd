@@ -16,7 +16,7 @@ funCpp(
   convenient = TRUE,
   deriv = TRUE,
   deriv2 = FALSE,
-  derivMode = c("dual", "fadbad", "symbolic")
+  derivMode = c("dual", "symbolic")
 )
 }
 \arguments{
@@ -61,9 +61,9 @@ path; if \code{derivMode != "symbolic"} and \code{deriv2 = TRUE},
 \code{derivMode} is forced to \code{"symbolic"} with a warning.
 Default \code{FALSE}.}
 
-\item{derivMode}{Character; one of \code{"dual"} (default),
-\code{"fadbad"}, or \code{"symbolic"}. Selects how derivatives are
-generated when \code{deriv = TRUE} or \code{deriv2 = TRUE}:
+\item{derivMode}{Character; one of \code{"dual"} (default) or
+\code{"symbolic"}. Selects how derivatives are generated when
+\code{deriv = TRUE} or \code{deriv2 = TRUE}:
 \describe{
 \item{\code{"dual"}}{Forward-mode AD via the in-tree
 \code{cppode::dual} backend (arena-allocated heap AD). Emits the
@@ -71,9 +71,6 @@ chain-ruled entry \code{jac_chain} that takes upstream seeds
 \code{dX} (state sensitivities per observation) and \code{dP}
 (parameter-transform Jacobian) and returns the value together
 with \code{dY/dtheta} in one pass.}
-\item{\code{"fadbad"}}{Same chain-ruled \code{jac_chain} entry,
-implemented on top of the legacy FADBAD++ \code{F<double>}
-backend.}
 \item{\code{"symbolic"}}{Classical symbolic Jacobian (and
 Hessian if \code{deriv2}) via SymPy; exposed as \code{jac} and
 \code{hess}.}

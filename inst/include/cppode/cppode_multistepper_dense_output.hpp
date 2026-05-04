@@ -13,7 +13,7 @@
 
  A single template class works for both double and AD types because
  the Nordsieck polynomial evaluation is purely arithmetic (addition
- + multiplication with scalars) -- FADBAD++ derivatives propagate
+ + multiplication with scalars) -- dual derivatives propagate
  automatically.
 
  References:

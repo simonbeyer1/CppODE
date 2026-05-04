@@ -2,7 +2,7 @@
  Utility functions for ODE integration and sensitivity calculation with automatic differentiation
 
  This header provides:
- - Safe scalar extraction from nested FADBAD types (F<F<T>>)
+ - Safe scalar extraction from nested AD types (cppode::dual2nd<T,N>)
  - Weighted sup-norms for step-size control
  - estimate_initial_dt: unified initial step-size estimator used by all CppODE solvers.
    Combines an HNW-style phase-1 rough h with caller-supplied ÿ (analytic via J·f + dfdt,
@@ -18,13 +18,10 @@
 #include <cmath>
 #include <limits>
 #include <vector>
-#include <fadbad++/fadiff.h>
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_ad_traits.hpp>
 
 namespace odeint_utils {
-
-using fadbad::F;
 
 // =========================================================================================
 //  Scalar extraction — pulled in from cppode_ad_traits.hpp
@@ -50,7 +47,7 @@ inline double weighted_sup_norm(
   return nrm;
 }
 
-// Generic AD overload (works for fadbad::F, cppode::dual, cppode::dual2nd).
+// Generic AD overload (works for cppode::dual, cppode::dual2nd).
 template<class AD,
          std::enable_if_t<cppode::ad_traits::is_ad<AD>::value, int> = 0>
 inline double weighted_sup_norm(
@@ -392,7 +389,7 @@ inline fd_ydd<System> make_fd_ydd(System sys) { return fd_ydd<System>(sys); }
 //         Else hg = hnew, continue
 //    6. h0 = H_BIAS * hnew  (H_BIAS = 0.5), clamp into [hlb, hub], apply sign.
 //
-//  FADBAD AD values: the WRMS norm sweeps derivative slices as if they were
+//  AD values: the WRMS norm sweeps derivative slices as if they were
 //  additional states (same convention as weighted_sup_norm above); this matches
 //  CVODES's behaviour when sensitivities share the state error test.
 // =========================================================================================

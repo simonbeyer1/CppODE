@@ -9,7 +9,7 @@
 <!-- badges: end -->
 
 **Automated C++ code generation for ODE integration with sensitivity
-calculation using FADBAD++.**
+calculation via in-tree forward-mode dual numbers.**
 
 CppODE generates, compiles, and runs C++ solvers for ODE systems, with
 optional first- and second-order parameter sensitivities computed
@@ -17,15 +17,21 @@ automatically via forward-mode automatic differentiation.
 
 ## Features
 
-- **BDF solver** (variable-order 1–5, variable-step, Nordsieck form)
-  adapted from
+- **BDF/NDF and Adams multistep solvers** (variable-order 1–5,
+  variable-step, Nordsieck form) adapted from
   [SUNDIALS/CVODE](https://computing.llnl.gov/projects/sundials), with
   dense LU via R’s LAPACK interface or sparse LU via KLU (bundled
   SuiteSparse)
 - **Rosenbrock4 solver** extended from
   [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/doc/html/index.html)
-- **Automatic differentiation** — FADBAD++ dual numbers for exact first-
+- **Tsit5 solver** — 7-stage explicit FSAL Runge–Kutta (Tsitouras
+  2011) with embedded error estimate and dense output
+- **Automatic differentiation** — in-tree dual numbers for exact first-
   and second-order parameter sensitivities in a single integration pass
+- **BLAS-accelerated sensitivities** — stacked tangent blocks let the
+  Nordsieck Pascal shift (`dtrmm`), step completion (`dger`) and
+  Tsit5/RB4 stage assembly (`dgemv`) run as Level-2/3 BLAS, paying off
+  for systems with many parameters
 - **Event handling** — time-based and root-triggered events with
   saltation matrix corrections for sensitivity continuity
 - **Symbolic Jacobian** — automatically derived and compiled as analytic
@@ -53,13 +59,13 @@ or `./configure.win` (Windows) at install time:
 If a library is missing the install still succeeds; the affected entry
 points just error at runtime with the same hints. To enable both:
 
-| Platform | SUNDIALS | SuiteSparse / KLU |
-|:---|:---|:---|
-| Debian/Ubuntu | `sudo apt install libsundials-dev` | `sudo apt install libsuitesparse-dev` |
-| Fedora | `sudo dnf install sundials-devel` | `sudo dnf install suitesparse-devel` |
-| Arch | `sudo pacman -S sundials` | `sudo pacman -S suitesparse` |
-| macOS (Homebrew) | `brew install sundials` | `brew install suite-sparse` |
-| Windows (Rtools 4.4 / 4.5) | see below | see below |
+| Platform                   | SUNDIALS                           | SuiteSparse / KLU                     |
+|:---------------------------|:-----------------------------------|:--------------------------------------|
+| Debian/Ubuntu              | `sudo apt install libsundials-dev` | `sudo apt install libsuitesparse-dev` |
+| Fedora                     | `sudo dnf install sundials-devel`  | `sudo dnf install suitesparse-devel`  |
+| Arch                       | `sudo pacman -S sundials`          | `sudo pacman -S suitesparse`          |
+| macOS (Homebrew)           | `brew install sundials`            | `brew install suite-sparse`           |
+| Windows (Rtools 4.4 / 4.5) | see below                          | see below                             |
 
 **On Windows**, from any shell (e.g. PowerShell or cmd) call Rtools’
 bundled `pacman` by
@@ -81,12 +87,12 @@ old to be performant — build the libraries into `$HOME` and point the
 package at them through four environment variables. `configure`
 (Unix/macOS) and `configure.win` honour the same overrides:
 
-| Variable | Purpose |
-|:---|:---|
-| `CPPODE_CVODE_CFLAGS` | extra `-I` flags for the SUNDIALS headers |
-| `CPPODE_CVODE_LIBS` | full link line for SUNDIALS (incl. `-L`, `-Wl,-rpath`, `-l…`) |
-| `CPPODE_CVODE_KLU_CFLAGS` | extra `-I` flags for `klu.h` |
-| `CPPODE_CVODE_KLU_LIBS` | full link line for KLU + SUNDIALS sparse glue |
+| Variable                  | Purpose                                                       |
+|:--------------------------|:--------------------------------------------------------------|
+| `CPPODE_CVODE_CFLAGS`     | extra `-I` flags for the SUNDIALS headers                     |
+| `CPPODE_CVODE_LIBS`       | full link line for SUNDIALS (incl. `-L`, `-Wl,-rpath`, `-l…`) |
+| `CPPODE_CVODE_KLU_CFLAGS` | extra `-I` flags for `klu.h`                                  |
+| `CPPODE_CVODE_KLU_LIBS`   | full link line for KLU + SUNDIALS sparse glue                 |
 
 When any variable is set, the corresponding probe in `configure` is
 skipped — you become responsible for the full link line, including

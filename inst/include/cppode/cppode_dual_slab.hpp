@@ -80,12 +80,14 @@ public:
   bool     primed() const noexcept { return n_cols_ != 0; }
 
   // Raw access to the contiguous tangent block. Layout is row-major:
-  // tangents of v[i] live at storage_[i * n_cols_ .. i * n_cols_ + n_cols_).
-  // Free helpers (vec_axpy_with_slab / vec_scale_with_slab) call BLAS over
-  // this whole block; per-element pointers are still reachable via v[i].
-  inner_type*       tangent_data()       noexcept { return storage_.data(); }
-  const inner_type* tangent_data() const noexcept { return storage_.data(); }
-  std::size_t       tangent_size() const noexcept { return storage_.size(); }
+  // tangents of v[i] live at base + i * n_cols + [0, n_cols). Free helpers
+  // (vec_axpy_with_slab / vec_scale_with_slab) call BLAS over this whole
+  // block; per-element pointers are still reachable via v[i].
+  inner_type*       tangent_data()       noexcept { return base_(); }
+  const inner_type* tangent_data() const noexcept { return base_(); }
+  std::size_t       tangent_size() const noexcept {
+    return static_cast<std::size_t>(n_rows_) * n_cols_;
+  }
 
   // Size the slab and rebind every v[i].tan_ into row i. Idempotent: if the
   // (n_rows, n_cols) shape already matches, only the rebind step runs.
@@ -102,13 +104,35 @@ public:
     if constexpr (T::static_size > 0) {
       n_cols = T::static_size;
     }
-    if (n_rows == n_rows_ && n_cols == n_cols_) {
+    if (external_ == nullptr && n_rows == n_rows_ && n_cols == n_cols_) {
       rebind_only(v);
       return;
     }
     n_rows_ = n_rows;
     n_cols_ = n_cols;
+    external_ = nullptr;
     storage_.assign(static_cast<std::size_t>(n_rows) * n_cols, inner_type{});
+    rebind_only(v);
+  }
+
+  // External-storage prime: bind v[i].tan_ into [base, base + n_rows*n_cols)
+  // without allocating own storage. The caller is responsible for keeping
+  // the buffer alive for the slab's remaining lifetime. Used by
+  // nordsieck_block to give all K Nordsieck slots slices of one contiguous
+  // [(K, n, n_cols)] tangent buffer so that BLAS-3 (dtrmm, dger) can
+  // operate across the whole block.
+  void prime_external(std::vector<T>& v, inner_type* base,
+                      unsigned n_rows, unsigned n_cols) {
+    assert(static_cast<unsigned>(v.size()) == n_rows
+           && "tangent_slab::prime_external: vector size mismatch");
+    if constexpr (T::static_size > 0) {
+      n_cols = T::static_size;
+    }
+    storage_.clear();
+    storage_.shrink_to_fit();
+    external_ = base;
+    n_rows_   = n_rows;
+    n_cols_   = n_cols;
     rebind_only(v);
   }
 
@@ -119,14 +143,22 @@ public:
     if (n_cols_ == 0) return;  // not yet primed; nothing to bind
     assert(static_cast<unsigned>(v.size()) == n_rows_
            && "tangent_slab::rebind_only: vector size changed");
-    inner_type* base = storage_.data();
+    inner_type* base = base_();
     for (unsigned i = 0; i < n_rows_; ++i) {
       v[i].rebind_storage(base + static_cast<std::size_t>(i) * n_cols_, n_cols_);
     }
   }
 
 private:
+  inner_type* base_() noexcept {
+    return external_ ? external_ : storage_.data();
+  }
+  const inner_type* base_() const noexcept {
+    return external_ ? external_ : storage_.data();
+  }
+
   std::vector<inner_type> storage_;
+  inner_type*             external_ = nullptr;  // non-null = external-storage mode
   unsigned                n_rows_ = 0;
   unsigned                n_cols_ = 0;
 };

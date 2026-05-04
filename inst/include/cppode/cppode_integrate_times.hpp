@@ -13,7 +13,7 @@
  * - Bisection-based root localization with tolerance
  * - Event application methods (Replace/Add/Multiply)
  * - Stepper reinitialization after events
- * - FADBAD++ automatic differentiation support
+ * - Forward-mode AD support (cppode::dual / cppode::dual2nd)
  * - Root tracking and fire count management
  * - Dense output optimization for root-finding
  * - Simultaneous root events
@@ -37,8 +37,6 @@
 #include <cppode/cppode_profiler.hpp>
 #include <cppode/cppode_utils.hpp>
 
-#include <fadbad++/fadiff.h>
-#include <cppode/cppode_fadiff_extensions.hpp>
 #include <cppode/cppode_ad_traits.hpp>
 
 namespace cppode {
@@ -190,7 +188,8 @@ struct FixedEvent {
 //
 // The dg_dx / dg_dt members are codegen-provided analytical partial
 // derivatives of the root function g(x,t).  They are required for AD
-// models (FADBAD++ types) to compute the analytical saltation correction.
+// models (cppode::dual / cppode::dual2nd) to compute the analytical
+// saltation correction.
 // For pure-double models they are unused and may be left unset.
 // ============================================================================
 
@@ -327,12 +326,12 @@ inline void apply_event_action_fixed(
 // of g along the trajectory.
 //
 // Evaluating g on the AD state x_before gives g_val.d(j) = dg_total/dp_j
-// (chain rule through FADBAD).  Computing g_dot from dg_dx · f + dg_dt
+// (chain rule through the dual layer).  Computing g_dot from dg_dx · f + dg_dt
 // on the AD types gives g_dot as a full AD type, so that the quotient
 //
 //   dt* = -g_val / g_dot
 //
-// applies FADBAD's quotient rule and yields correct d(dt*)/dp for
+// applies the dual quotient rule and yields correct d(dt*)/dp for
 // first-order, and d²(dt*)/dp_i dp_j for second-order AD types.
 //
 // State transport uses Heun (trapezoid) shifts rather than Euler, because
@@ -360,7 +359,7 @@ inline void apply_event_action_fixed(
 //
 // Summary of the full correction:
 //   1. g_dot from codegen-provided dg_dx, dg_dt  (analytical, full AD)
-//   2. dt* = -g / g_dot                          (FADBAD quotient rule)
+//   2. dt* = -g / g_dot                          (dual quotient rule)
 //   3. Forward Heun shift to event surface        (2nd-order AD accurate)
 //   4. Apply ALL simultaneous event actions
 //   5. Backward Heun shift to grid time           (2nd-order AD accurate)
@@ -397,7 +396,7 @@ inline typename state_type::value_type compute_dt_star(
     return value_type(0.0);
   }
 
-  // dt* from IFT (FADBAD quotient rule)
+  // dt* from IFT (dual quotient rule)
   value_type g_val = evt.func(x_before, t_event);
   g_val = g_val - value_type(scalar_value(g_val));
   value_type dt_star = -g_val / g_dot;

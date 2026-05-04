@@ -16,7 +16,6 @@
 
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_ad_lu.hpp>   // for is_ad, extract_values, etc.
-#include <fadbad++/fadiff.h>
 
 #ifdef KLU
 #include <cppode/cppode_klu_solver.hpp>
@@ -26,13 +25,13 @@ namespace cppode {
 namespace ad_lu {
 
 // ============================================================================
-//  extract_csc_values: csc_matrix<F<Inner>> → csc_matrix<Inner>
+//  extract_csc_values: csc_matrix<dual<Inner>> → csc_matrix<Inner>
 //
 //  Copies the CSC structure (Ap, Ai) and extracts value part of Ax.
 // ============================================================================
 
-// Generic over any AD type with the FADBAD-compatible accessor surface
-// (fadbad::F, cppode::dual, cppode::dual2nd).
+// Generic over any AD type with the standard accessor surface
+// (cppode::dual, cppode::dual2nd).
 template<class AD,
          std::enable_if_t<is_ad<AD>::value, int> = 0>
 inline csc_matrix<inner_type_t<AD>>
@@ -121,7 +120,7 @@ private:
 };
 
 // ============================================================================
-//  sparse_lu_solver<F<Inner>> — Recursive AD case (IFT peeling)
+//  sparse_lu_solver<AD_T> — Recursive AD case (IFT peeling)
 //
 //  Same approach as dense: extract value part, factorize, propagate
 //  derivatives via IFT.  CSC structure is shared between levels.
@@ -137,7 +136,7 @@ private:
 //       over W_stored to determine the number of active derivatives.
 // ============================================================================
 
-// Generic AD specialization: works for fadbad::F<Inner,N> and cppode::dual<Inner,N>.
+// Generic AD specialization for cppode::dual<Inner,N>.
 template<class AD_T>
 class sparse_lu_solver<AD_T, std::enable_if_t<is_ad<AD_T>::value>>
 {
@@ -213,7 +212,7 @@ public:
 
     } else {
       // ============================================================
-      //  Inner = F<...> (nested AD): store full AD matrix for the
+      //  Inner = dual<...> (nested AD): store full AD matrix for the
       //  generic element-wise IFT path.
       // ============================================================
       if (m_W_stored.nnz != nnz) {
@@ -326,10 +325,10 @@ private:
   //
   //  Inner = double:
   //    Derivative components were pre-extracted into m_dW_ax in
-  //    factorize().  No F<> objects touched — pure double arithmetic.
+  //    factorize().  No dual<> objects touched — pure double arithmetic.
   //    Layout: m_dW_ax[p * nd + j] = d(j) of the p-th CSC entry.
   //
-  //  Inner = F<...> (nested AD):
+  //  Inner = dual<...> (nested AD):
   //    Single pass over m_W_stored (element-wise loop).
   // ================================================================
 
@@ -362,9 +361,9 @@ private:
 
     } else {
       // =============================================================
-      //  Generic path: nested AD types (Inner = F<...>)
+      //  Generic path: nested AD types (Inner = dual<...>)
       //
-      //  Single pass over W_stored — each F<Inner,N> element is
+      //  Single pass over W_stored — each dual<Inner,N> element is
       //  touched exactly once.
       // =============================================================
 

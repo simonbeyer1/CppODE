@@ -14,9 +14,9 @@
  primary template has no runtime size_ field — N is a compile-time constant
  used as the loop bound (constexpr-foldable for unrolling / SIMD).
 
- API surface mirrors fadbad::F<T, N> so generated codegen output (`.x()`,
- `.diff(idx)`, `.diff(idx, n)`, `.d(j)`, `.size()`, `.depend()`,
- `operator[]`) compiles unchanged when the codegen swaps the type alias.
+ Provides the standard accessor surface used by codegen output:
+ `.x()`, `.diff(idx)`, `.diff(idx, n)`, `.d(j)`, `.size()`, `.depend()`,
+ `operator[]`.
 
  This header defines the data class only. Arithmetic operators and math
  functions (eager path, gated to nested-AD T only) live in
@@ -201,7 +201,7 @@ public:
   // -- accessors --------------------------------------------------------------
   const T& x()   const { return val_; }
   T&       x()         { return val_; }
-  const T& val() const { return val_; }   // FADBAD alias
+  const T& val() const { return val_; }   // .x() alias
   T&       val()       { return val_; }
 
   unsigned size()   const { return depend_ ? N : 0u; }
@@ -212,9 +212,9 @@ public:
   // need to honour the depend_ state.
   static constexpr unsigned loop_size() { return N; }
 
-  // FADBAD-compatible: returns mutable reference, even when out-of-bounds
-  // or !depend (returns ref to a thread-local zero, mirroring fadiff.h:179).
-  // Codegen sometimes does `dual.d(j) = value` after .diff(idx) seeding.
+  // Returns mutable reference, even when out-of-bounds or !depend
+  // (returns ref to a thread-local zero). Codegen sometimes does
+  // `dual.d(j) = value` after .diff(idx) seeding.
   T& d(unsigned j) {
     if (!depend_ || j >= N) {
       thread_local T zero{};
@@ -247,7 +247,8 @@ public:
     tan_[idx] = T(1);
     return tan_[idx];
   }
-  // FADBAD-compatible 2-arg form: n must equal N at compile time.
+  // 2-arg form (kept for API uniformity with the dynamic spec): n must
+  // equal N at compile time.
   T& diff(unsigned idx, unsigned n) {
     assert(n == N && "diff(idx, n): n must equal compile-time N");
     (void)n;
@@ -473,8 +474,8 @@ public:
   // Mirrors dual<T,N>::loop_size() for the dynamic spec — see comment there.
   unsigned loop_size() const { return size_; }
 
-  // FADBAD-compatible: mutable + const overloads, both returning a reference.
-  // Out-of-bounds returns ref to a thread-local zero (FADBAD parity).
+  // Mutable + const overloads, both returning a reference.
+  // Out-of-bounds returns ref to a thread-local zero.
   T& d(unsigned j) {
     if (j >= size_) {
       thread_local T zero{};
@@ -572,7 +573,7 @@ public:
 // at both layers, yielding a Hessian via H[i, j] = result.d(i).d(j).
 //
 // Memory cost: per number, N + N*(1+N) values of T (gradient duplicated across
-// outer-tangent entries — same as fadbad::F<fadbad::F<T,N>,N>). For dynamic
+// outer-tangent entries). For dynamic
 // width (N == 0) all storage is arena-backed.
 //
 // Naming-only alias — no new code; the recursive AD machinery (traits, LU,

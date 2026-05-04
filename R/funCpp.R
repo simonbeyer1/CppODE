@@ -55,9 +55,9 @@
 #'   path; if \code{derivMode != "symbolic"} and \code{deriv2 = TRUE},
 #'   \code{derivMode} is forced to \code{"symbolic"} with a warning.
 #'   Default \code{FALSE}.
-#' @param derivMode Character; one of \code{"dual"} (default),
-#'   \code{"fadbad"}, or \code{"symbolic"}. Selects how derivatives are
-#'   generated when \code{deriv = TRUE} or \code{deriv2 = TRUE}:
+#' @param derivMode Character; one of \code{"dual"} (default) or
+#'   \code{"symbolic"}. Selects how derivatives are generated when
+#'   \code{deriv = TRUE} or \code{deriv2 = TRUE}:
 #'   \describe{
 #'     \item{\code{"dual"}}{Forward-mode AD via the in-tree
 #'       \code{cppode::dual} backend (arena-allocated heap AD). Emits the
@@ -65,9 +65,6 @@
 #'       \code{dX} (state sensitivities per observation) and \code{dP}
 #'       (parameter-transform Jacobian) and returns the value together
 #'       with \code{dY/dtheta} in one pass.}
-#'     \item{\code{"fadbad"}}{Same chain-ruled \code{jac_chain} entry,
-#'       implemented on top of the legacy FADBAD++ \code{F<double>}
-#'       backend.}
 #'     \item{\code{"symbolic"}}{Classical symbolic Jacobian (and
 #'       Hessian if \code{deriv2}) via SymPy; exposed as \code{jac} and
 #'       \code{hess}.}
@@ -89,7 +86,7 @@
 funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parameters = NULL,
                    fixed = NULL, modelname = NULL, outdir = tempdir(), compile = FALSE,
                    verbose = FALSE, convenient = TRUE, deriv = TRUE, deriv2 = FALSE,
-                   derivMode = c("dual", "fadbad", "symbolic")) {
+                   derivMode = c("dual", "symbolic")) {
 
   derivMode <- match.arg(derivMode)
   if (deriv2 && !deriv) { warning("deriv2 requires deriv. Setting deriv = TRUE."); deriv <- TRUE }
@@ -99,8 +96,7 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
   }
   emit_deriv    <- deriv || deriv2
   want_symbolic <- emit_deriv && derivMode == "symbolic"
-  want_ad       <- emit_deriv && derivMode %in% c("dual", "fadbad")
-  ad_backend    <- if (want_ad) derivMode else NA_character_
+  want_ad       <- emit_deriv && derivMode == "dual"
 
   outnames <- names(eqns) %||% paste0("f", seq_along(eqns))
   if (!is.null(fixed)) { variables <- setdiff(variables, fixed); parameters <- union(parameters, fixed) }
@@ -170,7 +166,6 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
   codegen$generate_fun_cpp(exprs = setNames(as.list(eqns), outnames), variables = as.list(variables),
                            parameters = as.list(parameters), jacobian = toList(sym_jac), hessian = toHess(sym_hess),
                            ad = want_ad,
-                           ad_backend = if (want_ad) ad_backend else "fadbad",
                            modelname = modelname, outdir = normalizePath(outdir, "/", FALSE), version = as.character(utils::packageVersion("CppODE")))
 
   # --- Attach helpers ---
@@ -263,7 +258,7 @@ funCpp <- function(eqns, variables = getSymbols(eqns, omit = parameters), parame
     if (length(fixed_rt) && n_theta > 0) dP_mat[match(fixed_rt, parameters), ] <- 0
 
     funsym <- paste0(modelname, "_eval_ad")
-    if (!is.loaded(funsym)) stop("AD entry '", funsym, "' is not loaded. Did you compile with derivMode in {'dual','fadbad'}?")
+    if (!is.loaded(funsym)) stop("AD entry '", funsym, "' is not loaded. Did you compile with derivMode = 'dual'?")
     out <- .C(funsym,
               x        = as.double(M),
               p        = as.double(p),

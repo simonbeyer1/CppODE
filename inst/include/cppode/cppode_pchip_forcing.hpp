@@ -5,7 +5,7 @@
  * - PchipForcing<T>: Time-dependent forcing with PCHIP interpolation
  * - Fritsch-Carlson monotonicity-preserving slope computation
  * - C1 continuous interpolation with analytical derivatives
- * - Support for FADBAD++ automatic differentiation types (F<T>, F<F<T>>)
+ * - Support for forward-mode AD types (cppode::dual / cppode::dual2nd)
  * - Zero extrapolation outside defined time range (safe default)
  *
  * Copyright (C) 2026 Simon Beyer
@@ -222,7 +222,7 @@ struct PchipForcing {
 private:
   // Extract double value from numeric type (for interval search).
   // Base case for double is exact; the template handles any AD-like
-  // type with an .x() accessor (F<T>, F<F<T>>, etc.) recursively.
+  // type with an .x() accessor (cppode::dual / cppode::dual2nd) recursively.
   static double extract_double(double x) { return x; }
 
   template<typename U>
