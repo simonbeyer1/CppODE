@@ -7,6 +7,11 @@
  - Stepper tags, step result enum
  - Comparison utilities
 
+ The state_wrapper / Resizeable / stepper-tag patterns and naming
+ follow Boost.Odeint conventions (Boost Software License, Version
+ 1.0).  See inst/COPYRIGHTS for the full license text and original
+ copyright notice.
+
  Copyright (C) 2026 Simon Beyer
  */
 

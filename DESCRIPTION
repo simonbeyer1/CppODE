@@ -1,8 +1,18 @@
 Package: CppODE
 Title: Automated 'C++' Code Generation for ODE Integration with Sensitivity Analysis
 Version: 1.0.0
-Authors@R:
-    person("Simon", "Beyer", , "simon.beyer@fdm.uni-freiburg.de", role = c("aut", "cre"))
+Authors@R: c(
+    person("Simon", "Beyer", , "simon.beyer@fdm.uni-freiburg.de", role = c("aut", "cre")),
+    person("Lawrence Livermore National Security", role = "cph",
+           comment = "Portions of cppode_multistepper(_controller).hpp and cppode_newton.hpp derived from SUNDIALS/CVODE(S); see inst/COPYRIGHTS"),
+    person("Southern Methodist University", role = "cph",
+           comment = "SUNDIALS/CVODE(S) co-copyright holder; see inst/COPYRIGHTS"),
+    person("Karsten", "Ahnert", role = "cph",
+           comment = "Boost.Odeint Rosenbrock4 base implementation; see inst/COPYRIGHTS"),
+    person("Mario", "Mulansky", role = "cph",
+           comment = "Boost.Odeint Rosenbrock4 co-copyright holder; see inst/COPYRIGHTS"),
+    person("Christoph", "Koke", role = "cph",
+           comment = "Boost.Odeint Rosenbrock4 co-copyright holder; see inst/COPYRIGHTS"))
 Description: Generates, compiles, and runs 'C++' solvers for systems of ordinary
     differential equations. Includes a variable-order BDF integrator with
     LAPACK/KLU linear algebra and a Rosenbrock4 method derived from

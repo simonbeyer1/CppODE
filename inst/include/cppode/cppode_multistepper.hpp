@@ -56,6 +56,13 @@
  class itself all live here.
 
  Copyright (C) 2026 Simon Beyer
+
+ Portions of this file are derived from SUNDIALS/CVODE(S)
+ (cvode.c — cvSetAdams, cvAdjustParams, cvNlsFunctional, cvHin,
+ error-weight machinery, NDF kappa modification, Adams PECE control),
+ Copyright (c) 2002-2024 Lawrence Livermore National Security and
+ Southern Methodist University, distributed under the BSD-3-Clause
+ license.  See inst/COPYRIGHTS for the full license text.
  */
 
 #ifndef CPPODE_MULTISTEPPER_HPP_INCLUDED

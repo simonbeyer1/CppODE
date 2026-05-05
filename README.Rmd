@@ -30,24 +30,19 @@ automatically via forward-mode automatic differentiation.
 
 - **BDF/NDF and Adams multistep solvers** (variable-order 1–5,
   variable-step, Nordsieck form) adapted from
-  [SUNDIALS/CVODE](https://computing.llnl.gov/projects/sundials), with
-  dense LU via R's LAPACK interface or sparse LU via KLU (bundled
-  SuiteSparse)
+  [SUNDIALS/CVODE](https://computing.llnl.gov/projects/sundials)
 - **Rosenbrock4 solver** extended from [Boost.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/doc/html/index.html)
-- **Tsit5 solver** — 7-stage explicit FSAL Runge–Kutta (Tsitouras
+- **Tsit5 solver**: 7-stage explicit FSAL Runge–Kutta (Tsitouras
   2011) with embedded error estimate and dense output
-- **Automatic differentiation** — in-tree dual numbers for exact
+- **Automatic differentiation**: in-tree dual numbers for exact
   first- and second-order parameter sensitivities in a single
   integration pass
-- **BLAS-accelerated sensitivities** — stacked tangent blocks let the
-  Nordsieck Pascal shift (`dtrmm`), step completion (`dger`) and
-  Tsit5/RB4 stage assembly (`dgemv`) run as Level-2/3 BLAS, paying off
-  for systems with many parameters
-- **Event handling** — time-based and root-triggered events with
-  saltation matrix corrections for sensitivity continuity
-- **Symbolic Jacobian** — automatically derived and compiled as
+- **Event handling**: time-based and root-triggered events with
+  saltation matrix corrections for first- and second-order
+  sensitivity continuity across events
+- **Symbolic Jacobian**: automatically derived and compiled as
   analytic C++ code
-- **Sparse support** — auto-detection of Jacobian sparsity with
+- **Sparse support**: auto-detection of Jacobian sparsity with
   KLU factorization for large systems
 
 ## Installation
@@ -63,8 +58,8 @@ The core package installs without any system libraries. Two features are
 gated on optional dependencies, detected by `./configure` (Unix/macOS)
 or `./configure.win` (Windows) at install time:
 
-- **`CVODE()` backend** — needs **SUNDIALS** (>= 6.0).
-- **Sparse Jacobian path** of both `CppODE()` and `CVODE()` — needs
+- **`CVODE()` backend** requires **SUNDIALS** (>= 6.0).
+- **Sparse Jacobian path** of both `CppODE()` and `CVODE()` requires
   **SuiteSparse / KLU**.
 
 If a library is missing the install still succeeds; the affected
@@ -92,9 +87,9 @@ Re-install subsequently.
 
 ### Custom-prefix install (HPCs, no sudo)
 
-If you can't use the system package manager — typical for HPC
+If you can't use the system package manager (typical for HPC
 clusters, shared research servers, or systems where the packaged
-SUNDIALS is too old to be performant — build the libraries into
+SUNDIALS is too old to be performant), build the libraries into
 `$HOME` and point the package at them through four environment
 variables. `configure` (Unix/macOS) and `configure.win` honour the
 same overrides:
@@ -107,7 +102,7 @@ same overrides:
 | `CPPODE_CVODE_KLU_LIBS`   | full link line for KLU + SUNDIALS sparse glue |
 
 When any variable is set, the corresponding probe in `configure` is
-skipped — you become responsible for the full link line, including
+skipped, and you become responsible for the full link line, including
 runtime resolution.
 
 **1. Check first whether your cluster already ships them as modules:**
@@ -124,8 +119,10 @@ If both exist, point the env vars below at the module prefix
 
 ```sh
 PREFIX=$HOME/.local
+module load devel/cmake # or similar
+module load numlib/mkl  # or similar
 
-# SuiteSparse / KLU — skip if module-provided or already in $PREFIX
+# SuiteSparse / KLU 
 git clone --depth 1 -b v7.10.0 https://github.com/DrTimothyAldenDavis/SuiteSparse.git
 cmake -S SuiteSparse -B SuiteSparse/build \
       -DCMAKE_INSTALL_PREFIX=$PREFIX \
@@ -133,7 +130,7 @@ cmake -S SuiteSparse -B SuiteSparse/build \
       -DSUITESPARSE_ENABLE_PROJECTS="suitesparse_config;amd;colamd;btf;klu"
 cmake --build SuiteSparse/build -j && cmake --install SuiteSparse/build
 
-# SUNDIALS (>= 7 strongly recommended — measurably faster than 6.x
+# SUNDIALS (>= 7 strongly recommended; measurably faster than 6.x
 # Debian/Ubuntu builds because of fewer hardening flags)
 git clone --depth 1 -b v7.4.0 https://github.com/LLNL/sundials.git
 cmake -S sundials -B sundials/build \
@@ -158,13 +155,13 @@ export CPPODE_CVODE_KLU_LIBS="-L$PREFIX/lib -Wl,-rpath,$PREFIX/lib \
   -lsundials_sunmatrixsparse -lsundials_sunlinsolklu \
   -lklu -lamd -lcolamd -lbtf -lsuitesparseconfig"
 
-R CMD INSTALL .         # or: Rscript -e 'devtools::install_github("simonbeyer1/CppODE")'
+R CMD INSTALL .         # or: Rscript -e 'remotes::install_github("simonbeyer1/CppODE")'
 ```
 
 The `-Wl,-rpath,$PREFIX/lib` fragment bakes the library search path
 into the compiled solver itself, so `dyn.load()` resolves the
 SUNDIALS / KLU shared libraries on compute nodes without
-`LD_LIBRARY_PATH` — important for schedulers (SLURM, PBS, …) that
+`LD_LIBRARY_PATH`, which matters for schedulers (SLURM, PBS, …) that
 strip the user environment between login and worker shells.
 
 To persist the configuration across sessions, drop the four `export`
@@ -173,4 +170,34 @@ it explicitly before each install).
 
 ## License
 
-MIT
+CppODE is distributed under the **MIT License**; see `LICENSE` /
+`LICENSE.md` for the full text.
+
+Portions of the C++ solver core in `inst/include/cppode/` are derived
+from third-party projects and remain subject to their upstream
+licenses:
+
+- The Nordsieck multistep stepper (BDF/NDF and Adams-Moulton) in
+  `cppode_multistepper.hpp`, `cppode_multistepper_controller.hpp` and
+  `cppode_newton.hpp` is a port of the corresponding routines in
+  [SUNDIALS/CVODE(S)](https://computing.llnl.gov/projects/sundials)
+  (Copyright © 2002–2024 Lawrence Livermore National Security and
+  Southern Methodist University), distributed under the
+  **BSD-3-Clause** license.
+- The Rosenbrock4 stepper architecture in `cppode_rosenbrock4.hpp`
+  (and the surrounding stage-matrix / dense-output / stepper-protocol
+  infrastructure) is derived from
+  [Boost.Numeric.Odeint](https://www.boost.org/doc/libs/release/libs/numeric/odeint/)
+  by Karsten Ahnert, Mario Mulansky and Christoph Koke, distributed
+  under the **Boost Software License 1.0**.
+
+Full upstream copyright notices and license texts are reproduced in
+[`inst/COPYRIGHTS`](inst/COPYRIGHTS).  Both upstream licenses are
+permissive and compatible with MIT; using or redistributing CppODE
+requires preserving the notices in `inst/COPYRIGHTS` and the relevant
+header attribution blocks.
+
+The optional system libraries linked at runtime are not vendored:
+SUNDIALS (BSD-3-Clause) for the `CVODE()` backend and SuiteSparse-KLU
+(LGPL-2.1+) for the sparse-Jacobian path. Their own licenses govern
+the libraries at the user's installation site.

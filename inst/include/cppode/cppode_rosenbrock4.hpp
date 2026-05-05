@@ -3,7 +3,9 @@
 
  The stepper architecture is derived from Boost.Odeint's rosenbrock4
  by Karsten Ahnert, Mario Mulansky, and Christoph Koke (2011–2013),
- distributed under the Boost Software License, Version 1.0.
+ distributed under the Boost Software License, Version 1.0.  See
+ inst/COPYRIGHTS for the full license text and original copyright
+ notice.
 
  Copyright (C) 2026 Simon Beyer
  */

@@ -1,0 +1,161 @@
+CppODE — Third-Party Copyright Notices
+======================================
+
+CppODE itself is distributed under the MIT License; see the top-level
+LICENSE / LICENSE.md.  Portions of the C++ implementation in
+`inst/include/cppode/` are derived from the third-party projects listed
+below and remain subject to the respective upstream licenses.  Their
+original copyright notices and license texts are reproduced verbatim.
+
+
+--------------------------------------------------------------------
+1. SUNDIALS / CVODE(S)
+--------------------------------------------------------------------
+
+Scope of derivation
+-------------------
+The Nordsieck multistep stepper (BDF/NDF and Adams-Moulton variants)
+in
+
+  inst/include/cppode/cppode_multistepper.hpp
+  inst/include/cppode/cppode_multistepper_controller.hpp
+  inst/include/cppode/cppode_newton.hpp
+
+is a port of the BDF/Adams algorithms, step-size and order control,
+predictor/corrector pipeline, error-weight machinery, NDF kappa
+modification, and Newton iteration from SUNDIALS/CVODE(S) (file
+`cvode.c` and related sources).  Routine names referenced in inline
+comments (cvSetAdams, cvAdjustParams, cvNlsFunctional, cvDlsSetup,
+cvSensUpdateNorm, cvHin, …) point to their CVODE(S) origins.  The
+sensitivity-aware staggered Newton path follows the CVODES
+CV_STAGGERED convention.
+
+Project: SUNDIALS  (https://computing.llnl.gov/projects/sundials)
+Upstream license file: SUNDIALS LICENSE (BSD-3-Clause).
+
+Original copyright notice
+-------------------------
+Copyright (c) 2002-2024, Lawrence Livermore National Security and
+Southern Methodist University.
+All rights reserved.
+
+See the top-level LICENSE and NOTICE files in the SUNDIALS source
+distribution for details.
+
+License text (BSD 3-Clause "New" or "Revised" License)
+------------------------------------------------------
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in
+   the documentation and/or other materials provided with the
+   distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived
+   from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The CVODE() R-side wrapper (`R/CVODE.R`) and the generated CVODE glue
+in `inst/python/codegenCVODE.py` link against an unmodified system
+SUNDIALS installation; that linkage is governed by the same BSD-3
+license but does not vendor any SUNDIALS source.
+
+
+--------------------------------------------------------------------
+2. Boost.Numeric.Odeint
+--------------------------------------------------------------------
+
+Scope of derivation
+-------------------
+The Rosenbrock4 stepper architecture (stage matrix, dense output,
+controller protocol) in
+
+  inst/include/cppode/cppode_rosenbrock4.hpp
+  inst/include/cppode/cppode_stage_matrix.hpp
+  inst/include/cppode/cppode_onestep_controller.hpp
+  inst/include/cppode/cppode_onestep_dense_output.hpp
+  inst/include/cppode/cppode_odeint_compat.hpp
+
+is derived from `boost::numeric::odeint::rosenbrock4` and its
+surrounding stepper-protocol infrastructure.
+
+Project: Boost.Numeric.Odeint
+        (https://www.boost.org/doc/libs/release/libs/numeric/odeint/)
+
+Original copyright notice
+-------------------------
+Copyright 2009-2015 Karsten Ahnert
+Copyright 2009-2015 Mario Mulansky
+Copyright 2011-2013 Christoph Koke
+
+License text (Boost Software License, Version 1.0)
+--------------------------------------------------
+Permission is hereby granted, free of charge, to any person or
+organization obtaining a copy of the software and accompanying
+documentation covered by this license (the "Software") to use,
+reproduce, display, distribute, execute, and transmit the Software,
+and to prepare derivative works of the Software, and to permit
+third-parties to whom the Software is furnished to do so, all subject
+to the following:
+
+The copyright notices in the Software and this entire statement,
+including the above license grant, this restriction and the following
+disclaimer, must be included in all copies of the Software, in whole
+or in part, and all derivative works of the Software, unless such
+copies or derivative works are solely in the form of machine-
+executable object code generated by a source language processor.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-
+INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR ANYONE
+DISTRIBUTING THE SOFTWARE BE LIABLE FOR ANY DAMAGES OR OTHER
+LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
+OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+
+--------------------------------------------------------------------
+3. Tsitouras 5(4) coefficients
+--------------------------------------------------------------------
+
+`inst/include/cppode/cppode_tsit5.hpp` implements the 7-stage explicit
+Runge-Kutta pair of Tsitouras (2011).  The numerical Butcher
+coefficients are taken from the published paper; the implementation
+itself is original.
+
+Reference:
+  Tsitouras, Ch. (2011). "Runge-Kutta pairs of order 5(4) satisfying
+  only the first column simplifying assumption."  Computers &
+  Mathematics with Applications, 62(2), 770-775.
+
+Mathematical formulae and tableaux are not subject to copyright; this
+entry is provided as scientific attribution, not a license obligation.
+
+
+--------------------------------------------------------------------
+4. SUNDIALS / SuiteSparse-KLU at runtime
+--------------------------------------------------------------------
+
+The `CVODE()` backend and the sparse-Jacobian path of `CppODE()` link
+against unmodified system installations of SUNDIALS (BSD-3-Clause)
+and SuiteSparse-KLU (LGPL-2.1+).  No source from these libraries is
+vendored in this package; their licenses govern the libraries
+themselves at the user's installation site.

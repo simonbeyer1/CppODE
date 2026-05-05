@@ -21,6 +21,13 @@
  Separated from the NDF stepper for testability.
 
  Copyright (C) 2026 Simon Beyer
+
+ Portions of this file (chord-Newton convergence test, Nordsieck
+ correction update, sensitivity-aware staggered WRMS norm matching
+ CVODES CV_STAGGERED) are derived from SUNDIALS/CVODE(S),
+ Copyright (c) 2002-2024 Lawrence Livermore National Security and
+ Southern Methodist University, distributed under the BSD-3-Clause
+ license.  See inst/COPYRIGHTS for the full license text.
  */
 
 #ifndef CPPODE_NEWTON_HPP

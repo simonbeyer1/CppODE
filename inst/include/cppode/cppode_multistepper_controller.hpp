@@ -26,6 +26,13 @@
  - Hairer & Wanner, "Solving ODEs II", Ch. III
 
  Copyright (C) 2026 Simon Beyer
+
+ Portions of this file (step acceptance/rejection logic, eta/qwait
+ control, BIAS safety factors, order-change and J-staleness pipeline)
+ are derived from SUNDIALS/CVODE(S) (cvode.c), Copyright (c) 2002-2024
+ Lawrence Livermore National Security and Southern Methodist
+ University, distributed under the BSD-3-Clause license.  See
+ inst/COPYRIGHTS for the full license text.
  */
 
 #ifndef CPPODE_MULTISTEPPER_CONTROLLER_HPP_INCLUDED
