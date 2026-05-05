@@ -574,8 +574,12 @@ def _write_eval_ad_function(buf, out_names, ctx, modelname):
     buf.write("        for (int i = 0; i < n_out; ++i) {\n")
     buf.write("            y[obs + (size_t)n_obs * i] = y_ad[i].val();\n")
     buf.write("            for (int k = 0; k < n_theta; ++k) {\n")
-    # operator[] on cppode::dual<double, 0> exposes the tangent component.
-    buf.write("                dy[obs + (size_t)n_obs * (i + (size_t)n_out * k)] = y_ad[i][k];\n")
+    # .d(k) on cppode::dual<double, 0> returns the k-th tangent, or a
+    # thread-local zero when the dual is non-depend (size_ == 0). Using the
+    # raw operator[] would dereference tan_ unconditionally and segfault for
+    # outputs that are constant in all parameters (e.g. y_i = "0"), since
+    # operator=(double) leaves tan_ == nullptr.
+    buf.write("                dy[obs + (size_t)n_obs * (i + (size_t)n_out * k)] = y_ad[i].d(k);\n")
     buf.write("            }\n")
     buf.write("        }\n")
     buf.write("    }\n}\n\n")
