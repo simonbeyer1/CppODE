@@ -9,6 +9,8 @@ sign() are supported.
 Author: Simon Beyer
 """
 
+import re
+import keyword
 import sympy as sp
 from sympy.parsing.sympy_parser import (
     parse_expr,
@@ -18,6 +20,9 @@ from sympy.parsing.sympy_parser import (
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
+
+_IDENT_RE = re.compile(r'(?<![\.\w])[A-Za-z_][A-Za-z0-9_]*')
+_PY_RESERVED = frozenset(keyword.kwlist) | {'True', 'False', 'None'}
 # -----------------------------------------------------------------------------
 # Safe parsing configuration (cached)
 # -----------------------------------------------------------------------------
@@ -107,11 +112,19 @@ def _safe_sympify(expr_str, local_symbols=None):
     
     # Start with cached base dict
     safe_local = dict(_get_safe_parse_dict_cached())
-    
+
     # Merge with user-provided symbols
     if local_symbols:
         safe_local.update(local_symbols)
-    
+
+    # Pre-declare any bare identifier as a Symbol so it shadows SymPy globals
+    # like sp.beta / sp.gamma / sp.zeta (FunctionClass) that would otherwise
+    # leak in via parse_expr's default global_dict=sympy.__dict__ and break
+    # parsing of expressions such as "10^beta".
+    for name in _IDENT_RE.findall(expr_str):
+        if name not in safe_local and name not in _PY_RESERVED:
+            safe_local[name] = sp.Symbol(name, real=True)
+
     return parse_expr(
         expr_str,
         local_dict=safe_local,

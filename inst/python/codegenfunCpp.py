@@ -17,8 +17,12 @@ from sympy.parsing.sympy_parser import (
 from sympy.printing.cxx import CXX17CodePrinter
 import os
 import re
+import keyword
 from functools import lru_cache
 from io import StringIO
+
+_IDENT_RE = re.compile(r'(?<![\.\w])[A-Za-z_][A-Za-z0-9_]*')
+_PY_RESERVED = frozenset(keyword.kwlist) | {'True', 'False', 'None'}
 # =====================================================================
 # Safe parsing configuration (cached)
 # =====================================================================
@@ -243,9 +247,15 @@ class CodeGenContext:
         """Parse a string expression to SymPy."""
         safe_local = dict(_get_safe_parse_dict_cached())
         safe_local.update(self.all_symbols)
-        
+
+        # Pre-declare bare identifiers as Symbols so user names like beta,
+        # gamma, zeta, etc. don't resolve to SymPy FunctionClass globals.
+        for name in _IDENT_RE.findall(expr_str):
+            if name not in safe_local and name not in _PY_RESERVED:
+                safe_local[name] = sp.Symbol(name, real=True)
+
         transformations = standard_transformations + (convert_xor,)
-        
+
         return parse_expr(
             expr_str,
             local_dict=safe_local,
@@ -343,11 +353,11 @@ def generate_fun_cpp(exprs, variables, parameters=None,
 
 def _parse_expressions(exprs, ctx):
     """Parse algebraic expressions into SymPy objects."""
-    safe_local = dict(_get_safe_parse_dict_cached())
-    safe_local.update(ctx.all_symbols)
-    
+    base_local = dict(_get_safe_parse_dict_cached())
+    base_local.update(ctx.all_symbols)
+
     transformations = standard_transformations + (convert_xor,)
-    
+
     parsed = {}
     for name, expr_str in exprs.items():
         try:
@@ -355,9 +365,16 @@ def _parse_expressions(exprs, ctx):
             if expr_str == "0":
                 parsed[name] = sp.Integer(0)
             else:
+                # Pre-declare bare identifiers per-expression so user names
+                # like beta/gamma/zeta don't resolve to SymPy FunctionClass
+                # globals via parse_expr's default global_dict.
+                local = dict(base_local)
+                for nm in _IDENT_RE.findall(expr_str):
+                    if nm not in local and nm not in _PY_RESERVED:
+                        local[nm] = sp.Symbol(nm, real=True)
                 parsed[name] = parse_expr(
                     expr_str,
-                    local_dict=safe_local,
+                    local_dict=local,
                     transformations=transformations,
                     evaluate=True,
                 )

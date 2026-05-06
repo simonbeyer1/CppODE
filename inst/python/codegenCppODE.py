@@ -37,6 +37,7 @@ Author: Simon Beyer
 """
 
 import re
+import keyword
 import numbers
 import sympy as sp
 from sympy.parsing.sympy_parser import (
@@ -102,6 +103,9 @@ def _get_safe_parse_dict():
         "Piecewise": sp.Piecewise,
         "pi": sp.pi, "E": sp.E, "oo": sp.oo,
     }
+_IDENT_RE = re.compile(r'(?<![\.\w])[A-Za-z_][A-Za-z0-9_]*')
+_PY_RESERVED = frozenset(keyword.kwlist) | {'True', 'False', 'None'}
+
 def _safe_sympify(expr_str, local_symbols=None):
     """Safely parse a string expression to SymPy."""
     expr_str = str(expr_str).strip()
@@ -111,6 +115,13 @@ def _safe_sympify(expr_str, local_symbols=None):
     safe_local = dict(_get_safe_parse_dict())
     if local_symbols:
         safe_local.update(local_symbols)
+
+    # Pre-declare any bare identifier as a Symbol so it shadows SymPy globals
+    # like sp.beta / sp.zeta (FunctionClass) that would otherwise leak in via
+    # parse_expr's default global_dict=sympy.__dict__ and break "10^beta".
+    for name in _IDENT_RE.findall(expr_str):
+        if name not in safe_local and name not in _PY_RESERVED:
+            safe_local[name] = sp.Symbol(name, real=True)
 
     transformations = standard_transformations + (convert_xor,)
     return parse_expr(
