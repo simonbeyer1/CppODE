@@ -6,7 +6,7 @@
  max_deriv_size, bulk_extract_derivs, bulk_inject_results) into a single
  header. Specialized for cppode::dual<T,N>; second-order via
  cppode::dual2nd<T,N> = dual<dual<T,N>,N> falls out of the recursive
- specialisations — no separate trait entries.
+ specialisations: no separate trait entries.
 
  The bulk helpers are written generically over any AD type that exposes the
  accessor surface: `.x()`, `.d(j)`, `.size()`, `.depend()`,
@@ -27,6 +27,7 @@
 // pulling in the full headers from every call site.
 namespace cppode {
   template<class T, unsigned N> class dual;
+  template<class T, unsigned N> class dual2nd;
 }
 
 namespace cppode {
@@ -37,26 +38,41 @@ namespace ad_traits {
 // ============================================================================
 
 template<class T>           struct is_ad : std::false_type {};
-template<class T, unsigned N>     struct is_ad<cppode::dual<T, N>> : std::true_type {};
+template<class T, unsigned N>     struct is_ad<cppode::dual<T, N>>    : std::true_type {};
+template<class T, unsigned N>     struct is_ad<cppode::dual2nd<T, N>> : std::true_type {};
+
+// is_dual2nd<T>: matches only cppode::dual2nd<S, N>, not its base class.
+// Used by the LU/slab/multistepper paths to dispatch to the dual2nd-aware
+// extraction routines (which read gradient from outer.tan_[k].x() rather
+// than from base.val_.tan_, so val_tan_block is not required).
+template<class T>           struct is_dual2nd : std::false_type {};
+template<class T, unsigned N>     struct is_dual2nd<cppode::dual2nd<T, N>> : std::true_type {};
 
 // ============================================================================
-//  inner_type<T> — strip ONE layer of AD wrapping
+//  inner_type<T>: strip ONE layer of AD wrapping
+//
+//  For dual2nd the inner type is dual<T,N>: dual2nd represents a function with
+//  a value, gradient, and Hessian; peeling one layer yields a first-order dual
+//  carrying value + gradient. The LU IFT recursion goes
+//  dual2nd<T,N> -> dual<T,N> -> T.
 // ============================================================================
 
-template<class T>           struct inner_type       { using type = T; };
-template<class T, unsigned N>     struct inner_type<cppode::dual<T, N>> { using type = T; };
+template<class T>           struct inner_type                    { using type = T; };
+template<class T, unsigned N>     struct inner_type<cppode::dual<T, N>>    { using type = T; };
+template<class T, unsigned N>     struct inner_type<cppode::dual2nd<T, N>> { using type = cppode::dual<T, N>; };
 template<class T> using inner_type_t = typename inner_type<T>::type;
 
 // ============================================================================
-//  scalar_type<T> — recursively unwrap to innermost non-AD scalar
+//  scalar_type<T>: recursively unwrap to innermost non-AD scalar
 // ============================================================================
 
-template<class T>           struct scalar_type       { using type = T; };
-template<class T, unsigned N>     struct scalar_type<cppode::dual<T, N>>    : scalar_type<T> {};
+template<class T>           struct scalar_type                    { using type = T; };
+template<class T, unsigned N>     struct scalar_type<cppode::dual<T, N>>     : scalar_type<T> {};
+template<class T, unsigned N>     struct scalar_type<cppode::dual2nd<T, N>>  : scalar_type<T> {};
 template<class T> using scalar_type_t = typename scalar_type<T>::type;
 
 // ============================================================================
-//  scalar_value(v) — extract innermost double from any (nested) AD type
+//  scalar_value(v): extract innermost double from any (nested) AD type
 // ============================================================================
 
 template<class T>
@@ -65,6 +81,11 @@ scalar_value(const T& v) { return static_cast<double>(v); }
 
 template<class T, unsigned N>
 inline double scalar_value(const cppode::dual<T, N>& v) {
+  return scalar_value(v.x());
+}
+
+template<class T, unsigned N>
+inline double scalar_value(const cppode::dual2nd<T, N>& v) {
   return scalar_value(v.x());
 }
 
@@ -193,7 +214,9 @@ namespace detail {
 // static_size). Defaults to 0 = dynamic.
 template<class AD> struct ad_static_size : std::integral_constant<unsigned, 0> {};
 template<class T, unsigned N>
-struct ad_static_size<cppode::dual<T, N>> : std::integral_constant<unsigned, N> {};
+struct ad_static_size<cppode::dual<T, N>>    : std::integral_constant<unsigned, N> {};
+template<class T, unsigned N>
+struct ad_static_size<cppode::dual2nd<T, N>> : std::integral_constant<unsigned, N> {};
 } // namespace detail
 
 template<class AD,

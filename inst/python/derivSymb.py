@@ -335,10 +335,10 @@ def jac_hess_symb(exprs, variables=None, fixed=None, deriv2=False, real=False,
     -------
     dict
         {
-            "jacobian": dict[str, list[str]] — Jacobian rows keyed by expression name
-            "hessian": dict[str, list[list[str]]] or None — Hessians if deriv2=True
-            "names": list[str] — expression names
-            "vars": list[str] — variable names (in order)
+            "jacobian": dict[str, list[str]]: Jacobian rows keyed by expression name
+            "hessian": dict[str, list[list[str]]] or None: Hessians if deriv2=True
+            "names": list[str]: expression names
+            "vars": list[str]: variable names (in order)
         }
     """
     fnames, exprs_syms, vars_syms = _prepare_expressions(exprs, variables)

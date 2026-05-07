@@ -1,5 +1,5 @@
 /*
- Stepper traits for CppODE — compile-time dispatch between
+ Stepper traits for CppODE: compile-time dispatch between
  single-step (Rosenbrock) and multi-step methods.
 
  Copyright (C) 2026 Simon Beyer
@@ -9,7 +9,7 @@
  adapt their behaviour to different stepper families:
 
  - is_multistep:              true for multistep steppers (NDF/BDF/Adams
-                              and variants — all instantiations of
+                              and variants: all instantiations of
                               cppode::multistepper)
  - needs_restart_after_event: true if the stepper must discard its
                               history and restart at order 1 after
@@ -18,7 +18,7 @@
 
  The default (unspecialised) traits match Rosenbrock4 and other
  single-step methods.  The multistepper specialisation is matched via
- a nested tag typedef — see below.
+ a nested tag typedef: see below.
 
  Distributed under the Boost Software License, Version 1.0.
  */
@@ -31,7 +31,7 @@
 namespace cppode {
 
 // ============================================================================
-//  Primary template — defaults for single-step methods (Rosenbrock, etc.)
+//  Primary template: defaults for single-step methods (Rosenbrock, etc.)
 // ============================================================================
 
 template<class Stepper, class = void>
@@ -39,7 +39,7 @@ struct stepper_traits {
   // Single-step method: no history to manage
   static constexpr bool is_multistep = false;
 
-  // No restart needed after events — single-step methods are self-starting
+  // No restart needed after events: single-step methods are self-starting
   static constexpr bool needs_restart_after_event = false;
 
   // Fixed order (not applicable for single-step, but provided for uniformity)

@@ -26,7 +26,7 @@ namespace cppode {
 
 // =============================================================================
 // Eager-vs-ET routing helper. The expression-template overlay
-// (cppode_dual_expr.hpp) covers all (non-AD T) duals — both the heap path
+// (cppode_dual_expr.hpp) covers all (non-AD T) duals: both the heap path
 // (N == 0, arena-backed) and the static-N stack path (N > 0, inline tan_).
 // Eager remains active only when T is itself an AD type (nested dual2nd:
 // outer layer needs eager; inner layer falls through to ET).
@@ -550,7 +550,7 @@ template<class T, unsigned N, class U,
 inline bool operator>=(const U& a, const dual<T, N>& b) { return static_cast<T>(a) >= b.x(); }
 
 // =============================================================================
-// max_abs_all_levels(v) — recursive |.| sweep over a value plus all of its
+// max_abs_all_levels(v): recursive |.| sweep over a value plus all of its
 // tangent slots. For a plain double this is just |v|; for cppode::dual<T,N>
 // it walks into .x() and .d(j); for nested dual<dual<...>,N> the recursion
 // happens via the inner dual<T,N> overload, so the sweep covers value +
@@ -571,7 +571,7 @@ inline double max_abs_all_levels(const dual<T, N>& v) {
   return m;
 }
 
-// max_abs_all_levels_vec(v) — vector wrapper. Used by integrate_times to
+// max_abs_all_levels_vec(v): vector wrapper. Used by integrate_times to
 // evaluate the equilibrate stop condition across both states and all AD
 // levels of dxdt.
 template<class State>

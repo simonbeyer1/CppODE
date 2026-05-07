@@ -1,5 +1,5 @@
 /*
- Multistepper Controller — step-size and order control
+ Multistepper Controller: step-size and order control
  =====================================================
 
  Wraps cppode::multistepper (Nordsieck-based) and provides the step
@@ -17,8 +17,8 @@
        - LONG_WAIT for qwait after restart
  3. On success: complete step, prepare next step, set eta
 
- Works for any multistepper instantiation — pure BDF (with optional
- NDF kappa) and pure Adams — and for both double and AD types.
+ Works for any multistepper instantiation: pure BDF (with optional
+ NDF kappa) and pure Adams: and for both double and AD types.
 
  References:
  - Shampine & Reichelt, "The MATLAB ODE Suite",
@@ -90,7 +90,7 @@ public:
   {}
 
   // Slab-bound dual.tan_ pointers reference our own buffer storage. Copying
-  // would build a separate buffer with the same address-bound duals — UB.
+  // would build a separate buffer with the same address-bound duals: UB.
   // Moves are safe: std::vector::move preserves data() for both the slab
   // storage and the dual-element vectors, so embedded tan_ pointers keep
   // pointing at valid memory in the moved-to instance.
@@ -100,7 +100,7 @@ public:
   multistepper_controller& operator=(multistepper_controller&&)      = default;
 
   // Stores n_sens, primes the inner stepper's slabs, and primes our own
-  // m_xerr/m_xnew/m_ftemp slabs (they may still be size 0 here — the
+  // m_xerr/m_xnew/m_ftemp slabs (they may still be size 0 here: the
   // resize_* helpers call prime again once the buffers grow). No-op for
   // non-dynamic-dual value_type.
   void prepare_sensitivities(unsigned n_sens)
@@ -135,8 +135,8 @@ public:
   //      candidates etaqm1/etaq/etaqp1 directly.
   //
   //  pid_mode::intermediate
-  //      Classical I-controller AND classical order selection — i.e.
-  //      everything that pid_mode::none does — and THEN a geometric
+  //      Classical I-controller AND classical order selection: i.e.
+  //      everything that pid_mode::none does: and THEN a geometric
   //      low-pass filter is applied to the final m_eta:
   //          log(eta_filtered) = (1-alpha)*log(eta) + alpha*log(eta_prev)
   //      with alpha in [0, 1] (default 0.4). This smooths the
@@ -201,7 +201,7 @@ public:
     return result;
   }
   // ====================================================================
-  //  try_step: separate input/output — step acceptance/rejection pipeline
+  //  try_step: separate input/output: step acceptance/rejection pipeline
   //
   //  Contains an internal retry loop matching cvStep:
   //  - Newton convergence failures: retry with fresh Jacobian (ncf)
@@ -265,7 +265,7 @@ public:
 
       // --- HMIN guard ------------------------------------------------
       // Abort if the step size has collapsed relative to the current
-      // time — i.e., `t + h == t` in double precision, so the step
+      // time: i.e., `t + h == t` in double precision, so the step
       // cannot make any representable progress.  Without this, a
       // pathological mix of WRMS weights and roundoff-dominated error
       // estimates (e.g. E5 at atol=1e-10 with tiny QSS components) can
@@ -340,7 +340,7 @@ public:
       double dsm = m_stepper.error_norm();
 
       if (dsm <= 1.0) {
-        // === Step accepted — break out of retry loop ===
+        // === Step accepted: break out of retry loop ===
 
         time_type t_new = t + m_stepper.h();
 
@@ -441,7 +441,7 @@ public:
         state_type& x_cur = const_cast<state_type&>(x);
         double h_est = odeint_utils::cppode_hin<value_type>(
             deriv_func,
-            x_cur, t, tn_abs,  // no t_final known here — use |t0| as upper hint
+            x_cur, t, tn_abs,  // no t_final known here: use |t0| as upper hint
             m_atol, m_rtol);
 
         // Clamp: don't exceed the h that just failed, stay above floor.
@@ -464,14 +464,14 @@ public:
 private:
 
   // ====================================================================
-  //  prepare_next_step — order/step-size selection
+  //  prepare_next_step: order/step-size selection
   // ====================================================================
 
   void prepare_next_step(double dsm)
   {
     // If etamax == 1, defer step size or order changes.
     // No real eta proposal happens here, so we must NOT feed the
-    // filter — but we also invalidate filter history so that the
+    // filter: but we also invalidate filter history so that the
     // next real proposal starts fresh (the skipped step breaks
     // the meaning of h_{n-1}).
     if (m_stepper.etamax() <= 1.0 + 1e-14) {
@@ -509,7 +509,7 @@ private:
 
     const bool order_decision_step = (m_stepper.qwait() == 0);
 
-    // Compute etaq for the CURRENT order — classical or H211b depending on mode.
+    // Compute etaq for the CURRENT order: classical or H211b depending on mode.
     double etaq;
     if (m_pid_mode == pid_mode::full) {
       etaq = compute_h211b_eta(dsm);
@@ -582,7 +582,7 @@ private:
   }
 
   // ====================================================================
-  //  apply_intermediate_lp_filter — log-space low-pass on m_eta
+  //  apply_intermediate_lp_filter: log-space low-pass on m_eta
   //
   //  Geometric mean with the previous accepted eta:
   //    log(eta_filt) = (1 - alpha) * log(eta) + alpha * log(eta_prev)
@@ -608,7 +608,7 @@ private:
       return;
     }
 
-    // Skip filter if m_eta is "no change" (THRESH path) — the
+    // Skip filter if m_eta is "no change" (THRESH path): the
     // classical solver decided not to touch h, we respect that.
     if (std::abs(m_eta - 1.0) < 1e-14) {
       m_eta_prev = m_eta;
@@ -626,7 +626,7 @@ private:
   }
 
   // ====================================================================
-  //  lift_to_pid_scale — bring a classical etaqX onto the PID safety scale
+  //  lift_to_pid_scale: bring a classical etaqX onto the PID safety scale
   //
   //  classical:  etaqX = 1 / ((BIAS * d)^(1/exp) + ADDON)
   //  lifted:     ~ m_pid_safety * (1/d)^(1/exp)
@@ -646,14 +646,14 @@ private:
   }
 
   // ====================================================================
-  //  compute_h211b_eta — canonical Söderlind H211b step-size proposal
+  //  compute_h211b_eta: canonical Söderlind H211b step-size proposal
   //
   //  Used by pid_mode::full. Replaces (not augments) the I-controller's
   //  etaq.  Returns the proposed h_{n+1}/h_n ratio.
   //
   //  On bootstrap / after a reset, falls back to a one-step
   //  I-controller using only the current error (no history available
-  //  yet) — this is identical to what the I-controller would do, but
+  //  yet): this is identical to what the I-controller would do, but
   //  without BIAS2 and with our explicit safety factor.  History is
   //  seeded so the next call uses the full filter.
   //
@@ -716,7 +716,7 @@ private:
   }
 
   // ====================================================================
-  //  apply_eta_limits — clamp eta to the allowed range
+  //  apply_eta_limits: clamp eta to the allowed range
   // ====================================================================
 
   void apply_eta_limits()

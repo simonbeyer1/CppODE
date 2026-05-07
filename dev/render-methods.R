@@ -4,7 +4,7 @@
 # Methods.pdf is shipped as a *static* (pre-rendered) vignette via
 # R.rsp::asis, because building it requires lualatex + CMU/New Computer
 # Modern fonts that are not available on standard CI runners. The source
-# Bundle (Rmd + bibliography + CSL) lives under dev/methods/ — this whole
+# Bundle (Rmd + bibliography + CSL) lives under dev/methods/: this whole
 # directory is .Rbuildignore'd, so the package tarball contains only the
 # rendered PDF and the .asis stub. CRAN/CI never sees a LaTeX dependency.
 #
@@ -18,7 +18,7 @@ src <- "dev/methods/Methods.Rmd"
 out <- "vignettes/Methods.pdf"
 
 if (!file.exists(src))
-  stop("Cannot find ", src, " — run this from the package root.")
+  stop("Cannot find ", src, ": run this from the package root.")
 
 # On Windows without pandoc on PATH: try the usual RStudio bundle locations.
 if (!nzchar(Sys.which("pandoc")) && !nzchar(Sys.getenv("RSTUDIO_PANDOC"))) {

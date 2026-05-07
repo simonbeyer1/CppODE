@@ -70,7 +70,7 @@ public:
 
   // Same move-only semantics as the multistep family: copying the slab
   // members would build a fresh tangent block while the dual elements
-  // still point at the original — UB.
+  // still point at the original: UB.
   tsit5(const tsit5&)            = delete;
   tsit5& operator=(const tsit5&) = delete;
   tsit5(tsit5&&)                 = default;
@@ -157,7 +157,7 @@ public:
     //
     // With the unified stage matrix m_K, m_k1.m_v[i].tan_ always points
     // to physical column 0 of the tangent buffer, and m_k7's tan_ to
-    // column 6 — these bindings stay stable across steps. To reuse the
+    // column 6: these bindings stay stable across steps. To reuse the
     // previous step's k7 as the new step's k1 we copy m_k7 -> m_k1: a
     // per-element value copy plus a flat memcpy of the column-6 tangent
     // slice into column 0. After this copy m_k1 holds f(x, t) and the
@@ -166,7 +166,7 @@ public:
       if constexpr (detail::is_dynamic_dual<value_type>::value) {
         // Per-element value copy preserves the dual's tan_ binding to
         // physical column 0 (operator=(const dual&) zeros tangents and
-        // copies values, but here we keep the slab-bound form intact —
+        // copies values, but here we keep the slab-bound form intact :
         // see dual<T,N>::operator=(const dual&)).
         for (size_t i = 0; i < n; ++i) m_k1.m_v[i].x() = m_k7.m_v[i].x();
         using inner = typename value_type::value_type;
@@ -187,7 +187,7 @@ public:
     // Use TimeArg (not time_type) so AD derivative components propagate
     // through the deriv_func t arguments below.
     const TimeArg h    = dt;
-    // Stage AXPY alphas extracted to scalar — matches rosenbrock4
+    // Stage AXPY alphas extracted to scalar: matches rosenbrock4
     // convention. AD-time propagation in stage assembly is dropped here
     // (the deriv_func calls below still receive a TimeArg-typed t so AD
     // tangents propagate where they matter).
@@ -235,7 +235,7 @@ public:
     ++m_n_fevals;
 
     // --- Solution (5th order) and Stage 7 (FSAL) ---
-    // xout is controller-owned (m_xnew) and not slab-bound — we use plain
+    // xout is controller-owned (m_xnew) and not slab-bound: we use plain
     // vec_copy / vec_axpy here. Each axpy iteration is a single ScalarLeaf *
     // DualLeaf binop, which the ET path materialises as one fused N-element
     // tangent loop without nested template depth.

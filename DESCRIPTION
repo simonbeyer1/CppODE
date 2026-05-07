@@ -29,7 +29,7 @@ SystemRequirements: C++17; Python (>= 3.8) with SymPy; optional system
     Debian/Ubuntu, sundials-devel on Fedora, sundials via Homebrew on
     macOS); SuiteSparse / KLU for the sparse Jacobian path of both
     CppODE() and CVODE() (libsuitesparse-dev / suitesparse-devel /
-    suite-sparse). Missing libraries don't prevent install — the
+    suite-sparse). Missing libraries don't prevent install: the
     affected features error cleanly at runtime with install hints.
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)

@@ -2,7 +2,7 @@
 % Please edit documentation in R/funCpp.R
 \name{funCpp}
 \alias{funCpp}
-\title{Compile Algebraic Functions with Optional Symbolic and AD Derivatives}
+\title{Compile Algebraic Functions with Optional Derivatives}
 \usage{
 funCpp(
   eqns,
@@ -21,96 +21,65 @@ funCpp(
 }
 \arguments{
 \item{eqns}{Named character vector or list of algebraic expressions.
-Names define the output variables. If unnamed, default names
-\code{f1}, \code{f2}, \ldots are used.}
+Names define the output variables; defaults to \code{f1}, \code{f2}, ... when
+unnamed.}
 
 \item{variables}{Character vector of variable names supplied per
-observation. Defaults to all symbols found in \code{eqns} that are
-not listed in \code{parameters}.}
+observation. Defaults to all symbols in \code{eqns} not in \code{parameters}.}
 
 \item{parameters}{Character vector of parameter names (constant
 across observations).}
 
-\item{fixed}{Optional character vector of symbols to treat as fixed
-(excluded from derivative computation).}
+\item{fixed}{Optional character vector of symbols excluded from
+derivative computation.}
 
 \item{modelname}{Optional base name for generated C++ symbols and
 files.}
 
-\item{outdir}{Directory for generated C++ source files. Defaults to
+\item{outdir}{Directory for generated C++ source files. Default
 \code{tempdir()}.}
 
-\item{compile}{Logical; if \code{TRUE}, compile and load the
-generated C++ code. Default \code{FALSE}.}
-
-\item{verbose}{Logical; if \code{TRUE}, print progress messages.
+\item{compile}{Logical. Compile and load the generated C++ code.
 Default \code{FALSE}.}
 
-\item{convenient}{Logical; if \code{TRUE} (default), return wrappers
-that accept named arguments rather than the low-level
-\code{(vars, params)} signature.}
+\item{verbose}{Logical. Print progress messages.}
 
-\item{deriv}{Logical; if \code{TRUE} (default), enable derivative
-computation. When both \code{deriv} and \code{deriv2} are
-\code{FALSE}, no derivative entry points are generated and
-\code{derivMode} has no effect.}
+\item{convenient}{Logical. Return wrappers that accept named
+arguments rather than the low-level \verb{(vars, params)} signature.}
 
-\item{deriv2}{Logical; if \code{TRUE}, enable Hessian computation
-(implies \code{deriv}). Hessians are only produced by the symbolic
-path; if \code{derivMode != "symbolic"} and \code{deriv2 = TRUE},
-\code{derivMode} is forced to \code{"symbolic"} with a warning.
-Default \code{FALSE}.}
+\item{deriv}{Logical. Generate first-order derivative entry points.}
 
-\item{derivMode}{Character; one of \code{"dual"} (default) or
-\code{"symbolic"}. Selects how derivatives are generated when
-\code{deriv = TRUE} or \code{deriv2 = TRUE}:
-\describe{
-\item{\code{"dual"}}{Forward-mode AD via the in-tree
-\code{cppode::dual} backend (arena-allocated heap AD). Emits the
-chain-ruled entry \code{jac_chain} that takes upstream seeds
-\code{dX} (state sensitivities per observation) and \code{dP}
-(parameter-transform Jacobian) and returns the value together
-with \code{dY/dtheta} in one pass.}
-\item{\code{"symbolic"}}{Classical symbolic Jacobian (and
-Hessian if \code{deriv2}) via SymPy; exposed as \code{jac} and
-\code{hess}.}
-}}
+\item{deriv2}{Logical. Generate Hessian entry points; implies
+\code{deriv = TRUE}.}
+
+\item{derivMode}{One of \code{"dual"} (default) or \code{"symbolic"}. Selects
+the computational path: forward-mode AD on \code{cppode::dual} (single-
+or nested-dual) versus analytic SymPy-derived Jacobian/Hessian
+contracted via BLAS. Both modes deliver \code{jac}, \code{hess}, and
+\code{evaluate} with the same signatures.}
 }
 \value{
 A list with components \code{func}, \code{jac}, \code{hess}, and
-\code{jac_chain} (\code{NULL} when not generated), with attributes
-\code{equations} (original expressions), \code{variables},
-\code{parameters}, \code{fixed}, \code{modelname} (C++ identifier),
-\code{srcfile} (path to the generated source file), and, when
-applicable, \code{jacobian.symb} and \code{hessian.symb} (symbolic
-derivatives).
+\code{evaluate} (\code{NULL} when not generated). Carries attributes
+\code{equations}, \code{variables}, \code{parameters}, \code{fixed}, \code{modelname},
+\code{srcfile}, \code{derivMode}, and (for \code{derivMode = "symbolic"})
+\code{jacobian.symb}, \code{hessian.symb}.
 }
 \description{
-Generates functions for evaluating a system of algebraic expressions
-and, optionally, their Jacobian and Hessian. Model evaluation runs
-through generated and compiled C++ code for performance; a pure R
-fallback is also available when compilation is skipped.
-}
-\details{
-When \code{compile = TRUE}, the generated source is compiled by
-\code{\link{compile}()} and loaded. The returned helper functions
-accept an \code{attach.input} argument that passes through inputs
-that are not part of the model equations:
-\itemize{
-\item Unknown variables (vectors of length matching the number of
-observations) are appended to the outputs; their Jacobian
-columns are zero and their Hessian slices are zero.
-\item Unknown parameters (scalars) are appended (broadcast over
-observations); their Jacobian is the identity (the parameter
-differentiated against itself), and the Hessian is zero.
-}
-For the AD path (\code{jac_chain}) pass-through derivatives are
-pulled from the upstream seeds: extra-variable rows are taken from
-\code{dX[name, theta, ]} and extra-parameter rows from
-\code{dP[name, theta]}; symbols absent from both seeds contribute
-zero rows.
+Generates and compiles C++ code that evaluates a system of algebraic
+expressions \eqn{y = g(x, p)} on one or more rows of input, with
+optional first- and second-order derivatives. There is no time
+integration; the principal use cases are observation maps for
+likelihood-based inference and reparametrisation Jacobians for
+\code{\link[=solveODE]{solveODE()}}. Both \code{derivMode = "dual"} and \code{derivMode = "symbolic"}
+support \code{deriv} and \code{deriv2}, and both expose the same \code{func} / \code{jac}
+/ \code{hess} / \code{evaluate} API. The chain rule is available through the
+optional seed arguments \code{dX}, \code{dP}, \code{dX2}, and \code{dP2}. See
+\code{vignette("Methods", package = "CppODE")} for the two computational
+paths and the pass-through convention for unmodelled inputs.
 }
 \seealso{
-\code{\link{compile}} for compilation;
-\code{\link{derivSymb}} for symbolic differentiation.
+\code{\link[=compile]{compile()}} for compilation; \code{\link[=derivSymb]{derivSymb()}} for symbolic
+differentiation; \code{\link[=CppODE]{CppODE()}} and \code{\link[=CVODE]{CVODE()}} for ODE integration;
+\code{vignette("Methods", package = "CppODE")}.
 }

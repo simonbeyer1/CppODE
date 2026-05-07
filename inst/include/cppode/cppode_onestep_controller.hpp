@@ -47,7 +47,7 @@
 namespace cppode {
 
 // ============================================================================
-//  Scalar value extraction — pulled in from cppode_ad_traits.hpp
+//  Scalar value extraction: pulled in from cppode_ad_traits.hpp
 // ============================================================================
 
 namespace controller_detail {
@@ -152,7 +152,7 @@ public:
 
   // Same move-only semantics as the multistep family: copying the slab
   // members would build a fresh tangent block while the dual elements
-  // still point at the original — UB. Moves are safe because std::vector::
+  // still point at the original: UB. Moves are safe because std::vector::
   // move preserves data() for both the slab storage and the dual-element
   // vectors, so embedded tan_ pointers stay valid.
   onestep_controller(const onestep_controller&)            = delete;
@@ -161,7 +161,7 @@ public:
   onestep_controller& operator=(onestep_controller&&)      = default;
 
   // ====================================================================
-  //  Jacobian hint — SFINAE dispatch
+  //  Jacobian hint: SFINAE dispatch
   //
   //  For implicit steppers (rosenbrock4) that expose has_valid_jacobian(),
   //  reuse the Jacobian on rejection.  For explicit steppers (tsit5),
@@ -182,9 +182,9 @@ public:
   }
 
   // ====================================================================
-  //  Error norm — AD-aware WRMS norm
+  //  Error norm: AD-aware WRMS norm
   //
-  //  Returns max(state_wrms, max_j sens_wrms[j]) — every sensitivity
+  //  Returns max(state_wrms, max_j sens_wrms[j]): every sensitivity
   //  vector is judged on its own per-vector WRMS and the controller
   //  sees the worst.  Matches CVODES `cvSensUpdateNorm` (CV_STAGGERED).
   //  For non-AD types the derivative loop compiles out → pure state WRMS.
@@ -256,7 +256,7 @@ public:
   }
 
   // ====================================================================
-  //  try_step: separate input/output — main entry point
+  //  try_step: separate input/output: main entry point
   // ====================================================================
 
   template<class System>
@@ -347,7 +347,7 @@ public:
   const stepper_type& stepper() const { return m_stepper; }
 
   // Slab-prime forwarder. Both rosenbrock4 and tsit5 expose
-  // prepare_sensitivities() — a no-op when the value_type isn't a
+  // prepare_sensitivities(): a no-op when the value_type isn't a
   // dynamic dual. Must run before the std::move into
   // onestep_dense_output downstream so the dense wrapper inherits a
   // primed slab.

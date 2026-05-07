@@ -244,7 +244,7 @@ solveODE <- function(model, times, parms,
       rn <- rownames(sens1ini)
       is.null(rn) || all(rn %in% variables)
     }
-  ## "is_full" here means "user supplied a Phi' (full or partial)" — anything
+  ## "is_full" here means "user supplied a Phi' (full or partial)": anything
   ## that is not legacy. Used to gate runtime `fixed` and to drive
   ## n_theta_active / sens2ini coupling.
   sens1ini_is_full <- is_2d_sens1 && !sens1ini_is_legacy
@@ -481,7 +481,7 @@ solveODE <- function(model, times, parms,
       }
 
     } else {
-      ## Vector form (no partial — needs names). Same as before.
+      ## Vector form (no partial; needs names). Same as before.
       len <- length(sens2ini)
       if (len == n_phi_rows * n_theta_active^2) {
         sens2ini <- as.double(sens2ini)

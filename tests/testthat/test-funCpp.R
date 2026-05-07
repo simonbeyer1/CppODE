@@ -99,3 +99,55 @@ test_that("funCpp fixed parameters are excluded from derivatives", {
   jac_names <- dimnames(jac)[[3]]
   expect_false("c" %in% jac_names)
 })
+
+# -- dual vs symbolic agree on raw derivatives --------------------------------
+
+test_that("funCpp dual and symbolic give identical raw jac/hess", {
+  trafo <- c(y1 = "a*x^2 + b", y2 = "sin(c*x)")
+  pars  <- list(a = 2, b = 1, c = 0.3, x = 3)
+  out_d <- list(); out_s <- list()
+  for (mode in c("dual", "symbolic")) {
+    f <- funCpp(trafo, parameters = c("a", "b", "c", "x"),
+                deriv = TRUE, deriv2 = TRUE, derivMode = mode,
+                compile = TRUE, modelname = paste0("xs_raw_", mode))
+    res <- list()
+    res$y    <- do.call(f$func, pars)
+    res$jac  <- do.call(f$jac,  pars)
+    res$hess <- do.call(f$hess, pars)
+    if (mode == "dual") out_d <- res else out_s <- res
+  }
+  expect_equal(unname(out_d$y),    unname(out_s$y),    tolerance = 1e-12)
+  expect_equal(unname(out_d$jac),  unname(out_s$jac),  tolerance = 1e-10)
+  expect_equal(unname(out_d$hess), unname(out_s$hess), tolerance = 1e-10)
+})
+
+# -- dual vs symbolic agree under chain rule, including dX2/dP2 ---------------
+
+test_that("funCpp dual and symbolic agree under second-order chain rule", {
+  trafo <- c(y1 = "a*x^2 + b", y2 = "sin(c*x)")
+  th    <- c("th1", "th2", "th3")
+  # Linear part of Phi: theta -> (a, b, c) = (2*th1, 1*th2, 1*th3 + th1)
+  dP <- matrix(0, 4, length(th),
+               dimnames = list(c("a", "b", "c", "x"), th))
+  dP["a", "th1"] <- 2
+  dP["b", "th2"] <- 1
+  dP["c", "th3"] <- 1
+  dP["c", "th1"] <- 1
+  # Nonlinear quadratic part: a depends on th1*th2 with coefficient 0.5.
+  dP2 <- array(0, c(4, length(th), length(th)),
+               dimnames = list(c("a", "b", "c", "x"), th, th))
+  dP2["a", "th1", "th2"] <- 0.5
+  dP2["a", "th2", "th1"] <- 0.5
+  pars <- list(a = 2, b = 1, c = 0.3, x = 3)
+  out  <- list()
+  for (mode in c("dual", "symbolic")) {
+    f <- funCpp(trafo, parameters = c("a", "b", "c", "x"),
+                deriv = TRUE, deriv2 = TRUE, derivMode = mode,
+                compile = TRUE, modelname = paste0("xs_chain_", mode))
+    out[[mode]] <- do.call(f$evaluate, c(pars, list(dP = dP, dP2 = dP2,
+                                                    deriv2 = TRUE)))
+  }
+  expect_equal(out$dual$y,   out$symbolic$y,   tolerance = 1e-12)
+  expect_equal(out$dual$dy,  out$symbolic$dy,  tolerance = 1e-10)
+  expect_equal(out$dual$d2y, out$symbolic$d2y, tolerance = 1e-9)
+})

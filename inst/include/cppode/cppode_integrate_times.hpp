@@ -43,14 +43,14 @@ namespace cppode {
 namespace detail {
 
 // ============================================================================
-// Scalar value extraction & AD type detection — from cppode_ad_traits.hpp
+// Scalar value extraction & AD type detection: from cppode_ad_traits.hpp
 // ============================================================================
 
 using cppode::ad_traits::scalar_value;
 template<class T> using is_ad_type = cppode::ad_traits::is_ad<T>;
 
 // ============================================================================
-// Diagnostics helpers — extract order and transfer counters from steppers
+// Diagnostics helpers: extract order and transfer counters from steppers
 //
 // All stepper/controller/dense-output classes expose a uniform interface:
 //   n_accepted(), n_rejected(), n_fevals(), n_jevals(), current_method_order()
@@ -275,7 +275,7 @@ std::function<bool(const State&, const Time&)> make_steady_state_termination(Sys
 }
 
 // ============================================================================
-// Plain event action (no saltation) — works for any value_type
+// Plain event action (no saltation): works for any value_type
 // ============================================================================
 
 template<class state_type, class time_type>
@@ -619,7 +619,7 @@ inline void saltation_fixed_analytical(
 }
 
 // ============================================================================
-// Apply fixed events at a given time — SFINAE dispatch
+// Apply fixed events at a given time: SFINAE dispatch
 //
 // double path:  plain event action (no saltation needed)
 // AD path:      analytical saltation correction
@@ -679,11 +679,11 @@ std::vector<Time> merge_user_and_event_times(
 // Unified stepper reset (C++17 if-constexpr dispatch)
 //
 // Priority:
-//   1. Multistep methods (BDF): restart_from_order1() — discard history,
+//   1. Multistep methods (BDF): restart_from_order1(): discard history,
 //      restart at order 1.  Detected via cppode::stepper_traits.
-//   2. Dense-output steppers: reinitialize_at_event() — reset both
+//   2. Dense-output steppers: reinitialize_at_event(): reset both
 //      state buffers and controller.
-//   3. Controlled steppers: reset_after_event() — reset PI controller.
+//   3. Controlled steppers: reset_after_event(): reset PI controller.
 //   4. Fallback: no-op (plain steppers without event support).
 // ============================================================================
 
@@ -732,7 +732,7 @@ inline void reset_stepper_unified(S& st, State& x, Time t, Time& dt) {
 }
 
 // ============================================================================
-// no_dt_estimator — sentinel type: "use dt as-is (no re-estimation)"
+// no_dt_estimator: sentinel type: "use dt as-is (no re-estimation)"
 // ============================================================================
 
 struct no_dt_estimator {};
@@ -841,13 +841,13 @@ private:
  //
  // Multistep methods (bdf/adams) discard their Nordsieck history
  // at order 1 after an event, so the pre-event step size is no longer
- // a meaningful starting point — it was tuned to the previous regime
+ // a meaningful starting point: it was tuned to the previous regime
  // and pre-event Nordsieck data, neither of which survives the
  // restart.  Reusing it drives the Newton corrector into repeated
  // convergence failures that collapse h down to the HMIN guard.
  //
  // Re-estimate h0 from scratch via cppode_hin, using the remaining
- // interval (t_now → t_final) as the upper-bound hint — same strategy
+ // interval (t_now → t_final) as the upper-bound hint: same strategy
  // the multistepper controller uses on its order-1 fallback path.
  // ----------------------------------------------------------------
  void init_stepper_after_event(State& x, Time t, Time& dt) {

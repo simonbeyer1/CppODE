@@ -24,7 +24,7 @@
 namespace odeint_utils {
 
 // =========================================================================================
-//  Scalar extraction — pulled in from cppode_ad_traits.hpp
+//  Scalar extraction: pulled in from cppode_ad_traits.hpp
 // =========================================================================================
 
 using cppode::ad_traits::scalar_value;
@@ -76,13 +76,13 @@ inline double weighted_sup_norm(
 }
 
 // =========================================================================================
-//  Weighted RMS 2-norm — used by cppode_hin to match CVODES's N_VWrmsNorm.
+//  Weighted RMS 2-norm: used by cppode_hin to match CVODES's N_VWrmsNorm.
 //
 //  Formula:  ||v||_WRMS = sqrt( (1/N) * sum_i (v_i * ewt_i)^2 )
 //  with     ewt_i = 1 / (atol + rtol * |x0_i|).
 //
 //  AD-aware: derivative components are folded in as additional entries, each with
-//  their own ewt based on the corresponding derivative value — same convention
+//  their own ewt based on the corresponding derivative value: same convention
 //  as weighted_sup_norm above.  N counts all contributing entries (state + sens).
 // =========================================================================================
 
@@ -135,7 +135,7 @@ inline double weighted_rms_norm(
 }
 
 // =========================================================================================
-//  cvUpperBoundH0 max-ratio — max_i |f_i| / (HUB·|y_i| + atol + rtol·|y_i|)
+//  cvUpperBoundH0 max-ratio: max_i |f_i| / (HUB·|y_i| + atol + rtol·|y_i|)
 //
 //  Matches cvUpperBoundH0 in sundials/src/cvodes/cvodes.c.  AD-aware: derivative
 //  slices contribute additional (y, f) pairs, each with their own denominator.
@@ -184,7 +184,7 @@ inline double cvhub_max_ratio(
 }
 
 // =========================================================================================
-//  estimate_initial_dt — unified initial step-size estimator for all CppODE solvers.
+//  estimate_initial_dt: unified initial step-size estimator for all CppODE solvers.
 //
 //  Workflow:
 //    1. f0 = f(t0, x0)
@@ -237,7 +237,7 @@ inline double estimate_initial_dt(
     h0 = 0.01 * d0 / d1;
   }
 
-  // --- 3. ÿ estimate (analytic or FD — caller's choice) ---
+  // --- 3. ÿ estimate (analytic or FD: caller's choice) ---
   std::vector<Value> ydd(n);
   compute_ydd(x0, t0, f0, h0, ydd);
 
@@ -251,7 +251,7 @@ inline double estimate_initial_dt(
   // ||y^(k)|| ~ ||J||^(k-1)·||f||), so callers normally pass order=1
   // regardless of the method's nominal order: BDF/NDF/Adams always
   // start the integration at q=1 anyway, and for single-step methods
-  // (rb4, tsit5) a conservative initial h is cheap — the controller ramps
+  // (rb4, tsit5) a conservative initial h is cheap: the controller ramps
   // up within a few steps.
   double h1;
   double max_d = std::max(d1, d2);
@@ -269,9 +269,9 @@ inline double estimate_initial_dt(
   //    hub_inv = max_i  |f_i| / denom
   //
   // Problem: zero-initialized states with non-zero rate (common in reaction
-  // networks — e.g. product species starting at zero) make denom collapse
+  // networks: e.g. product species starting at zero) make denom collapse
   // to `atol`, and `|f_i|/atol` blows up.  That gives a pathologically
-  // small hub — not because the integrator cannot handle the step, but
+  // small hub: not because the integrator cannot handle the step, but
   // because the cap's denominator is ill-scaled.
   //
   // Fix: replace `|y_i|` inside the HUB term by its Euler-step scale
@@ -279,10 +279,10 @@ inline double estimate_initial_dt(
   // where h0 is the phase-1 rough step.  For non-zero y_i this reduces to
   // the original expression (h0·f_i < y_i is the whole point of HUB·y_i);
   // for y_i = 0 it replaces the collapsed zero by the magnitude y_i *would*
-  // attain after one Euler step of h0 — the relevant reference scale.
+  // attain after one Euler step of h0: the relevant reference scale.
   // No AD component is consulted here; the cap is a plain state-only
   // Euler-change bound.  We already have analytic ÿ (= d2), so no
-  // FD-Newton refinement is needed — d2 drives h1 directly above.
+  // FD-Newton refinement is needed: d2 drives h1 directly above.
   double hub_inv = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
     double yi = std::abs(scalar_value(x0[i]));
@@ -308,7 +308,7 @@ inline double estimate_initial_dt(
   // We deliberately do NOT clamp h up to HLB_FACTOR·eps·max(|t0|,|t_final|).
   // CVODES's cvHin uses that quantity only as a seed for its iterative
   // Hin refinement; the final h returned by cvHin can be far smaller (and
-  // on very stiff AD-extended systems, must be — the forward-mode derivative
+  // on very stiff AD-extended systems, must be: the forward-mode derivative
   // components of f can be many orders of magnitude larger than the state
   // components, which pushes the HNW h1 estimate well below any
   // t_final-proportional floor).  Clamping h up to hlb here caused
@@ -333,7 +333,7 @@ inline double estimate_initial_dt(
 }
 
 // ---------------------------------------------------------------------------
-//  Default FD ÿ-computer — used by explicit methods that have no Jacobian.
+//  Default FD ÿ-computer: used by explicit methods that have no Jacobian.
 //
 //  Computes  ÿ ≈ [f(t0 + h0, x0 + h0·f0) - f0] / h0  via one extra f-call.
 //  This is the classical Hairer-Nørsett-Wanner phase-2 estimate.
@@ -364,7 +364,7 @@ template<class System>
 inline fd_ydd<System> make_fd_ydd(System sys) { return fd_ydd<System>(sys); }
 
 // =========================================================================================
-//  cppode_hin — faithful port of CVODES cvHin (sundials/src/cvodes/cvodes.c).
+//  cppode_hin: faithful port of CVODES cvHin (sundials/src/cvodes/cvodes.c).
 //
 //  Used by multistep methods (bdf / adams). The port mirrors the
 //  sundials code path so the first integration step CppODE takes matches the
@@ -419,7 +419,7 @@ inline double cppode_hin(
   double tround = eps * std::max(std::abs(t0_s), std::abs(t_final));
 
   if (tdist < 2.0 * tround) {
-    // TOO_CLOSE — return a tick large enough to advance t in double.
+    // TOO_CLOSE: return a tick large enough to advance t in double.
     double h = eps * std::max(std::abs(t0_s), 1.0);
     return sign * (h > 0.0 ? h : std::numeric_limits<double>::min());
   }

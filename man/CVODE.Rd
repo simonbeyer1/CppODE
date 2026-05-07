@@ -26,105 +26,60 @@ the state variables.}
 
 \item{events}{Optional event \code{data.frame}. See Details.}
 
-\item{rootfunc}{Optional root specification: \code{"equilibrate"}, or a
-character vector of expressions whose zero crossings terminate
-integration.}
+\item{rootfunc}{Optional integration-termination root: \code{"equilibrate"}
+or a character vector of expressions.}
 
 \item{fixed}{Optional character vector of state or parameter names
 excluded from sensitivities at compile time.}
 
 \item{forcings}{Optional character vector of forcing-function names
-that appear in \code{rhs}.}
+referenced by \code{rhs}.}
 
 \item{compile}{Logical. Compile and load the generated C++ code.}
 
-\item{modelname}{Optional base name for the generated source file and
-compiled symbols (\verb{solve_<modelname>}). A random identifier is used
-when \code{NULL}.}
+\item{modelname}{Optional base name for the generated source file
+and exported C symbols. A random identifier is used when \code{NULL}.}
 
 \item{outdir}{Directory for the generated C++ source. Default
 \code{tempdir()}.}
 
-\item{deriv}{Logical. Compute first-order sensitivities via dual
-numbers.}
+\item{deriv}{Logical. Compute first-order parameter sensitivities.}
 
-\item{sparse}{Logical or \code{NULL}. \code{NULL} auto-selects sparse vs. dense
-LU from the Jacobian sparsity pattern; \code{TRUE} forces sparse, \code{FALSE}
-forces dense. Sparse LU requires the KLU linear solver to have been
-found at install time.}
+\item{sparse}{Logical or \code{NULL}. \code{NULL} auto-selects sparse vs.
+dense LU from the Jacobian sparsity; \code{TRUE} forces sparse, \code{FALSE}
+forces dense. Sparse LU requires KLU at install time.}
 
 \item{method}{One of \code{"bdf"} (default) or \code{"adams"}.}
 
-\item{stepTrace}{Logical. If \code{TRUE}, record per-step diagnostics (the
-trace \code{data.frame} is attached as \verb{$trace} to the result of
-\code{\link[=solveODE]{solveODE()}} and may be written to CSV via the \code{traceFile} argument
-of that function). Not supported together with \code{events} or
-\code{rootfunc}. Default \code{FALSE}.}
+\item{stepTrace}{Logical. Compile to record per-step diagnostics
+(returned as \verb{$trace} from \code{\link[=solveODE]{solveODE()}}). Not supported together
+with \code{events} or \code{rootfunc}.}
 
 \item{verbose}{Logical. Print progress messages.}
 }
 \value{
-The compiled model name (character string), with the same attribute
-set as a model returned by \code{\link[=CppODE]{CppODE()}}, so it can be passed directly to
-\code{\link[=solveODE]{solveODE()}}. The attribute \code{backend} is \code{"cvode"}.
+The compiled model name (character) with the same attribute
+set as a model returned by \code{\link[=CppODE]{CppODE()}}; the \code{backend} attribute is
+\code{"cvode"}.
 }
 \description{
-Generates and compiles a C++ ODE solver that links against the
-system-installed SUNDIALS CVODE library (or CVODES when
-\code{deriv = TRUE}) for a system of ordinary differential equations of
-the form
-
-\deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}},}
-
-where the parameter vector \eqn{p = (p_{\text{init}}, p_{\text{dyn}})}
-concatenates the initial conditions \eqn{p_{\text{init}}} and the
-dynamic parameters \eqn{p_{\text{dyn}}} that appear in the right-hand
-side. \code{\link[=solveODE]{solveODE()}} takes this combined \code{p} as the \code{parms} argument.
-
-The compiled model exposes the same interface as a model produced by
-\code{\link[=CppODE]{CppODE()}} and can be passed directly to \code{\link[=solveODE]{solveODE()}}.
+Generates a C++ ODE solver linked against the system-installed
+SUNDIALS CVODE library (CVODES when \code{deriv = TRUE}), compiles it via
+\verb{R CMD SHLIB}, and returns a handle for use with \code{\link[=solveODE]{solveODE()}}. The
+compiled model exposes the same R interface as a model from
+\code{\link[=CppODE]{CppODE()}}. The differences between the two backends and the
+selection guidance are described in
+\code{vignette("Methods", package = "CppODE")}.
 }
 \details{
-The symbolic Jacobian \eqn{df/dx} is derived via SymPy at code
-generation time and emitted as analytic C++. With \code{deriv = TRUE},
-first-order forward sensitivities use the analytic sensitivity
-right-hand side \eqn{\dot S_k = J(x, p)\, S_k + \partial f / \partial p_k},
-so the work matches the AD-based path in \code{\link[=CppODE]{CppODE()}} up to the
-integrator's internals.
+Available methods are \code{"bdf"} (default) and \code{"adams"}. Sensitivities
+are first-order forward only; \code{deriv2} is not supported. Events,
+forcings, \code{rootfunc}, and \code{fixed} behave as in \code{\link[=CppODE]{CppODE()}}.
 
-Like \code{\link[=CppODE]{CppODE()}}, the CVODE backend also supports sensitivities with
-respect to a user-defined reparametrization \eqn{p = \Phi(\theta)}
-by seeding the columns of \eqn{S_k(0)} with the columns of
-\eqn{\Phi'(\theta)} (passed via \code{sens1ini} to \code{\link[=solveODE]{solveODE()}}). The
-returned trajectories then carry \eqn{\partial x / \partial \theta}
-directly. See \code{\link[=solveODE]{solveODE()}} for the chain-rule derivation and the
-accepted shapes of \code{sens1ini}. Second-order sensitivities are not
-available through this backend.
-
-SUNDIALS (>= 6.0) must be available on the build host at install time;
-otherwise \code{\link[=CVODE]{CVODE()}} raises an informative error at the first call.
-KLU (used for sparse Jacobians) is detected the same way and is
-required when \code{sparse = TRUE}.
-\subsection{Scope}{
-
-The CVODE backend supports:
-\itemize{
-\item \code{method} is \code{"bdf"} or \code{"adams"} (CVODE's two multistep families);
-\item first-order forward sensitivities via \code{deriv = TRUE};
-\item dense or KLU-sparse linear solver (auto-selected or forced with
-\code{sparse});
-\item \code{fixed} at both compile and run time, with the same semantics as
-\code{\link[=CppODE]{CppODE()}};
-\item \code{forcings}, PCHIP-interpolated time-dependent inputs (forcings do
-not contribute to sensitivities);
-\item \code{rootfunc} for integration termination;
-\item \code{events}, both time- and root-triggered, with first-order
-saltation correction of sensitivities.
-}
-
-Not available via the CVODE backend: second-order sensitivities, the
-\code{"rb4"} and \code{"tsit5"} methods, and the \code{profile} flag.
-}
+SUNDIALS (>= 6.0) must be available at install time; otherwise
+\code{\link[=CVODE]{CVODE()}} errors at the first call with platform-specific install
+hints. KLU (used for sparse Jacobians) is detected the same way and
+is required when \code{sparse = TRUE}.
 }
 \references{
 Hindmarsh, A. C., Brown, P. N., Grant, K. E., Lee, S. L., Serban, R.,
@@ -133,5 +88,6 @@ Nonlinear and Differential/Algebraic Equation Solvers.
 \emph{ACM Transactions on Mathematical Software} \strong{31}(3), 363-396.
 }
 \seealso{
-\code{\link[=CppODE]{CppODE()}}, \code{\link[=solveODE]{solveODE()}}.
+\code{\link[=CppODE]{CppODE()}}, \code{\link[=solveODE]{solveODE()}}, \code{\link[=funCpp]{funCpp()}};
+\code{vignette("Methods", package = "CppODE")}.
 }

@@ -1,5 +1,5 @@
 /*
- cppode::dual<T, N> — first-order forward-mode AD type.
+ cppode::dual<T, N>: first-order forward-mode AD type.
 
  Both static-N (N > 0) and dynamic-N (N == 0) specs share a single storage
  strategy: `T* tan_;` pointing either at a row of an externally-owned
@@ -11,7 +11,7 @@
  contiguous slab), enabling BLAS daxpy/dscal across the tangent block.
 
  The only structural difference between the two specs is that the static-N
- primary template has no runtime size_ field — N is a compile-time constant
+ primary template has no runtime size_ field: N is a compile-time constant
  used as the loop bound (constexpr-foldable for unrolling / SIMD).
 
  Provides the standard accessor surface used by codegen output:
@@ -52,7 +52,7 @@ namespace expr {
 //
 // Three regimes:
 //   1. Trivially destructible AND trivially default-constructible
-//      (e.g. double, int): bump-alloc only, caller writes — caller MUST
+//      (e.g. double, int): bump-alloc only, caller writes: caller MUST
 //      write before reading (no zero-init of returned memory).
 //   2. Trivially destructible BUT non-trivially default-constructible
 //      (e.g. dual<double, N>: user-provided ctor zeroes tan_ pointer):
@@ -63,7 +63,7 @@ namespace expr {
 //      subsequent set_depend_size() correctly detects "not yet bound" and
 //      allocates a fresh tangent buffer.
 //   3. Non-trivially destructible (e.g. boost::multiprecision::cpp_dec_float
-//      — with a real dtor): full alloc + ctor + dtor-tracking path.
+//     : with a real dtor): full alloc + ctor + dtor-tracking path.
 // -----------------------------------------------------------------------------
 namespace detail {
 
@@ -90,7 +90,7 @@ inline T* arena_alloc_t(std::size_t n) {
 // Storage: T* tan_ pointing at either an externally-owned tangent_slab row
 // (after rebind_storage), or a buffer allocated from cppode::dual_arena for
 // temporaries. The compile-time N is the loop bound (constexpr-foldable),
-// not a struct-inline storage size — that's what unifies this spec with the
+// not a struct-inline storage size: that's what unifies this spec with the
 // dynamic spec. std::vector<dual<T, N>> is then SoA at the tangent level,
 // matching the dual<T, 0> heap path.
 // =============================================================================
@@ -131,7 +131,7 @@ public:
     } else {
       // Non-depend source: zero any existing tangents (preserves slab- or
       // arena-binding so subsequent .diff() / set_depend_size() / ET assigns
-      // can reuse the buffer). depend_ goes to false — same semantics as
+      // can reuse the buffer). depend_ goes to false: same semantics as
       // operator=(const U&): a non-depend assignment yields a non-depend
       // dual, even if tan_ stays allocated.
       if (tan_ != nullptr) {
@@ -147,7 +147,7 @@ public:
   dual& operator=(const U& v) {
     val_ = static_cast<T>(v);
     // Preserve any existing tan_ buffer (slab- or arena-bound) and zero the
-    // tangent values — same semantics as dual<T,0>::operator=(const U&)
+    // tangent values: same semantics as dual<T,0>::operator=(const U&)
     // (cppode_dual.hpp dynamic-spec). Without this, slab-bound duals would
     // lose their binding on every `dual = scalar` assignment (e.g. codegen
     // state re-seeding `x[i] = paramsSEXP[i]` after the slab has been
@@ -266,7 +266,7 @@ public:
   // Allocate-without-init helper used by the ET path (mirrors the dual<T,0>
   // member of the same name). The 0-arg form is the natural one for static-N
   // (size is the template parameter); the 1-arg form keeps API parity with
-  // the dynamic spec for shared ET callers — n must equal N.
+  // the dynamic spec for shared ET callers: n must equal N.
   void set_depend_size() { set_depend(); }
   void set_depend_size(unsigned n) {
     assert(n == N && "dual<T,N>::set_depend_size(n): n must equal compile-time N");
@@ -450,7 +450,7 @@ public:
 
   // In-place compound assignment from any Expr<D>. Without these the
   // compiler picks operator+=(const dual&) etc. and synthesises a
-  // BinExpr→dual temporary via the Expr ctor above — that temp allocates
+  // BinExpr→dual temporary via the Expr ctor above: that temp allocates
   // a fresh tan_ buffer from the arena per element, which is the dominant
   // per-step leak in `vec_axpy(y, alpha, x)` style kernels (y[i] += alpha*x[i]).
   // These overloads update val_ and tan_ in place; no temp dual, no alloc.
@@ -471,7 +471,7 @@ public:
 
   unsigned size()   const { return size_; }
   bool     depend() const { return size_ != 0; }
-  // Mirrors dual<T,N>::loop_size() for the dynamic spec — see comment there.
+  // Mirrors dual<T,N>::loop_size() for the dynamic spec: see comment there.
   unsigned loop_size() const { return size_; }
 
   // Mutable + const overloads, both returning a reference.
@@ -522,7 +522,7 @@ public:
 
   // Non-allocating bind: point tan_ at an externally-owned buffer of length n
   // (typically a row of cppode::detail::tangent_slab). The dual does not own
-  // the buffer (just like the arena-backed case — it never frees tan_), so
+  // the buffer (just like the arena-backed case: it never frees tan_), so
   // rebinding is safe as long as the external owner keeps the buffer alive
   // for the dual's remaining lifetime.
   void rebind_storage(T* p, unsigned n) noexcept {
@@ -564,23 +564,10 @@ public:
   }
 };
 
-// =============================================================================
-// dual2nd<T, N> — second-order forward AD via nested dual.
-//
-// Layout: dual<dual<T, N>, N>. The outer layer's tangent vector holds N copies
-// of dual<T, N>, each of which carries its own gradient. Composition through
-// arithmetic / math operators recursively propagates first-order chain rules
-// at both layers, yielding a Hessian via H[i, j] = result.d(i).d(j).
-//
-// Memory cost: per number, N + N*(1+N) values of T (gradient duplicated across
-// outer-tangent entries). For dynamic
-// width (N == 0) all storage is arena-backed.
-//
-// Naming-only alias — no new code; the recursive AD machinery (traits, LU,
-// math) already handles nesting through the inner-layer template instantiation.
-// =============================================================================
-template<class T = double, unsigned N = 0>
-using dual2nd = dual<dual<T, N>, N>;
+// dual2nd<T, N> is now a distinct class (cppode_dual2nd.hpp): a public-
+// inheritance refinement of dual<dual<T, N>, N> with hand-derived symmetric
+// math primitives. The previous typedef alias has been removed; downstream
+// code should #include <cppode/cppode_dual2nd.hpp> when needed.
 
 } // namespace cppode
 

@@ -1,5 +1,5 @@
 /*
- stage_matrix<T, S> — contiguous tangent storage for S RK stages.
+ stage_matrix<T, S>: contiguous tangent storage for S RK stages.
 
  Owns one [(S) × n_rows × n_cols] inner_type buffer; provides S
  tangent_slab views (each one [n_rows × n_cols] block) bound via

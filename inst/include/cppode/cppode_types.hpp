@@ -1,5 +1,5 @@
 /*
- CppODE core type definitions — Eigen-free.
+ CppODE core type definitions: Eigen-free.
 
  Provides lightweight replacements for Eigen types:
  vector_t<T>       = std::vector<T>
@@ -29,14 +29,14 @@
 namespace cppode {
 
 // ============================================================================
-//  vector_t<T> — dynamic vector (drop-in for Eigen::VectorXd)
+//  vector_t<T>: dynamic vector (drop-in for Eigen::VectorXd)
 // ============================================================================
 
 template<class T>
 using vector_t = std::vector<T>;
 
 // ============================================================================
-//  dense_matrix<T> — column-major flat array
+//  dense_matrix<T>: column-major flat array
 //
 //  Layout: element (row, col) lives at data[col * n_rows + row].
 //  This matches Fortran/LAPACK column-major convention.
@@ -76,7 +76,7 @@ struct dense_matrix
 };
 
 // ============================================================================
-//  csc_matrix<T> — compressed sparse column format
+//  csc_matrix<T>: compressed sparse column format
 //
 //  Ap[0..n]:   column pointers (Ap[j] = start of column j in Ai/Ax)
 //  Ai[0..nnz]: row indices
@@ -173,7 +173,7 @@ inline void vec_scale(std::vector<T>& v, S alpha)
   for (auto& x : v) x *= alpha;
 }
 
-// v *= scalar — BLAS specialization for double
+// v *= scalar: BLAS specialization for double
 inline void vec_scale(std::vector<double>& v, double alpha)
 {
   int n = static_cast<int>(v.size());
@@ -190,7 +190,7 @@ inline void vec_axpy(std::vector<T>& y, S alpha, const std::vector<T>& x)
     y[i] += alpha * x[i];
 }
 
-// y += alpha * x — BLAS specialization for double
+// y += alpha * x: BLAS specialization for double
 inline void vec_axpy(std::vector<double>& y, double alpha, const std::vector<double>& x)
 {
   int n = static_cast<int>(y.size());
@@ -217,7 +217,7 @@ inline void matvec(const dense_matrix<T>& A,
   }
 }
 
-// y = A * x — BLAS dgemv specialization for double
+// y = A * x: BLAS dgemv specialization for double
 inline void matvec(const dense_matrix<double>& A,
                    const std::vector<double>& x,
                    std::vector<double>& y)

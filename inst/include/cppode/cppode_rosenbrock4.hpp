@@ -168,7 +168,7 @@ public:
 
   // Same move/non-copy semantics as the multistepper: copying the slab
   // would build a fresh tangent block while the dual elements still
-  // point at the original — UB. Move-assignment preserves data() of
+  // point at the original: UB. Move-assignment preserves data() of
   // both the slab storage and the std::vector<dual> elements.
   rosenbrock4(const rosenbrock4&)            = delete;
   rosenbrock4& operator=(const rosenbrock4&) = delete;
@@ -406,7 +406,7 @@ public:
     ++m_n_fevals;
     // The error vector xerr is the controller-owned `m_xerr` and is NOT
     // slab-bound. To keep the AXPY hot path free of arena allocations, we
-    // pass scalar (double) alphas — `ad_lu::scalar_value` extracts the
+    // pass scalar (double) alphas: `ad_lu::scalar_value` extracts the
     // value component of m_coef.cXX (constants have zero tangents anyway)
     // so vec_axpy reduces to `y[i] += S * x[i]` over plain doubles inside
     // the dual ET path.
@@ -573,7 +573,7 @@ private:
   // the input x). Always unprimed → helpers fall through to their
   // per-element ET path. Mutable so we can hand out non-const refs to
   // satisfy the helper signature without lying about constness.
-  // xerr is not slab-bound here (caller owns it) — we route the 5 xerr
+  // xerr is not slab-bound here (caller owns it): we route the 5 xerr
   // axpys through plain vec_axpy below. m_dfdt and the input x are
   // similarly external; m_dfdt_unslabbed / m_x_in_unslabbed are
   // permanently-empty stubs that vec_*_with_slab sees as `primed=false`

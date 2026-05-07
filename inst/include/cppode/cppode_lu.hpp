@@ -1,5 +1,5 @@
 /*
- CppODE LU — unified Dense/Sparse iteration matrix solver.
+ CppODE LU: unified Dense/Sparse iteration matrix solver.
 
  Single class lu_W<Value, is_sparse> that encapsulates:
  - Jacobian storage (dense_matrix or csc_matrix)
@@ -9,7 +9,7 @@
  - Jacobian caching for lagged reuse
 
  Template parameter is_sparse selects dense vs sparse via
- if constexpr — no SFINAE, no CRTP, no tag dispatch.
+ if constexpr: no SFINAE, no CRTP, no tag dispatch.
 
  AD types (F<double>, F<F<double>>) are handled transparently
  by the underlying dense_lu_solver / sparse_lu_solver.
@@ -55,18 +55,18 @@ struct detail_null_sparse_lu {
 //  lu_W<Value, is_sparse>
 //
 //  Self-contained iteration matrix solver.  Steppers hold this as a member
-//  and call its methods directly — no CRTP inheritance needed.
+//  and call its methods directly: no CRTP inheritance needed.
 //
 //  Interface summary:
-//    call_jacobian(jac_func, x, t)      — evaluate Jacobian
-//    factorize_W(n, inv_gamma_dt)       — build W = 1/(γh)·I − J, factorize
-//    refactorize_W_gamma_only(n, val)   — O(n) diagonal update (sparse only)
-//    refactorize_W_from_cache(n, val)   — restore cached J, re-factorize
-//    cache_jacobian(n)                  — snapshot J for later reuse
-//    solve(b)                           — W⁻¹ b  (full AD / IFT)
-//    solve_scalar(b)                    — W_val⁻¹ b  (doubles only, no IFT)
-//    invalidate() / has_valid_jacobian() / has_valid_lu() — state tracking
-//    resize(x)                          — allocate / reallocate buffers
+//    call_jacobian(jac_func, x, t)     : evaluate Jacobian
+//    factorize_W(n, inv_gamma_dt)      : build W = 1/(γh)·I − J, factorize
+//    refactorize_W_gamma_only(n, val)  : O(n) diagonal update (sparse only)
+//    refactorize_W_from_cache(n, val)  : restore cached J, re-factorize
+//    cache_jacobian(n)                 : snapshot J for later reuse
+//    solve(b)                          : W⁻¹ b  (full AD / IFT)
+//    solve_scalar(b)                   : W_val⁻¹ b  (doubles only, no IFT)
+//    invalidate() / has_valid_jacobian() / has_valid_lu(): state tracking
+//    resize(x)                         : allocate / reallocate buffers
 // ============================================================================
 
 template<class Value, bool is_sparse>
@@ -85,7 +85,7 @@ public:
   typedef state_wrapper<matrix_type>       wrapped_matrix_type;
 
   // ====================================================================
-  //  Jacobian evaluation — writes to internal storage
+  //  Jacobian evaluation: writes to internal storage
   //
   //  Dense:  codegen writes −J directly into m_W_temp (pre-negated),
   //          clearing only previously-written entries (not set_zero).
@@ -282,7 +282,7 @@ private:
   //
   //  m_W_temp holds −J (from call_jacobian or cache restore).
   //  Add diagonal, then factorize_move (O(1) swap into LU solver).
-  //  After the swap m_W_temp holds stale LU data — that's fine
+  //  After the swap m_W_temp holds stale LU data: that's fine
   //  because it will be rebuilt before next use (either by a fresh
   //  call_jacobian or by refactorize_W_from_cache_dense).
   //
@@ -301,7 +301,7 @@ private:
       m_W_temp(i, i) += inv_gamma_dt;
 
     if constexpr (!ad_lu::is_ad<value_type>::value) {
-      // O(1) swap into LU solver — no n² copy.
+      // O(1) swap into LU solver: no n² copy.
       // m_W_temp.data now holds the old LU buffer (stale).
       m_dense_lu.factorize_move(m_W_temp);
       m_W_temp.data.resize(nn);
@@ -310,7 +310,7 @@ private:
       // not leftover LU data from the swap.
       std::memset(m_W_temp.data.data(), 0, nn * sizeof(double));
     } else {
-      // AD path: factorize (copy) — IFT needs the original W matrix.
+      // AD path: factorize (copy): IFT needs the original W matrix.
       m_dense_lu.factorize(m_W_temp);
       // Undo diagonal so m_W_temp holds clean −J for AD IFT.
       for (size_t i = 0; i < n; ++i)
@@ -399,7 +399,7 @@ private:
   // Dense path
   //   m_W_temp holds −J (written by codegen, persisted between calls).
   //   m_jac_cache holds cached −J for lagged reuse.
-  //   m_jac (the old separate Jacobian buffer) is eliminated —
+  //   m_jac (the old separate Jacobian buffer) is eliminated :
   //   codegen writes directly into m_W_temp.
   ad_lu::dense_lu_solver<value_type> m_dense_lu;
   matrix_type          m_W_temp;                         // persistent: holds −J

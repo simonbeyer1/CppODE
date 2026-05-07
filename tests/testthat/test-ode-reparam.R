@@ -420,7 +420,7 @@ test_that("same model supports per-call varying M (condition heterogeneity)", {
   # (was 1e-10): with the SoA tangent slab + BLAS daxpy / dscal, FMA
   # in the BLAS kernels produces ~1e-9 round-off drift vs the legacy
   # per-element ET path that paired separate mul+add. Same algebra,
-  # different rounding — well within the 1e-10 abstol/reltol regime.
+  # different rounding: well within the 1e-10 abstol/reltol regime.
   expect_equal(as.numeric(r1$sens1[, 1, 1]),
                as.numeric(r2$sens1[, 1, 2]),
                tolerance = 1e-7)

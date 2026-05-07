@@ -12,9 +12,9 @@
    3. for (i)  lhs.tan_[i] = root.tan(i);    // one fused chain-rule loop
 
  Coverage:
-   - dual<T, 0> (heap, arena-backed) — eliminates the per-binary-op arena
+   - dual<T, 0> (heap, arena-backed): eliminates the per-binary-op arena
      bump + the per-element `*this = *this + o` synthesis-temp leak.
-   - dual<T, N> with N > 0 (stack, inline tan_[N]) — eliminates per-binary-op
+   - dual<T, N> with N > 0 (stack, inline tan_[N]): eliminates per-binary-op
      352-byte temp duals and replaces N separate eager tangent loops with one
      fused, compile-time-bounded loop the optimiser unrolls / vectorises.
    - Nested AD (T = dual<U, M>): SKIPPED. The eager_dual_active gate
@@ -105,7 +105,7 @@ template<class X> struct is_et_operand
 // compound assignments like  *this = *this + o  see the OLD val/tan even after
 // materialisation has set this->val_. For N == 0 the snapshot also pins the
 // pre-allocation tan_ pointer (so leaf.tan(i) reads the OLD arena buffer
-// even after set_depend_size has swapped *this->tan_ to a fresh allocation —
+// even after set_depend_size has swapped *this->tan_ to a fresh allocation :
 // without this, the bug was "first call OK, calls 2..N drift" because arena
 // memory served on call ≥ 2 contained stale data while call 1 saw zeros from
 // the very first malloc). For N > 0 there is no reallocation, but pinning
@@ -165,7 +165,7 @@ struct ScalarLeaf : Expr<ScalarLeaf<T>> {
 };
 
 // =============================================================================
-// Op tags — value() and tangent() static methods.
+// Op tags: value() and tangent() static methods.
 // tangent() takes the cached operand vals + per-index operand tangents + the
 // node's own cached y_ where useful (Div).
 // =============================================================================
@@ -199,7 +199,7 @@ struct DivOp {
 };
 
 // =============================================================================
-// Binary node — captures operands by value (small proxies, cheap to copy).
+// Binary node: captures operands by value (small proxies, cheap to copy).
 // Caches result value y_ in ctor: turns N nested vals into one pass through
 // the tree at construction, then per-tangent calls use cached y_ + recursive
 // tan(i) into children. Mirrors the eager path's "compute fp once, loop
@@ -230,7 +230,7 @@ struct BinExpr : Expr<BinExpr<L, R, Op>> {
 };
 
 // =============================================================================
-// Unary node — caches both result value y_ and derivative coefficient fp_ in
+// Unary node: caches both result value y_ and derivative coefficient fp_ in
 // ctor. tan(i) is then a single multiply: fp_ * x_.tan(i). This mirrors the
 // eager unary path's structure (cppode_dual_math.hpp:256: "const T fp = ...").
 // Op tags implement: static void compute(xv, y_out, fp_out).
@@ -253,7 +253,7 @@ struct UnaryExpr : Expr<UnaryExpr<X, Op>> {
 };
 
 // =============================================================================
-// Unary op tags — each defines compute(x_val, y_out, fp_out).
+// Unary op tags: each defines compute(x_val, y_out, fp_out).
 //
 // Math functions are reached via ADL: bring the std overloads into scope so
 // for T=double they resolve to std::, and for T=user-namespace they resolve
@@ -307,7 +307,7 @@ struct AbsOp {
 #undef CPPODE_DEFINE_ET_UNARY_OP
 
 // =============================================================================
-// pow nodes — three forms: pow(dual,dual), pow(dual,scalar), pow(scalar,dual).
+// pow nodes: three forms: pow(dual,dual), pow(dual,scalar), pow(scalar,dual).
 // Cache fa, fb, y in ctor; tan(i) = fa*l_t + fb*r_t. For the mixed-scalar
 // forms the missing operand contributes 0 to its tangent factor.
 // =============================================================================
@@ -344,7 +344,7 @@ struct PowExprDD : Expr<PowExprDD<L, R>> {
   }
 };
 
-// pow(dual, scalar) — scalar exponent
+// pow(dual, scalar): scalar exponent
 template<class L>
 struct PowExprDS : Expr<PowExprDS<L>> {
   using value_type = typename L::value_type;
@@ -365,7 +365,7 @@ struct PowExprDS : Expr<PowExprDS<L>> {
   value_type tan(unsigned i) const { return fa_ * l_.tan(i); }
 };
 
-// pow(scalar, dual) — scalar base
+// pow(scalar, dual): scalar base
 template<class R>
 struct PowExprSD : Expr<PowExprSD<R>> {
   using value_type = typename R::value_type;
@@ -387,10 +387,10 @@ struct PowExprSD : Expr<PowExprSD<R>> {
 };
 
 // (pow free-function overloads are defined after the make_leaf / et_pair_target
-// helpers — see further below in this header.)
+// helpers: see further below in this header.)
 
 // =============================================================================
-// to_expr() — wrap any operand into an ET node.
+// to_expr(): wrap any operand into an ET node.
 // =============================================================================
 // Already an Expr: pass through (return by value of the derived type).
 template<class D>
@@ -408,7 +408,7 @@ template<class S,
 inline ScalarLeaf<S> to_expr(S s) { return ScalarLeaf<S>(s); }
 
 // =============================================================================
-// expr_value_type<X> — determine the result T from any wrappable operand.
+// expr_value_type<X>: determine the result T from any wrappable operand.
 // Used to constrain mixed dual+scalar so ScalarLeaf has a matching value_type.
 // =============================================================================
 template<class X, class = void>
@@ -481,9 +481,9 @@ struct et_pair_enabled
     > {};
 
 // =============================================================================
-// Binary operator overloads — one template covers (dual op dual), (Expr op
+// Binary operator overloads: one template covers (dual op dual), (Expr op
 // dual), (dual op Expr), (Expr op Expr), (dual op scalar), (scalar op dual),
-// (Expr op scalar), (scalar op Expr) — eight cases per arithmetic op.
+// (Expr op scalar), (scalar op Expr): eight cases per arithmetic op.
 // =============================================================================
 #define CPPODE_DEFINE_ET_BINOP(SYM, OPTAG)                                     \
   template<class A, class B,                                                   \
@@ -522,7 +522,7 @@ inline auto operator-(const A& a) {
 }
 
 // =============================================================================
-// Math functions — same shape: wrap operand via to_expr / make_leaf and return
+// Math functions: same shape: wrap operand via to_expr / make_leaf and return
 // a UnaryExpr templated on the matching Op tag.
 // =============================================================================
 #define CPPODE_DEFINE_ET_MATH_FN(NAME, OPTAG)                                 \
@@ -554,7 +554,7 @@ CPPODE_DEFINE_ET_MATH_FN(abs,   AbsOp)
 #undef CPPODE_DEFINE_ET_MATH_FN
 
 // =============================================================================
-// pow free-function overloads — three SFINAE-gated forms.
+// pow free-function overloads: three SFINAE-gated forms.
 // (Definitions deferred to here so make_leaf / et_pair_target are visible.)
 // =============================================================================
 
@@ -602,7 +602,7 @@ using expr::operator-;
 using expr::operator*;
 using expr::operator/;
 
-// Math functions — codegen emits cppode::exp(...) etc., so make the ET
+// Math functions: codegen emits cppode::exp(...) etc., so make the ET
 // overloads visible at namespace cppode (alongside the eager overloads in
 // cppode_dual_math.hpp; SFINAE on the eager side keeps the (non-AD T, N=0)
 // slice unambiguous).
@@ -629,7 +629,7 @@ using expr::pow;
 // Out-of-line definitions for dual<T, 0>'s ET assignment / copy-ctor (declared
 // in cppode_dual.hpp, defined here so Expr<D> is complete).
 //
-// These are only ever called when D is a CRTP Expr<D> derivative — for
+// These are only ever called when D is a CRTP Expr<D> derivative: for
 // dual-to-dual or scalar assignment the existing non-template overloads in
 // cppode_dual.hpp win the overload resolution because template arg deduction
 // against `const Expr<D>&` fails for non-Expr operands.
@@ -704,7 +704,7 @@ inline dual<T, 0>& dual<T, 0>::operator*=(const expr::Expr<D>& e) {
   const T new_val = val_ * d.val();
   if (size_ > 0 && d.depends()) {
     assert(size_ == d.tan_size() && "dual<T,0>::operator*=(Expr): tan size mismatch");
-    // (a*b)' = a'*b + a*b'  — uses CURRENT val_ in tan_, then update val_.
+    // (a*b)' = a'*b + a*b' : uses CURRENT val_ in tan_, then update val_.
     for (unsigned i = 0; i < size_; ++i)
       tan_[i] = tan_[i] * d.val() + val_ * d.tan(i);
   } else if (size_ > 0) {
@@ -742,7 +742,7 @@ inline dual<T, 0>& dual<T, 0>::operator/=(const expr::Expr<D>& e) {
 // Out-of-line definitions for the static-N dual<T, N> (N > 0) ET assignment /
 // ctor / compound-assignment templates (declared in cppode_dual.hpp).
 //
-// Loop bound is the compile-time constant N — the optimiser unrolls and SIMD-
+// Loop bound is the compile-time constant N: the optimiser unrolls and SIMD-
 // vectorises this for the typical n_sens = 32..64 stack widths. No allocation,
 // no temp dual: the entire RHS Expr<D> tree materialises directly into the
 // inline tan_[N] slots.
@@ -810,7 +810,7 @@ inline dual<T, N>& dual<T, N>::operator*=(const expr::Expr<D>& e) {
   const D& d = e.self();
   const T new_val = val_ * d.val();
   if (depend_ && d.depends()) {
-    // (a*b)' = a'*b + a*b'  — uses CURRENT val_ in tan_, then update val_.
+    // (a*b)' = a'*b + a*b' : uses CURRENT val_ in tan_, then update val_.
     for (unsigned i = 0; i < N; ++i)
       tan_[i] = tan_[i] * d.val() + val_ * d.tan(i);
   } else if (depend_) {

@@ -27,6 +27,9 @@
 // ============================================================================
 #include <cppode/cppode_dual_math.hpp>
 #include <cppode/cppode_dual_expr.hpp>
+#include <cppode/cppode_dual2nd.hpp>
+#include <cppode/cppode_dual2nd_math.hpp>
+#include <cppode/cppode_dual2nd_expr.hpp>
 
 // ============================================================================
 //  CppODE types and infrastructure

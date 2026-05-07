@@ -22,6 +22,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <type_traits>
 #include <vector>
@@ -30,15 +31,19 @@
 #include <cppode/cppode_types.hpp>
 
 namespace cppode {
+// Forward declaration: dual2nd<S, N> is defined in cppode_dual2nd.hpp;
+// the slab specialisation below references it for nested-AD slabbing.
+template<class S, unsigned N> class dual2nd;
+
 namespace detail {
 
 // =============================================================================
 //  is_dynamic_dual<T>
 //
 //  True when T is cppode::dual<S, N> (any N >= 0) with S a non-AD scalar
-//  (i.e. the slab-eligible dual specs — both heap dual<S, 0> and static-N
+//  (i.e. the slab-eligible dual specs: both heap dual<S, 0> and static-N
 //  dual<S, N>). Nested duals (dual<dual<...>,...>) are intentionally
-//  excluded — deriv2 inner-tangent slabs would need per-outer-tangent
+//  excluded: deriv2 inner-tangent slabs would need per-outer-tangent
 //  buffers, which the current slab layout doesn't model.
 //
 //  Name is historical (originally only the dynamic-N path needed slabbing);
@@ -54,8 +59,27 @@ struct is_dynamic_dual<cppode::dual<S, N>>
   : std::bool_constant<!std::is_class_v<S> || std::is_arithmetic_v<S>>
 {};
 
+// dual2nd<S, N>: enabled via a two-level slab specialisation below. The
+// nordsieck_block<dual2nd, K> specialisation owns three concatenated
+// blocks (outer dual<S,N> values + flat gradient / Hessian scalars) and
+// hands each slot's slab three pointers via the 6-arg prime_external
+// overload. The slab itself owns nothing in external mode; in own-storage
+// mode (used by stand-alone state vectors outside Nordsieck) the slab
+// allocates its own three buffers via prime().
+template<class S, unsigned N>
+struct is_dynamic_dual<cppode::dual2nd<S, N>>
+  : std::bool_constant<!std::is_class_v<S> || std::is_arithmetic_v<S>>
+{};
+
+// Trait: is T a dual2nd? Used by tangent_slab to dispatch to the nested
+// specialisation.
+template<class T>
+struct is_dual2nd : std::false_type {};
+template<class S, unsigned N>
+struct is_dual2nd<cppode::dual2nd<S, N>> : std::true_type {};
+
 // =============================================================================
-//  tangent_slab<T> — contiguous [n_rows × n_cols] storage for dual<S,0>.
+//  tangent_slab<T>: contiguous [n_rows × n_cols] storage for dual<S,0>.
 //
 //  Primary template handles dual<S,0>; non-dynamic-dual T uses the empty
 //  stub specialisation below.
@@ -95,7 +119,7 @@ public:
   // For static-N duals (T::static_size > 0): pin n_cols to N. Stepper-side
   // calls pass the *active* sensitivity width (n_sens, which under reparam
   // or runtime-fixed can be < N), but each dual must always span N tangent
-  // slots — eager / ET loops bound on loop_size() = N, and reading past
+  // slots: eager / ET loops bound on loop_size() = N, and reading past
   // the slab row otherwise lands on the next row's tangents (UB). Inactive
   // slots remain zero, contribute nothing to chain rules.
   void prime(std::vector<T>& v, unsigned n_rows, unsigned n_cols) {
@@ -175,6 +199,156 @@ public:
   void rebind_only(std::vector<T>&) noexcept {}
 };
 
+// =============================================================================
+//  tangent_slab specialisation for cppode::dual2nd<S, N>: two-block slab
+//
+//  dual2nd has nested storage. After the LU dual2nd dispatch (which reads
+//  gradient via first_order_view from the inline outer.tan_[k].x() slot),
+//  the redundant outer.val_.tan_ gradient copy is no longer needed. The
+//  slab now owns just two blocks:
+//
+//     outer_storage_:  n_rows * N            dual<S, N>     (outer.tan_)
+//     hess_storage_:   n_rows * N * N        S              (Hessian rows)
+//
+//  Per state i:
+//     v[i].base.tan_    -> outer_storage_ + i*N        (N dual<S,N>)
+//     outer_storage_[i*N + k].tan_ -> hess_storage_ + i*N*N + k*N
+//                                                      (N S, k-th Hessian row)
+// =============================================================================
+template<class S, unsigned N>
+class tangent_slab<cppode::dual2nd<S, N>, true> {
+public:
+  using value_type   = cppode::dual2nd<S, N>;
+  using outer_inner_t = cppode::dual<S, N>;
+  using inner_type   = S;
+
+  tangent_slab() = default;
+  tangent_slab(const tangent_slab&)            = delete;
+  tangent_slab& operator=(const tangent_slab&) = delete;
+  tangent_slab(tangent_slab&&) noexcept        = default;
+  tangent_slab& operator=(tangent_slab&&) noexcept = default;
+
+  unsigned n_rows() const noexcept { return n_rows_; }
+  unsigned n_cols() const noexcept { return n_cols_; }
+  bool     primed() const noexcept { return n_cols_ != 0; }
+
+  // hess_data: n_rows * N * N S, the second-order Hessian rows. Flat double
+  // array suitable for BLAS daxpy / dscal.
+  S*       hess_data()       noexcept { return hess_base_(); }
+  const S* hess_data() const noexcept { return hess_base_(); }
+  std::size_t hess_size() const noexcept {
+    return static_cast<std::size_t>(n_rows_) * n_cols_ * n_cols_;
+  }
+
+  // tangent_data: returns the OUTER block (dual<S,N>*), matching the
+  // signature T::value_type* expected by the multistepper's nordsieck-
+  // evaluation generic loop.
+  outer_inner_t*       tangent_data()       noexcept { return outer_base_(); }
+  const outer_inner_t* tangent_data() const noexcept { return outer_base_(); }
+  std::size_t tangent_size() const noexcept {
+    return static_cast<std::size_t>(n_rows_) * n_cols_;
+  }
+
+  // 4-arg prime_external (compatibility): owns the inner hess block.
+  void prime_external(std::vector<value_type>& v, outer_inner_t* outer_base,
+                      unsigned n_rows, unsigned n_cols) {
+    if constexpr (N > 0) n_cols = N;
+    n_rows_ = n_rows;
+    n_cols_ = n_cols;
+    external_outer_ = outer_base;
+    external_hess_  = nullptr;
+    hess_storage_.assign(static_cast<std::size_t>(n_rows) * n_cols * n_cols, S(0));
+    outer_storage_.clear();
+    outer_storage_.shrink_to_fit();
+    rebind_only(v);
+  }
+
+  // 6-arg prime_external: nordsieck_block<dual2nd> binds a slot's slab onto
+  // two slices (outer, hess) of the unified K-slot blocks. (val_tan_base
+  // is accepted for ABI compatibility but ignored.)
+  void prime_external(std::vector<value_type>& v,
+                      outer_inner_t* outer_base,
+                      S* /*val_tan_base*/,
+                      S* hess_base,
+                      unsigned n_rows, unsigned n_cols) {
+    if constexpr (N > 0) n_cols = N;
+    n_rows_ = n_rows;
+    n_cols_ = n_cols;
+    external_outer_ = outer_base;
+    external_hess_  = hess_base;
+    outer_storage_.clear();
+    outer_storage_.shrink_to_fit();
+    hess_storage_.clear();
+    hess_storage_.shrink_to_fit();
+    rebind_only(v);
+  }
+
+  void prime(std::vector<value_type>& v, unsigned n_rows, unsigned n_cols) {
+    assert(static_cast<unsigned>(v.size()) == n_rows
+           && "tangent_slab<dual2nd>::prime: vector size mismatch");
+    if constexpr (N > 0) {
+      n_cols = N;
+    }
+    if (external_outer_ == nullptr && external_hess_ == nullptr
+        && n_rows == n_rows_ && n_cols == n_cols_) {
+      rebind_only(v);
+      return;
+    }
+    n_rows_ = n_rows;
+    n_cols_ = n_cols;
+    external_outer_ = nullptr;
+    external_hess_  = nullptr;
+    const std::size_t outer_total = static_cast<std::size_t>(n_rows) * n_cols;
+    const std::size_t hess_total  = outer_total * n_cols;
+    outer_storage_.clear();
+    outer_storage_.resize(outer_total);
+    hess_storage_.assign(hess_total, S(0));
+    rebind_only(v);
+  }
+
+  // Re-bind without resizing.
+  void rebind_only(std::vector<value_type>& v) {
+    if (n_cols_ == 0) return;
+    assert(static_cast<unsigned>(v.size()) == n_rows_
+           && "tangent_slab<dual2nd>::rebind_only: vector size changed");
+    outer_inner_t* outer_base = outer_base_();
+    S*             hess_base  = hess_base_();
+    for (unsigned i = 0; i < n_rows_; ++i) {
+      auto& di = v[i];
+      di.rebind_storage(outer_base + static_cast<std::size_t>(i) * n_cols_,
+                        n_cols_);
+      for (unsigned k = 0; k < n_cols_; ++k) {
+        outer_inner_t& ok = outer_base[static_cast<std::size_t>(i) * n_cols_ + k];
+        ok.rebind_storage(hess_base
+                            + static_cast<std::size_t>(i) * n_cols_ * n_cols_
+                            + static_cast<std::size_t>(k) * n_cols_,
+                          n_cols_);
+      }
+    }
+  }
+
+private:
+  outer_inner_t* outer_base_() noexcept {
+    return external_outer_ ? external_outer_ : outer_storage_.data();
+  }
+  const outer_inner_t* outer_base_() const noexcept {
+    return external_outer_ ? external_outer_ : outer_storage_.data();
+  }
+  S* hess_base_() noexcept {
+    return external_hess_ ? external_hess_ : hess_storage_.data();
+  }
+  const S* hess_base_() const noexcept {
+    return external_hess_ ? external_hess_ : hess_storage_.data();
+  }
+
+  std::vector<outer_inner_t> outer_storage_;
+  std::vector<S>             hess_storage_;
+  outer_inner_t*             external_outer_ = nullptr;
+  S*                         external_hess_  = nullptr;
+  unsigned n_rows_ = 0;
+  unsigned n_cols_ = 0;
+};
+
 } // namespace detail
 
 // =============================================================================
@@ -187,7 +361,7 @@ public:
 //  symmetric `bv*at + av*bt` even when the scalar side has zero tangent.
 //
 //  For non-dynamic-dual T (double, static-N dual<T,N!=0>) these helpers
-//  forward to plain vec_axpy / vec_scale — the empty-stub slab is ignored.
+//  forward to plain vec_axpy / vec_scale: the empty-stub slab is ignored.
 //  Callers can therefore pass `m_zn[j].m_v` + `m_zn_slab[j]` uniformly,
 //  regardless of whether the stepper was instantiated over double, dual,
 //  or nested dual.
@@ -199,6 +373,44 @@ inline void vec_axpy_with_slab(
     double alpha,
     const std::vector<T>& x, const detail::tangent_slab<T>& x_slab)
 {
+  if constexpr (detail::is_dual2nd<T>::value) {
+    // BLAS-3 hybrid: per-element scalar + inline d1 update, BLAS daxpy on
+    // hess block. arm_full ensures the dual2nd's outer storage depend_
+    // flags are restored after a possible base::operator=(scalar) reset.
+    // sync_d1_redundant call is dropped: the LU now reads gradient from
+    // inline_d1 via first_order_view, no val_tan_block sync required.
+    using S_inner = typename detail::tangent_slab<T>::inner_type;
+    const std::size_t n = y.size();
+    if (y_slab.primed() && x_slab.primed()) {
+      const S_inner a_s = static_cast<S_inner>(alpha);
+      const unsigned m = y_slab.n_cols();
+      for (std::size_t i = 0; i < n; ++i) {
+        y[i].arm_full(m);  // ensure depend_ is true throughout
+        y[i].scalar() += a_s * x[i].scalar();
+        for (unsigned k = 0; k < m; ++k)
+          y[i].d1_at(k) += a_s * x[i].d1_at(k);
+      }
+      const std::size_t h_total = y_slab.hess_size();
+      if (h_total > 0) {
+        if constexpr (std::is_same_v<S_inner, double>) {
+          int len = static_cast<int>(h_total);
+          int inc = 1;
+          double a = alpha;
+          F77_CALL(daxpy)(&len, &a,
+                          const_cast<double*>(x_slab.hess_data()), &inc,
+                          y_slab.hess_data(), &inc);
+        } else {
+          S_inner* yh = y_slab.hess_data();
+          const S_inner* xh = x_slab.hess_data();
+          for (std::size_t k = 0; k < h_total; ++k) yh[k] += a_s * xh[k];
+        }
+      }
+    } else {
+      const T a_t = T(static_cast<S_inner>(alpha));
+      for (std::size_t i = 0; i < n; ++i) y[i] += a_t * x[i];
+    }
+    return;
+  }
   if constexpr (detail::is_dynamic_dual<T>::value) {
     using S = typename T::value_type;
     const std::size_t n = y.size();
@@ -241,7 +453,7 @@ inline void vec_axpy_with_slab(
 
 // Slab-aware vector zero:
 //   y.values = 0;  y.tangents (slab block) = 0
-// Crucially this does NOT call `y[i] = T(0)` on the dual elements — that
+// Crucially this does NOT call `y[i] = T(0)` on the dual elements: that
 // would invoke dual<T,0>::operator=(const U&), which sets tan_ = nullptr
 // and size_ = 0, undoing the slab binding. Using vec_zero on a slab-bound
 // vector therefore breaks the next vec_axpy_with_slab call. The
@@ -251,6 +463,28 @@ template<class T>
 inline void vec_zero_with_slab(
     std::vector<T>& y, detail::tangent_slab<T>& y_slab)
 {
+  if constexpr (detail::is_dual2nd<T>::value) {
+    // BLAS-3 hybrid: per-element scalar + inline d1 zero + memset on hess
+    // slab block. (val_tan_block dropped; LU reads inline_d1 via
+    // first_order_view.)
+    using S_inner = typename detail::tangent_slab<T>::inner_type;
+    const std::size_t n = y.size();
+    if (y_slab.primed()) {
+      const unsigned m = y_slab.n_cols();
+      for (std::size_t i = 0; i < n; ++i) {
+        y[i].arm_full(m);
+        y[i].scalar() = S_inner(0);
+        for (unsigned k = 0; k < m; ++k) y[i].d1_at(k) = S_inner(0);
+      }
+      const std::size_t h_total = y_slab.hess_size();
+      if (h_total > 0)
+        std::memset(y_slab.hess_data(), 0, h_total * sizeof(S_inner));
+    } else {
+      const S_inner zero = S_inner(0);
+      for (std::size_t i = 0; i < n; ++i) y[i] *= zero;
+    }
+    return;
+  }
   if constexpr (detail::is_dynamic_dual<T>::value) {
     using S = typename T::value_type;
     const std::size_t n = y.size();
@@ -279,6 +513,27 @@ inline void vec_copy_with_slab(
     std::vector<T>& y, detail::tangent_slab<T>& y_slab,
     const std::vector<T>& x, const detail::tangent_slab<T>& x_slab)
 {
+  if constexpr (detail::is_dual2nd<T>::value) {
+    // BLAS-3 hybrid: per-element scalar + inline d1 copy + memcpy on hess.
+    // (sync_d1_redundant dropped: LU reads inline_d1 via first_order_view.)
+    using S_inner = typename detail::tangent_slab<T>::inner_type;
+    const std::size_t n = y.size();
+    if (y_slab.primed() && x_slab.primed()) {
+      const unsigned m = y_slab.n_cols();
+      for (std::size_t i = 0; i < n; ++i) {
+        y[i].arm_full(m);
+        y[i].scalar() = x[i].scalar();
+        for (unsigned k = 0; k < m; ++k) y[i].d1_at(k) = x[i].d1_at(k);
+      }
+      const std::size_t h_total = y_slab.hess_size();
+      if (h_total > 0)
+        std::memcpy(y_slab.hess_data(), x_slab.hess_data(),
+                    h_total * sizeof(S_inner));
+    } else {
+      for (std::size_t i = 0; i < n; ++i) y[i] = x[i];
+    }
+    return;
+  }
   if constexpr (detail::is_dynamic_dual<T>::value) {
     using S = typename T::value_type;
     const std::size_t n = y.size();
@@ -305,6 +560,38 @@ template<class T>
 inline void vec_scale_with_slab(
     std::vector<T>& y, detail::tangent_slab<T>& y_slab, double alpha)
 {
+  if constexpr (detail::is_dual2nd<T>::value) {
+    // BLAS-3 hybrid: per-element scalar + inline d1 scale + dscal on hess
+    // block. (sync_d1_redundant dropped: LU reads inline_d1 via
+    // first_order_view.)
+    using S_inner = typename detail::tangent_slab<T>::inner_type;
+    const std::size_t n = y.size();
+    if (y_slab.primed()) {
+      const S_inner a_s = static_cast<S_inner>(alpha);
+      const unsigned m = y_slab.n_cols();
+      for (std::size_t i = 0; i < n; ++i) {
+        y[i].arm_full(m);
+        y[i].scalar() *= a_s;
+        for (unsigned k = 0; k < m; ++k) y[i].d1_at(k) *= a_s;
+      }
+      const std::size_t h_total = y_slab.hess_size();
+      if (h_total > 0) {
+        if constexpr (std::is_same_v<S_inner, double>) {
+          int len = static_cast<int>(h_total);
+          int inc = 1;
+          double a = alpha;
+          F77_CALL(dscal)(&len, &a, y_slab.hess_data(), &inc);
+        } else {
+          S_inner* yh = y_slab.hess_data();
+          for (std::size_t k = 0; k < h_total; ++k) yh[k] *= a_s;
+        }
+      }
+    } else {
+      const S_inner a_s = static_cast<S_inner>(alpha);
+      for (std::size_t i = 0; i < n; ++i) y[i] *= a_s;
+    }
+    return;
+  }
   if constexpr (detail::is_dynamic_dual<T>::value) {
     using S = typename T::value_type;
     const std::size_t n = y.size();

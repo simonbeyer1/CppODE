@@ -1,3 +1,33 @@
+#' Disambiguate a model name against currently loaded shared libraries.
+#'
+#' Re-using a model name whose DLL is already loaded is unreliable across
+#' platforms: `dyn.unload()` may leave file handles open (notably on
+#' Windows), and R's `.Call` symbol cache can retain stale pointers. To
+#' avoid this, the constructors call `unique_modelname()` right after
+#' fixing `modelname`. If a DLL of that base name is already loaded, a
+#' numeric suffix (`_2`, `_3`, ...) is appended and a warning is issued.
+#'
+#' @param modelname Character scalar: the desired base name.
+#' @return The original name if free, otherwise `modelname_<i>` for the
+#'   smallest free `i >= 2`.
+#' @keywords internal
+#' @noRd
+unique_modelname <- function(modelname) {
+  loaded <- names(getLoadedDLLs())
+  if (!modelname %in% loaded) return(modelname)
+  i <- 2L
+  repeat {
+    cand <- paste0(modelname, "_", i)
+    if (!cand %in% loaded) {
+      warning(sprintf(
+        "A shared library named '%s' is already loaded; reliably overwriting it across platforms is not supported. Using '%s' instead.",
+        modelname, cand), call. = FALSE)
+      return(cand)
+    }
+    i <- i + 1L
+  }
+}
+
 #' Compile Generated C++ Model Code
 #'
 #' @description

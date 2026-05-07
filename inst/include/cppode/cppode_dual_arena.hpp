@@ -4,7 +4,7 @@
  Design:
  - One thread-local arena per thread, growing slabs (initial 64 KiB, doubling).
  - LIFO scope-based reset via cppode::dual_arena::scope (RAII).
- - Bump-pointer alloc<T>(n) — O(1) per allocation, no per-temporary heap call.
+ - Bump-pointer alloc<T>(n): O(1) per allocation, no per-temporary heap call.
  - For trivially-destructible T (double, float, int, …) the alloc is a pure
    bump; no ctor/dtor bookkeeping. For non-trivially-destructible T (e.g.
    boost::multiprecision::cpp_dec_float, mpfr::mpreal) the alloc records a

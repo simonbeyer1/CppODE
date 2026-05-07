@@ -1,5 +1,5 @@
 /*
- Multistepper Dense Output — continuous output via Nordsieck interpolation
+ Multistepper Dense Output: continuous output via Nordsieck interpolation
  =========================================================================
 
  Wraps a multistepper controlled stepper (multistepper_controller) and
@@ -102,7 +102,7 @@ public:
   //  do_step
   //
   //  Retries with adaptive step-size control until a step is accepted.
-  //  Returns (t_old, t_new) — the interval where calc_state is valid.
+  //  Returns (t_old, t_new): the interval where calc_state is valid.
   //
   //  The NDF stepper's history serves directly as interpolation data,
   //  so no separate prepare_dense_output phase is needed.
@@ -130,7 +130,7 @@ public:
 
     // Dense output snapshot is saved inside the controller's try_step,
     // after complete_step but before order/stepsize modifications.
-    // Do NOT call prepare_dense_output() here — the Nordsieck array
+    // Do NOT call prepare_dense_output() here: the Nordsieck array
     // has already been modified for the next step at this point.
 
     // Swap buffers: "old" buffer now holds the newest state
@@ -152,7 +152,7 @@ public:
   void calc_state(time_type t, StateOut& x)
   {
     auto _tp = m_stepper.stepper().m_prof.timer(cppode::prof_cat::dense_interp);
-    // Nordsieck polynomial evaluation from the dense output snapshot —
+    // Nordsieck polynomial evaluation from the dense output snapshot :
     // delegates to multistepper::eval_dense_into which knows about the
     // sensitivity slab layout and uses a slab-bound scratch buffer for
     // the dynamic-dual heap path.

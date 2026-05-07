@@ -1,11 +1,11 @@
 #!/bin/sh
 # =====================================================================
-# CppODE configure — detect optional system libraries at install time.
+# CppODE configure: detect optional system libraries at install time.
 #
 # Two independent capabilities are probed:
 #
-#   1. SUNDIALS (>= 6.0) — required by the CVODE() backend.
-#   2. SuiteSparse / KLU — required by the sparse Jacobian path of
+#   1. SUNDIALS (>= 6.0): required by the CVODE() backend.
+#   2. SuiteSparse / KLU: required by the sparse Jacobian path of
 #      both CppODE() and CVODE().
 #
 # Both are optional: if a library is missing the relevant runtime
@@ -22,7 +22,7 @@ PKG_CONFIG="${PKG_CONFIG:-pkg-config}"
 
 : "${R_HOME:=$(R RHOME 2>/dev/null || true)}"
 if [ -z "${R_HOME}" ]; then
-  echo "configure: cannot locate R_HOME — aborting." >&2
+  echo "configure: cannot locate R_HOME: aborting." >&2
   exit 1
 fi
 RBIN="${R_HOME}/bin/R"
@@ -33,7 +33,7 @@ CPPFLAGS=$("${RBIN}" CMD config CPPFLAGS)
 
 log() { echo "configure: $*"; }
 
-# Env-var overrides (mirrors configure.win) — let users point the package
+# Env-var overrides (mirrors configure.win): let users point the package
 # at a custom SUNDIALS / SuiteSparse install (e.g. SUNDIALS 7 in $HOME/.local)
 # without touching pkg-config or system paths.
 sundials_cflags="${CPPODE_CVODE_CFLAGS:-}"
@@ -52,7 +52,7 @@ probe_compile() {
   # $1: source snippet; $2: extra cflags; $3: extra libs
   # On failure, captures the compile/link command + stderr into
   # PROBE_LAST_{CMD,ERR} so the caller can surface it in the
-  # final diagnostic — the install temp dir doesn't survive a
+  # final diagnostic: the install temp dir doesn't survive a
   # successful R CMD INSTALL, so we can't rely on a config.log file.
   snippet="$1"; extra_cflags="$2"; extra_libs="$3"
   tmpdir=$(mktemp -d 2>/dev/null || mktemp -d -t conftest)
@@ -88,7 +88,7 @@ dump_probe_errs() {
 # Detection order (each step skipped if a previous one populated
 # sundials_libs):
 #   1. CPPODE_CVODE_{CFLAGS,LIBS} env vars (set above)
-#   2. pkg-config — Debian's libsundials-dev does NOT ship .pc files,
+#   2. pkg-config: Debian's libsundials-dev does NOT ship .pc files,
 #      so this typically only catches non-Debian / source builds with
 #      pkg-config integration.
 #   3. Compile probe with default include / lib paths.
@@ -116,7 +116,7 @@ int main() {
 # ---------------------------------------------------------------------
 # MPI dependency: Debian builds libsundials-dev with SUNDIALS_MPI_ENABLED=1,
 # so <sundials/sundials_types.h> unconditionally `#include <mpi.h>`. We
-# only need MPI's *include* path (no link flags — our generated code
+# only need MPI's *include* path (no link flags: our generated code
 # never calls MPI_*; the SUNComm typedef is used as a value only).
 #
 # Detection: gate on the SUNDIALS_MPI_ENABLED macro in sundials_config.h
@@ -176,7 +176,7 @@ if [ "$sundials_needs_mpi" = "1" ]; then
      && [ ! -f /usr/include/mpi.h ]; then
     log "SUNDIALS was built with MPI (SUNDIALS_MPI_ENABLED=1) but mpi.h"
     log "  was not located via pkg-config, mpicxx, or known include paths"
-    log "  — install libopenmpi-dev (or mpich-dev) to provide it."
+    log " : install libopenmpi-dev (or mpich-dev) to provide it."
   fi
 fi
 
@@ -220,7 +220,7 @@ fi
 # on Debian/Ubuntu when R's gcc driver doesn't auto-search multiarch.
 if [ "$sundials_available" = "0" ]; then
   # User-local prefixes (XDG ~/.local, plus a few common env-var conventions
-  # used by HPC module systems and CMake — SUNDIALS_ROOT / SUNDIALS_DIR).
+  # used by HPC module systems and CMake: SUNDIALS_ROOT / SUNDIALS_DIR).
   user_inc_prefixes=""
   user_lib_prefixes=""
   for root in "${SUNDIALS_ROOT:-}" "${SUNDIALS_DIR:-}" "$HOME/.local"; do
@@ -277,7 +277,7 @@ fi
 
 if [ "$sundials_available" = "0" ]; then
   log "----------------------------------------------------------------"
-  log "SUNDIALS not found — CVODE() backend will be DISABLED."
+  log "SUNDIALS not found: CVODE() backend will be DISABLED."
   log "  To enable it, install SUNDIALS (>= 6.0) development headers:"
   log "    Debian/Ubuntu : sudo apt install libsundials-dev"
   log "    Fedora        : sudo dnf install sundials-devel"
@@ -291,7 +291,7 @@ fi
 # ---------------------------------------------------------------------
 # SuiteSparse / KLU (needed by both CppODE() and CVODE() sparse paths)
 # ---------------------------------------------------------------------
-# pkg-config — Debian ships an uppercase `KLU` package
+# pkg-config: Debian ships an uppercase `KLU` package
 if [ "$klu_available" = "0" ] && command -v "$PKG_CONFIG" >/dev/null 2>&1; then
   for name in KLU klu; do
     if "$PKG_CONFIG" --exists "$name" 2>/dev/null; then
@@ -315,7 +315,7 @@ if [ "$klu_available" = "0" ] && command -v "$PKG_CONFIG" >/dev/null 2>&1; then
 fi
 
 # Compile-probe fallback for distros without pkg-config for KLU.
-# Try the minimal `-lklu` first — modern shared KLU pulls in its SuiteSparse
+# Try the minimal `-lklu` first: modern shared KLU pulls in its SuiteSparse
 # deps (amd, colamd, btf, suitesparseconfig) transitively via SONAME. Only
 # fall back to the explicit list if the minimal probe fails (static KLU or
 # linkers configured with --as-needed). Like the SUNDIALS file probe, we
@@ -366,7 +366,7 @@ fi
 
 if [ "$klu_available" = "0" ]; then
   log "----------------------------------------------------------------"
-  log "KLU not found — sparse Jacobian path will be DISABLED for both"
+  log "KLU not found: sparse Jacobian path will be DISABLED for both"
   log "  CppODE() and CVODE() (sparse=TRUE errors; sparse=NULL falls"
   log "  back to dense). To enable it, install SuiteSparse development"
   log "  headers:"

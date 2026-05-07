@@ -32,110 +32,80 @@ the state variables.}
 
 \item{events}{Optional event \code{data.frame}. See Details.}
 
-\item{rootfunc}{Optional root specification: \code{"equilibrate"}, or a
-character vector of expressions whose zero crossings terminate
-integration.}
+\item{rootfunc}{Optional integration-termination root: \code{"equilibrate"}
+or a character vector of expressions.}
 
 \item{fixed}{Optional character vector of state or parameter names
 excluded from sensitivities at compile time.}
 
 \item{forcings}{Optional character vector of forcing-function names
-that appear in \code{rhs}.}
+referenced by \code{rhs}.}
 
 \item{compile}{Logical. Compile and load the generated C++ code.}
 
-\item{modelname}{Optional base name for the generated source file and
-compiled symbols (\verb{solve_<modelname>}). A random identifier is used
-when \code{NULL}.}
+\item{modelname}{Optional base name for the generated source file
+and exported C symbols. A random identifier is used when \code{NULL}.}
 
 \item{outdir}{Directory for the generated C++ source. Default
 \code{tempdir()}.}
 
-\item{deriv}{Logical. Compute first-order sensitivities via dual
-numbers.}
+\item{deriv}{Logical. Compute first-order parameter sensitivities.}
 
-\item{deriv2}{Logical. Also compute second-order sensitivities via
-nested dual numbers. Implies \code{deriv = TRUE}.}
+\item{deriv2}{Logical. Compute second-order parameter sensitivities;
+implies \code{deriv = TRUE}.}
 
 \item{nStack}{Compile-time AD slab width. \code{Inf} (default) selects
-heap-allocated AD; the per-call sensitivity dimension is determined
-at run time from \code{ncol(sens1ini)} in \code{\link[=solveODE]{solveODE()}}. Heap AD is
-incompatible with \code{deriv2 = TRUE} and is silently demoted in that
-case. A positive integer \code{K} fixes the width to \code{K} at compile time
-(stack-allocated); \code{solveODE()} then accepts \code{sens1ini} with up to
-\code{K} columns. \code{NULL} uses width \code{length(c(variables, parameters)) - length(fixed)}. Requires \code{deriv = TRUE}.}
+heap-allocated AD; the per-call sensitivity dimension is taken at
+run time from \code{ncol(sens1ini)} in \code{\link[=solveODE]{solveODE()}}. A positive integer
+\code{K} fixes the width to \code{K} at compile time. \code{NULL} selects
+\code{length(c(variables, parameters)) - length(fixed)}. \code{deriv2 = TRUE}
+requires a finite width and silently demotes \code{Inf} to \code{NULL}.}
 
-\item{includeTimeZero}{Logical. Ensure that time \code{0} is included among
-the integration times.}
+\item{includeTimeZero}{Logical. Ensure that \code{0} is part of the
+integration times.}
 
-\item{useDenseOutput}{Logical. Use Hermite dense output for user time
-points.}
+\item{useDenseOutput}{Logical. Use Hermite dense output for
+user-requested time points.}
 
-\item{sparse}{Logical or \code{NULL}. \code{NULL} auto-selects sparse vs. dense
-LU from the Jacobian sparsity pattern; \code{TRUE} forces sparse, \code{FALSE}
-forces dense. Sparse LU requires the KLU linear solver to have been
-found at install time.}
+\item{sparse}{Logical or \code{NULL}. \code{NULL} auto-selects sparse vs.
+dense LU from the Jacobian sparsity; \code{TRUE} forces sparse, \code{FALSE}
+forces dense. Sparse LU requires KLU at install time.}
 
-\item{method}{Integration method. One of \code{"bdf"} (default), \code{"adams"},
-\code{"rb4"} (or \code{"rosenbrock4"}), or \code{"tsit5"}.}
+\item{method}{Integration method: \code{"bdf"} (default), \code{"adams"},
+\code{"rb4"}, or \code{"tsit5"}.}
 
-\item{useNDF}{Logical. Use Klopfenstein-Shampine NDF kappa coefficients
-in the BDF corrector. Applies to \code{method = "bdf"}; ignored otherwise.}
+\item{useNDF}{Logical. Use Klopfenstein-Shampine NDF coefficients in
+the BDF corrector. Applies to \code{method = "bdf"}; ignored otherwise.}
 
 \item{profile}{Logical. Compile with profiling counters.}
 
-\item{stepTrace}{Logical. Compile the solver to record per-step
-diagnostics, returned as \verb{$trace} from \code{\link[=solveODE]{solveODE()}}. For debugging.}
+\item{stepTrace}{Logical. Compile to record per-step diagnostics,
+returned as \verb{$trace} from \code{\link[=solveODE]{solveODE()}}.}
 
 \item{verbose}{Logical. Print progress messages.}
 }
 \value{
 The compiled model name (character) carrying the attributes
-used by \code{\link[=solveODE]{solveODE()}}: \code{equations}, \code{srcfile}, \code{variables},
+required by \code{\link[=solveODE]{solveODE()}}: \code{equations}, \code{srcfile}, \code{variables},
 \code{parameters}, \code{forcings}, \code{events}, \code{rootfunc}, \code{fixed}, \code{jacobian}
 (with components \code{f.x} and \code{f.time}), \code{deriv}, \code{deriv2}, \code{nStack},
-\code{sparse}, \code{method}, \code{useNDF}, \code{dimNames}, \code{compileArgs}.
+\code{sparse}, \code{method}, \code{useNDF}, \code{dimNames}, \code{compileArgs}, \code{backend}.
 }
 \description{
-Generates C++ source code for a system of ordinary differential equations,
-compiles it via \verb{R CMD SHLIB}, and returns a handle to the compiled solver.
-Use \code{\link[=solveODE]{solveODE()}} to integrate the model.
+Generates C++ source code for an ODE system \eqn{\dot{x} = f(x, p)},
+compiles it via \verb{R CMD SHLIB}, and returns a handle for use with
+\code{\link[=solveODE]{solveODE()}}. The four available methods (\code{"bdf"}, \code{"adams"},
+\code{"rb4"}, \code{"tsit5"}) and their selection criteria, the dual-number
+sensitivity framework, and the event handling are described in
+\code{vignette("Methods", package = "CppODE")}.
 }
 \details{
-The model has the form \eqn{\dot{x}(t) = f(x(t), p)} with
-\eqn{x(t_0) = p_{init}}, where \eqn{p = (p_{init}, p_{dyn})}
-concatenates initial conditions and dynamic parameters. \code{\link[=solveODE]{solveODE()}}
-takes this combined \code{p} as its \code{parms} argument.
-
-Four integration methods are available via \code{method}: \code{"bdf"}
-(Klopfenstein-Shampine NDF; stiff, default), \code{"adams"} (Adams-Moulton
-PECE; non-stiff, high-order), \code{"rb4"} (Rosenbrock4; stiff, single-step),
-and \code{"tsit5"} (Tsitouras 5(4) explicit RK with FSAL; non-stiff). All
-steppers share dense Hermite output, adaptive step size, sparse / dense
-LU factorisation, time- and root-triggered events, and optional
-sensitivities. See \code{vignette("Methods", package = "CppODE")} for a
-conceptual overview, stability properties, cost per step, and selection
-guidance.
-
-If \code{deriv = TRUE}, the right-hand side is evaluated on dual numbers so
-first-order parameter sensitivities propagate through the integrator.
-\code{deriv2 = TRUE} adds second-order sensitivities via nested duals.
-Variables or parameters listed in \code{fixed} carry no sensitivity component.
-By default sensitivities are reported in the canonical \eqn{p}-basis;
-supplying a Jacobian \eqn{\Phi'(\theta)} of a reparametrization
-\eqn{p = \Phi(\theta)} via \code{sens1ini} (and \eqn{\Phi''(\theta)} via
-\code{sens2ini}) of \code{\link[=solveODE]{solveODE()}} yields sensitivities with respect to
-\eqn{\theta}. See \code{\link[=solveODE]{solveODE()}} for the math and matrix shapes.
-
-Events are described by a \code{data.frame} with columns \code{var} (affected
-variable), \code{value} (expression applied), \code{method} (\code{"replace"}, \code{"add"},
-or \code{"multiply"}), and exactly one of \code{time} (event time) or \code{root} (root
-expression in the variables and \code{time}). Root-triggered events fire when
-the root expression crosses zero.
-
-\code{rootfunc} terminates integration: \code{"equilibrate"} stops at steady
-state (all derivatives below \code{roottol}); a character vector of
-expressions stops as soon as any expression crosses zero.
+Events are specified as a \code{data.frame} with columns \code{var} (affected
+variable), \code{value} (expression to apply), \code{method} (\code{"replace"},
+\code{"add"}, or \code{"multiply"}), and exactly one of \code{time} (event time) or
+\code{root} (root expression). \code{rootfunc} terminates integration:
+\code{"equilibrate"} stops at steady state; a character vector of
+expressions stops at the first zero crossing.
 }
 \examples{
 \dontrun{
@@ -172,9 +142,9 @@ res$sens2[10, "A", , ]     # second order sensitivities of A(time[10])
 }
 }
 \seealso{
-\code{\link[=solveODE]{solveODE()}} for the solver interface;
-\code{\link[=CVODE]{CVODE()}} for the SUNDIALS-backed alternative;
-\code{vignette("Methods", package = "CppODE")} for method details and
-\code{vignette("CppODE_LotkaVolterra", package = "CppODE")} for a worked
-example.
+\code{\link[=solveODE]{solveODE()}} for integration; \code{\link[=CVODE]{CVODE()}} for the
+SUNDIALS-backed alternative; \code{\link[=funCpp]{funCpp()}} for algebraic functions;
+\code{vignette("Methods", package = "CppODE")} for behaviour;
+\code{vignette("CppODE_LotkaVolterra", package = "CppODE")} for a
+worked example.
 }

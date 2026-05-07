@@ -17,7 +17,7 @@
    dsm          double  acnrm * tq[2] (error-test value; < 1 => accept)
    acnrm        double  WRMS over all error-control components (state +
                         AD-derivative slots when sens is active)
-   acnrm_state  double  WRMS restricted to state slots — directly comparable
+   acnrm_state  double  WRMS restricted to state slots: directly comparable
                         to CVODE's state-only acnrm
    tq2          double  current-order error constant
    gamma        double  h * rl1 (Newton iteration matrix scaling)

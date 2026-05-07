@@ -1,13 +1,13 @@
 /*
- CppODE Profiler — compile-time switchable performance instrumentation
+ CppODE Profiler: compile-time switchable performance instrumentation
  =====================================================================
 
  Zero-cost when disabled: the compiler eliminates all profiler code
  entirely when CPPODE_PROFILE is not defined.
 
  Two levels:
-   CPPODE_PROFILE          — cumulative per-category timers (summary)
-   CPPODE_PROFILE_VERBOSE  — additionally prints per-step detail to stderr
+   CPPODE_PROFILE         : cumulative per-category timers (summary)
+   CPPODE_PROFILE_VERBOSE : additionally prints per-step detail to stderr
 
  Usage in stepper/controller code:
 
@@ -62,7 +62,7 @@ enum class prof_cat : unsigned {
   newton_overhead,  // Newton loop overhead (residual formation, updates, excl. f_eval/lu_solve/error_norm)
   w_build,          // W = (1/γh)I - J  matrix construction (copy + diagonal add)
   step_overhead,    // Everything else in do_step / try_step not covered above
-  COUNT             // sentinel — number of categories
+  COUNT             // sentinel: number of categories
 };
 
 static constexpr unsigned PROF_N = static_cast<unsigned>(prof_cat::COUNT);
@@ -99,7 +99,7 @@ public:
   using clock = std::chrono::high_resolution_clock;
   using duration = std::chrono::duration<double, std::micro>;  // microseconds
 
-  // RAII timer — stops and accumulates on destruction
+  // RAII timer: stops and accumulates on destruction
   class scoped_timer {
   public:
     scoped_timer(profiler& p, prof_cat c)
@@ -199,12 +199,12 @@ private:
 };
 
 
-#else // CPPODE_PROFILE not defined — zero-cost stubs
+#else // CPPODE_PROFILE not defined: zero-cost stubs
 
 class profiler {
 public:
   struct scoped_timer {
-    // Empty — compiler eliminates entirely
+    // Empty: compiler eliminates entirely
   };
 
   scoped_timer timer(prof_cat) const { return {}; }

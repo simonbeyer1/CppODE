@@ -1,5 +1,5 @@
 /*
- AD-aware dense LU solver for CppODE — LAPACK backend.
+ AD-aware dense LU solver for CppODE: LAPACK backend.
 
  Uses dgetrf/dgetrs from R's bundled LAPACK for the base case.
  Nested AD types (dual<dual<T,N>,N>) are handled by recursive IFT peeling.
@@ -23,6 +23,7 @@
 
 #include <cppode/cppode_types.hpp>
 #include <cppode/cppode_ad_traits.hpp>
+#include <cppode/cppode_dual2nd.hpp>
 
 // LAPACK declarations via R's headers (handles ILP64 automatically)
 #include <R_ext/BLAS.h>
@@ -79,7 +80,7 @@ namespace cppode {
 namespace ad_lu {
 
 // ============================================================================
-//  AD type traits / bulk helpers — pulled in from cppode_ad_traits.hpp.
+//  AD type traits / bulk helpers: pulled in from cppode_ad_traits.hpp.
 //  Re-exported here so existing consumers using `ad_lu::is_ad`,
 //  `ad_lu::scalar_value`, etc. compile unchanged.
 // ============================================================================
@@ -97,7 +98,7 @@ using cppode::ad_traits::bulk_extract_derivs;
 using cppode::ad_traits::bulk_inject_results;
 
 // ============================================================================
-//  dense_lu_solver<double> — Base case: LAPACK dgetrf + dgetrs
+//  dense_lu_solver<double>: Base case: LAPACK dgetrf + dgetrs
 // ============================================================================
 
 template<class T, class Enable = void>
@@ -173,7 +174,7 @@ public:
     return x;
   }
 
-  // Scalar-only solve (identity for base case — same as solve)
+  // Scalar-only solve (identity for base case: same as solve)
   void solve_scalar(std::vector<double>& b) const
   { solve(b); }
 
@@ -184,7 +185,7 @@ private:
 };
 
 // ============================================================================
-//  dense_lu_solver<AD_T> — Recursive AD case (IFT peeling)
+//  dense_lu_solver<AD_T>: Recursive AD case (IFT peeling)
 //
 //  Given W·x = b (all entries dual<Inner,N>):
 //    Value:   W_val · x_val = b_val       (solved recursively)
@@ -227,8 +228,15 @@ public:
     // First call: allocate.  Subsequent: only update values.
     if (m_W_val.rows() != n)
       m_W_val.resize(n, n);
-    for (int k = 0; k < nn; ++k)
-      m_W_val.data[k] = const_cast<F&>(W.data[k]).x();
+    if constexpr (cppode::ad_traits::is_dual2nd<F>::value) {
+      // dual2nd: synthesise the value-layer dual<S, N> from the inline
+      // gradient (outer.tan_[k].x()), bypassing the redundant val_tan_block.
+      for (int k = 0; k < nn; ++k)
+        m_W_val.data[k] = first_order_view(W.data[k]);
+    } else {
+      for (int k = 0; k < nn; ++k)
+        m_W_val.data[k] = const_cast<F&>(W.data[k]).x();
+    }
 
     if constexpr (!is_ad<Inner>::value) {
       // ============================================================
@@ -239,7 +247,7 @@ public:
       //  change between factorize() and solve(), so we extract ONCE
       //  here instead of on every solve() call.
       //
-      //  m_W_stored is NOT needed — all derivative information lives
+      //  m_W_stored is NOT needed: all derivative information lives
       //  in m_dW_block.  This saves an n×n dual<double,N> deep copy.
       // ============================================================
 
@@ -291,8 +299,13 @@ public:
 
     // 1. Extract and solve value part (reuse buffer)
     m_b_val.resize(n);
-    for (int i = 0; i < n; ++i)
-      m_b_val[i] = const_cast<F&>(b[i]).x();
+    if constexpr (cppode::ad_traits::is_dual2nd<F>::value) {
+      for (int i = 0; i < n; ++i)
+        m_b_val[i] = first_order_view(b[i]);
+    } else {
+      for (int i = 0; i < n; ++i)
+        m_b_val[i] = const_cast<F&>(b[i]).x();
+    }
     m_inner.solve(m_b_val);
 
     // 2. Determine derivative directions
@@ -339,22 +352,116 @@ public:
     bulk_inject_results(b, m_b_val, m_rhs_all, n, n_derivs);
   }
 
-  // Batched solve for nrhs RHS vectors stored column-major.
+  // Batched solve for nrhs RHS vectors stored column-major. Fully BLAS-3
+  // batched at the recursion level: extracts all nrhs value parts at once,
+  // calls m_inner.solve_batch(., nrhs) once for the value layer, runs the
+  // IFT correction as a single dgemm (Inner = double) or fused element-wise
+  // pass (Inner = nested AD), then m_inner.solve_batch(., n_derivs * nrhs)
+  // once for the derivative layer. Saves nrhs - 1 inner-LU dispatches and
+  // amortises buffer-allocation overhead across the batch.
   void solve_batch(std::vector<F>& B_flat, int nrhs) const
   {
+    if (nrhs <= 0) return;
     const int n = m_n;
-    m_col_buf.resize(n);
-    for (int k = 0; k < nrhs; ++k) {
-      for (int i = 0; i < n; ++i)
-        m_col_buf[i] = B_flat[k * n + i];
-      solve(m_col_buf);
-      for (int i = 0; i < n; ++i)
-        B_flat[k * n + i] = m_col_buf[i];
+    const std::size_t total = static_cast<std::size_t>(n) * nrhs;
+
+    // 1. Bulk-extract value layer for all nrhs columns into a flat buffer.
+    m_b_val_batch.resize(total);
+    if constexpr (cppode::ad_traits::is_dual2nd<F>::value) {
+      for (int col = 0; col < nrhs; ++col) {
+        for (int i = 0; i < n; ++i)
+          m_b_val_batch[col * n + i] =
+            first_order_view(B_flat[col * n + i]);
+      }
+    } else {
+      for (int col = 0; col < nrhs; ++col) {
+        for (int i = 0; i < n; ++i)
+          m_b_val_batch[col * n + i] =
+            const_cast<F&>(B_flat[col * n + i]).x();
+      }
+    }
+
+    // 2. Batched value-layer solve.
+    m_inner.solve_batch(m_b_val_batch, nrhs);
+
+    // 3. Determine n_derivs: scan all RHS columns plus W (when nested AD).
+    unsigned n_derivs;
+    if constexpr (!is_ad<Inner>::value) {
+      if constexpr (N > 0) {
+        n_derivs = N;
+      } else {
+        n_derivs = m_n_derivs_cached;
+        for (int col = 0; col < nrhs; ++col) {
+          for (int i = 0; i < n; ++i) {
+            unsigned sz = const_cast<F&>(B_flat[col * n + i]).size();
+            if (sz > n_derivs) n_derivs = sz;
+          }
+        }
+      }
+    } else {
+      if constexpr (N > 0) {
+        n_derivs = N;
+      } else {
+        n_derivs = max_deriv_size(m_W_stored);
+        for (int col = 0; col < nrhs; ++col) {
+          for (int i = 0; i < n; ++i) {
+            unsigned sz = const_cast<F&>(B_flat[col * n + i]).size();
+            if (sz > n_derivs) n_derivs = sz;
+          }
+        }
+      }
+    }
+
+    if (n_derivs == 0) {
+      // No derivatives anywhere: just write back the value layer.
+      for (int col = 0; col < nrhs; ++col)
+        for (int i = 0; i < n; ++i)
+          B_flat[col * n + i].x() = m_b_val_batch[col * n + i];
+      return;
+    }
+
+    // 4. Bulk-extract all derivative RHS into a flat buffer.
+    //    Layout: column-major (n * n_derivs) x nrhs. Within each column,
+    //    the n_derivs blocks of length n are laid out by tangent index j
+    //    (consistent with the existing m_rhs_all layout for solve()).
+    const std::size_t per_col = static_cast<std::size_t>(n) * n_derivs;
+    m_rhs_all_batch.resize(per_col * nrhs);
+    for (int col = 0; col < nrhs; ++col) {
+      for (int i = 0; i < n; ++i) {
+        auto& bi = const_cast<F&>(B_flat[col * n + i]);
+        unsigned sz = bi.size();
+        for (unsigned j = 0; j < n_derivs; ++j)
+          m_rhs_all_batch[col * per_col + j * n + i] =
+            (j < sz) ? bi.d(j) : Inner(0);
+      }
+    }
+
+    // 5. IFT matvec (batched): rhs_all_batch -= dW · b_val_batch.
+    ift_matvec_batch(n, n_derivs, nrhs);
+
+    // 6. Batched derivative-layer solve: n_derivs * nrhs columns at once.
+    m_inner.solve_batch(m_rhs_all_batch,
+                        static_cast<int>(n_derivs * nrhs));
+
+    // 7. Bulk-inject values + derivatives back into B_flat.
+    constexpr unsigned StaticN = N;
+    for (int col = 0; col < nrhs; ++col) {
+      for (int i = 0; i < n; ++i) {
+        auto& bi = B_flat[col * n + i];
+        bi.x() = m_b_val_batch[col * n + i];
+        if constexpr (StaticN > 0) {
+          if (!bi.depend()) bi.diff(0);
+        } else {
+          if (!bi.depend()) bi.diff(0, n_derivs);
+        }
+        for (unsigned j = 0; j < n_derivs; ++j)
+          bi[j] = m_rhs_all_batch[col * per_col + j * n + i];
+      }
     }
   }
 
   // Scalar-only solve: use the value-level factorization on plain doubles.
-  // No IFT, no derivative propagation — just the base-case LAPACK solve.
+  // No IFT, no derivative propagation: just the base-case LAPACK solve.
   void solve_scalar(std::vector<double>& b) const
   {
     m_inner.solve_scalar(b);
@@ -367,7 +474,7 @@ private:
   //
   //  Inner = double:
   //    m_dW_block was pre-extracted in factorize().  Only the dgemv
-  //    call remains — no per-solve extraction overhead.
+  //    call remains: no per-solve extraction overhead.
   //
   //  Inner = dual<...> (nested AD):
   //    Single pass over m_W_stored (element-wise loop).
@@ -382,7 +489,7 @@ private:
       //  m_dW_block is (m × n) column-major, m = n * n_derivs_cached.
       //  If n_derivs > n_derivs_cached (RHS has more derivs than W),
       //  the extra derivative directions have dW = 0, so no correction
-      //  is needed for them — dgemv covers [0, n_derivs_cached) and
+      //  is needed for them: dgemv covers [0, n_derivs_cached) and
       //  the remaining rhs_all entries stay untouched.
       // =============================================================
 
@@ -402,7 +509,7 @@ private:
       // =============================================================
       //  Generic path: nested AD types (Inner = dual<...>)
       //
-      //  Single pass over W_stored — each dual<Inner,N> element is
+      //  Single pass over W_stored: each dual<Inner,N> element is
       //  touched exactly once.
       // =============================================================
 
@@ -420,6 +527,56 @@ private:
     }
   }
 
+  // Batched IFT matvec for solve_batch:
+  //   rhs_all_batch[col, j, row] -= sum_k dW[row, k, j] * b_val_batch[col, k]
+  //
+  // For Inner = double: a single dgemm of (m × n) * (n × nrhs) where
+  //   m = n * n_derivs_cached, leveraging the pre-extracted m_dW_block.
+  // For Inner = nested AD: outer loop over batch columns, inner element-
+  //   wise pass over W_stored matching the single-RHS path.
+  void ift_matvec_batch(int n, unsigned n_derivs, int nrhs) const
+  {
+    if constexpr (!is_ad<Inner>::value) {
+      unsigned nd_W = m_n_derivs_cached;
+      if (nd_W == 0) return;
+
+      int m = n * static_cast<int>(nd_W);
+      double alpha = -1.0, beta = 1.0;
+      char trans = 'N';
+      // dgemm: C[m × nrhs] = beta * C + alpha * A[m × n] * B[n × nrhs].
+      // m_rhs_all_batch is laid out column-major (n*n_derivs) × nrhs. When
+      // n_derivs > nd_W the unused tail of each column stays untouched
+      // (correct: dW = 0 in those tangent directions).
+      const std::size_t per_col = static_cast<std::size_t>(n) * n_derivs;
+      // Pass column stride for C as per_col so dgemm steps over the full
+      // n_derivs blocks even though it only writes the first nd_W of them.
+      int ldc = static_cast<int>(per_col);
+      F77_CALL(dgemm)(&trans, &trans, &m, &nrhs, &n, &alpha,
+               const_cast<double*>(m_dW_block.data()), &m,
+               m_b_val_batch.data(), &n,
+               &beta, m_rhs_all_batch.data(), &ldc
+                       FCONE FCONE);
+
+    } else {
+      const std::size_t per_col = static_cast<std::size_t>(n) * n_derivs;
+      for (int col_b = 0; col_b < nrhs; ++col_b) {
+        Inner* rhs_col = m_rhs_all_batch.data() + col_b * per_col;
+        const Inner* b_val_col = m_b_val_batch.data() + col_b * n;
+        for (int col = 0; col < n; ++col) {
+          const Inner b_col = b_val_col[col];
+          for (int row = 0; row < n; ++row) {
+            auto& w_entry = const_cast<F&>(m_W_stored(row, col));
+            unsigned wsz = w_entry.size();
+            for (unsigned j = 0; j < n_derivs; ++j) {
+              Inner dw = (j < wsz) ? w_entry.d(j) : Inner(0);
+              rhs_col[j * n + row] -= dw * b_col;
+            }
+          }
+        }
+      }
+    }
+  }
+
   int m_n = 0;
   dense_matrix<F>     m_W_stored;      // Full AD matrix (nested AD path only)
   dense_matrix<Inner> m_W_val;         // Persistent scalar extraction buffer
@@ -431,10 +588,12 @@ private:
   std::vector<double> m_dW_block;
   unsigned m_n_derivs_cached = 0;     // n_derivs at last factorize
 
-  // Persistent solve buffers — avoid per-call heap allocations.
-  mutable std::vector<Inner>  m_b_val;     // n scalars: extracted value part
-  mutable std::vector<Inner>  m_rhs_all;   // n × n_derivs: derivative RHS
-  mutable std::vector<F>      m_col_buf;   // n entries: column buffer for solve_batch
+  // Persistent solve buffers: avoid per-call heap allocations.
+  mutable std::vector<Inner>  m_b_val;          // n scalars: value part (single solve)
+  mutable std::vector<Inner>  m_rhs_all;        // n × n_derivs: derivs (single solve)
+  mutable std::vector<F>      m_col_buf;        // n entries: legacy column buffer
+  mutable std::vector<Inner>  m_b_val_batch;    // n × nrhs: value part (batched)
+  mutable std::vector<Inner>  m_rhs_all_batch;  // n × n_derivs × nrhs (batched)
 };
 
 } // namespace ad_lu

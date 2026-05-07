@@ -1,5 +1,5 @@
 /*
- nordsieck_block<T, K> — contiguous tangent storage for K Nordsieck slots.
+ nordsieck_block<T, K>: contiguous tangent storage for K Nordsieck slots.
 
  Owns one [(K) × n_rows × n_cols] inner_type buffer; provides K
  tangent_slab views (each one [n_rows × n_cols] block) bound via
@@ -154,6 +154,96 @@ public:
 private:
   // One stub instance shared across slot accesses (empty stub class anyway).
   mutable tangent_slab<T> stub_;
+};
+
+// =============================================================================
+//  nordsieck_block specialisation for dual2nd<S, N>: K-slot two-block storage
+//
+//  Owns two concatenated buffers (val_tan_block dropped after the LU dual2nd
+//  dispatch started reading gradient via first_order_view from inline_d1):
+//    outer_block_   : K * n_rows * n_cols  dual<S, N>      (outer.tan_ values)
+//    hess_block_    : K * n_rows * n_cols * n_cols  S      (Hessian rows)
+// =============================================================================
+template<class S, unsigned N, unsigned K>
+class nordsieck_block<cppode::dual2nd<S, N>, K, true> {
+public:
+  using value_type    = cppode::dual2nd<S, N>;
+  using outer_inner_t = cppode::dual<S, N>;
+  using inner_type    = outer_inner_t;
+
+  static constexpr unsigned K_slots = K;
+
+  nordsieck_block() = default;
+  nordsieck_block(const nordsieck_block&)            = delete;
+  nordsieck_block& operator=(const nordsieck_block&) = delete;
+  nordsieck_block(nordsieck_block&&) noexcept        = default;
+  nordsieck_block& operator=(nordsieck_block&&) noexcept = default;
+
+  unsigned n_rows() const noexcept { return n_rows_; }
+  unsigned n_cols() const noexcept { return n_cols_; }
+  bool     primed() const noexcept { return n_cols_ != 0; }
+
+  std::size_t slot_stride() const noexcept {
+    return static_cast<std::size_t>(n_rows_) * n_cols_;
+  }
+  std::size_t total_size() const noexcept { return slot_stride() * K; }
+
+  outer_inner_t*       tangent_block_data()       noexcept { return outer_block_.data(); }
+  const outer_inner_t* tangent_block_data() const noexcept { return outer_block_.data(); }
+
+  S* hess_block_data() noexcept { return hess_block_.data(); }
+  const S* hess_block_data() const noexcept { return hess_block_.data(); }
+  std::size_t hess_slot_stride() const noexcept {
+    return static_cast<std::size_t>(n_rows_) * n_cols_ * n_cols_;
+  }
+
+  outer_inner_t* slot_data(unsigned j) noexcept {
+    assert(j < K);
+    return outer_block_.data() + j * slot_stride();
+  }
+  const outer_inner_t* slot_data(unsigned j) const noexcept {
+    assert(j < K);
+    return outer_block_.data() + j * slot_stride();
+  }
+
+  tangent_slab<value_type>&       slab(unsigned j)       noexcept { assert(j < K); return slabs_[j]; }
+  const tangent_slab<value_type>& slab(unsigned j) const noexcept { assert(j < K); return slabs_[j]; }
+
+  void prime(std::array<std::vector<value_type>*, K> facades,
+             unsigned n_rows, unsigned n_cols) {
+    if constexpr (N > 0) n_cols = N;
+    const bool reshape = (n_rows != n_rows_ || n_cols != n_cols_);
+    if (reshape) {
+      n_rows_ = n_rows;
+      n_cols_ = n_cols;
+      outer_block_.clear();
+      outer_block_.resize(slot_stride() * K);
+      hess_block_.assign(hess_slot_stride() * K, S(0));
+    }
+    for (unsigned j = 0; j < K; ++j) {
+      if (facades[j] == nullptr) continue;
+      slabs_[j].prime_external(*facades[j],
+                               outer_block_.data() + j * slot_stride(),
+                               static_cast<S*>(nullptr),  // no val_tan
+                               hess_block_.data()  + j * hess_slot_stride(),
+                               n_rows_, n_cols_);
+    }
+  }
+
+  void rebind(std::array<std::vector<value_type>*, K> facades) {
+    if (n_cols_ == 0) return;
+    for (unsigned j = 0; j < K; ++j) {
+      if (facades[j] == nullptr) continue;
+      slabs_[j].rebind_only(*facades[j]);
+    }
+  }
+
+private:
+  std::vector<outer_inner_t>                outer_block_;
+  std::vector<S>                            hess_block_;
+  std::array<tangent_slab<value_type>, K>   slabs_;
+  unsigned                                  n_rows_ = 0;
+  unsigned                                  n_cols_ = 0;
 };
 
 } // namespace detail

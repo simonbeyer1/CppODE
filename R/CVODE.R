@@ -1,73 +1,31 @@
 #' Generate and Compile an ODE Solver Linked Against SUNDIALS CVODE(S)
 #'
-#' @description
-#' Generates and compiles a C++ ODE solver that links against the
-#' system-installed SUNDIALS CVODE library (or CVODES when
-#' `deriv = TRUE`) for a system of ordinary differential equations of
-#' the form
+#' Generates a C++ ODE solver linked against the system-installed
+#' SUNDIALS CVODE library (CVODES when `deriv = TRUE`), compiles it via
+#' `R CMD SHLIB`, and returns a handle for use with [solveODE()]. The
+#' compiled model exposes the same R interface as a model from
+#' [CppODE()]. The differences between the two backends and the
+#' selection guidance are described in
+#' `vignette("Methods", package = "CppODE")`.
 #'
-#' \deqn{\dot{x}(t) = f\big(x(t), p_{\text{dyn}}\big), \quad x(t_0) = p_{\text{init}},}
+#' Available methods are `"bdf"` (default) and `"adams"`. Sensitivities
+#' are first-order forward only; `deriv2` is not supported. Events,
+#' forcings, `rootfunc`, and `fixed` behave as in [CppODE()].
 #'
-#' where the parameter vector \eqn{p = (p_{\text{init}}, p_{\text{dyn}})}
-#' concatenates the initial conditions \eqn{p_{\text{init}}} and the
-#' dynamic parameters \eqn{p_{\text{dyn}}} that appear in the right-hand
-#' side. [solveODE()] takes this combined `p` as the `parms` argument.
-#'
-#' The compiled model exposes the same interface as a model produced by
-#' [CppODE()] and can be passed directly to [solveODE()].
-#'
-#' @details
-#' The symbolic Jacobian \eqn{df/dx} is derived via SymPy at code
-#' generation time and emitted as analytic C++. With `deriv = TRUE`,
-#' first-order forward sensitivities use the analytic sensitivity
-#' right-hand side \eqn{\dot S_k = J(x, p)\, S_k + \partial f / \partial p_k},
-#' so the work matches the AD-based path in [CppODE()] up to the
-#' integrator's internals.
-#'
-#' Like [CppODE()], the CVODE backend also supports sensitivities with
-#' respect to a user-defined reparametrization \eqn{p = \Phi(\theta)}
-#' by seeding the columns of \eqn{S_k(0)} with the columns of
-#' \eqn{\Phi'(\theta)} (passed via `sens1ini` to [solveODE()]). The
-#' returned trajectories then carry \eqn{\partial x / \partial \theta}
-#' directly. See [solveODE()] for the chain-rule derivation and the
-#' accepted shapes of `sens1ini`. Second-order sensitivities are not
-#' available through this backend.
-#'
-#' SUNDIALS (>= 6.0) must be available on the build host at install time;
-#' otherwise [CVODE()] raises an informative error at the first call.
-#' KLU (used for sparse Jacobians) is detected the same way and is
-#' required when `sparse = TRUE`.
-#'
-#' ## Scope
-#'
-#' The CVODE backend supports:
-#' * `method` is `"bdf"` or `"adams"` (CVODE's two multistep families);
-#' * first-order forward sensitivities via `deriv = TRUE`;
-#' * dense or KLU-sparse linear solver (auto-selected or forced with
-#'   `sparse`);
-#' * `fixed` at both compile and run time, with the same semantics as
-#'   [CppODE()];
-#' * `forcings`, PCHIP-interpolated time-dependent inputs (forcings do
-#'   not contribute to sensitivities);
-#' * `rootfunc` for integration termination;
-#' * `events`, both time- and root-triggered, with first-order
-#'   saltation correction of sensitivities.
-#'
-#' Not available via the CVODE backend: second-order sensitivities, the
-#' `"rb4"` and `"tsit5"` methods, and the `profile` flag.
+#' SUNDIALS (>= 6.0) must be available at install time; otherwise
+#' [CVODE()] errors at the first call with platform-specific install
+#' hints. KLU (used for sparse Jacobians) is detected the same way and
+#' is required when `sparse = TRUE`.
 #'
 #' @inheritParams CppODE
 #' @param method One of `"bdf"` (default) or `"adams"`.
-#' @param stepTrace Logical. If `TRUE`, record per-step diagnostics (the
-#'   trace `data.frame` is attached as `$trace` to the result of
-#'   [solveODE()] and may be written to CSV via the `traceFile` argument
-#'   of that function). Not supported together with `events` or
-#'   `rootfunc`. Default `FALSE`.
+#' @param stepTrace Logical. Compile to record per-step diagnostics
+#'   (returned as `$trace` from [solveODE()]). Not supported together
+#'   with `events` or `rootfunc`.
 #'
-#' @return
-#' The compiled model name (character string), with the same attribute
-#' set as a model returned by [CppODE()], so it can be passed directly to
-#' [solveODE()]. The attribute `backend` is `"cvode"`.
+#' @return The compiled model name (character) with the same attribute
+#'   set as a model returned by [CppODE()]; the `backend` attribute is
+#'   `"cvode"`.
 #'
 #' @references
 #' Hindmarsh, A. C., Brown, P. N., Grant, K. E., Lee, S. L., Serban, R.,
@@ -75,7 +33,8 @@
 #' Nonlinear and Differential/Algebraic Equation Solvers.
 #' \emph{ACM Transactions on Mathematical Software} \strong{31}(3), 363-396.
 #'
-#' @seealso [CppODE()], [solveODE()].
+#' @seealso [CppODE()], [solveODE()], [funCpp()];
+#'   `vignette("Methods", package = "CppODE")`.
 #' @export
 CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = NULL,
                   compile = TRUE, modelname = NULL, outdir = tempdir(),
@@ -161,6 +120,7 @@ CVODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings = 
   if (is.null(modelname)) {
     modelname <- paste(c("c", sample(c(letters, 0:9), 8, TRUE)), collapse = "")
   }
+  modelname <- unique_modelname(modelname)
 
   if (!dir.exists(outdir)) stop("outdir does not exist: ", outdir)
 

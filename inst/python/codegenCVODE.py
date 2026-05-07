@@ -345,7 +345,7 @@ def generate_cvode_cpp(
                     raise ValueError(
                         f"Event {i}: direction must be -1, 0, or 1, got {direction}")
 
-                # Terminal is a bool column — accept Python bool directly
+                # Terminal is a bool column: accept Python bool directly
                 # (don't funnel through `_valid`, which rejects bools since
                 # they stand in for R NA_logical in the time/root columns).
                 terminal_raw = _get("terminal", i)
@@ -431,7 +431,7 @@ def generate_cvode_cpp(
     if use_sparse:
         compile_defs.append("-DCVODE_KLU")
 
-    # Emit df/dp contributions indexed by (state_row, param_index, expr) — used
+    # Emit df/dp contributions indexed by (state_row, param_index, expr): used
     # under reparam to accumulate (df/dp) * M[NEQ + pk, iS] for each iS.
     df_dp_entries = []  # list of (state_i, param_pk, sympy_expr)
     for pk in sorted(df_dp_by_pk.keys()):
@@ -518,7 +518,7 @@ def _render_source(
 
     # Forcings/events: PchipForcing storage lives in UserData so the
     # SUNDIALS callbacks (and event lambdas) can read it.  The `F` vector
-    # is always present so event lambdas can uniformly capture it —
+    # is always present so event lambdas can uniformly capture it :
     # empty if the model has no forcings.  Forcings contribute to df/dx
     # (and to rhs/sens rhs via evaluation), but NOT to df/dp.
     need_pchip = has_forcings  # include the PCHIP header
@@ -654,7 +654,7 @@ struct TimeEvent {{
   int    var_idx;
   // All lambdas capture `params` (pointer) and `F` (ref) from the builder.
   std::function<double(const double* x, double t)> g_fn;
-  // dg/dx_i as a single dispatch lambda — returns 0 outside range.
+  // dg/dx_i as a single dispatch lambda: returns 0 outside range.
   std::function<double(const double* x, double t, int i)> dg_dx_fn;
   // dg/dp_k (explicit partial, at fixed t_e).
   std::function<double(const double* x, double t, int k)> dg_dp_fn;
@@ -689,7 +689,7 @@ static std::vector<TimeEvent> build_time_events(const double* params,
             )
             # Inside lambdas, `x` is already a parameter, `t` is a parameter,
             # `params` and `F` are captures.  _to_cpp emitted `x[i]`,
-            # `params[...]`, `(*F[...])(t)`, `t` — all resolve here.
+            # `params[...]`, `(*F[...])(t)`, `t`: all resolve here.
             ev_body.append(f"""  {{
     TimeEvent e;
     e.time    = {t_cpp};
@@ -1069,7 +1069,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
       g_dot += rx[i] * f_old[i];
     }}
     if (std::fabs(g_dot) < 1e-14) {{
-      Rf_warning("Root event: tangential crossing (g_dot ~ 0) — sensitivities may be unreliable at t=%.6e", t_e);
+      Rf_warning("Root event: tangential crossing (g_dot ~ 0): sensitivities may be unreliable at t=%.6e", t_e);
     }}
 
     const int phi_rows_rt = {phi_rows_r};
@@ -1172,7 +1172,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
     # carries the raw CVODE flag so diagnostics() can map it precisely.
     # On (1)/(2) the caller is responsible for pushing the final output row.
     # The retry-loop body is only emitted when events or a user rootfunc are
-    # present — otherwise CVode never returns CV_ROOT_RETURN.
+    # present: otherwise CVode never returns CV_ROOT_RETURN.
     if has_events:
         time_check = "has_time_events = true; (void)has_time_events;"  # placeholder
         if deriv:
@@ -1296,7 +1296,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
       if (rc >= 1) {{ stop = true; break; }}
 {equilibrate_check_block}
     }} else {{
-      // Reached times[k] already via an event — record snapshot.
+      // Reached times[k] already via an event: record snapshot.
       out_t.push_back(t_reached);
       {{ const double* y_arr = N_VGetArrayPointer(y);
         for (int i = 0; i < NEQ; ++i) out_y.push_back(y_arr[i]); }}
@@ -1311,7 +1311,7 @@ static std::vector<RootEvent> build_root_events(const double* params,
     // ---- CV_ONE_STEP trace mode: one CSV row per accepted internal step,
     //      user-time outputs via dense interpolation (CVodeGetDky /
     //      CVodeGetSensDky).  Events and rootfunc are not supported in
-    //      this path — the simple `else`-branch here is entered only
+    //      this path: the simple `else`-branch here is entered only
     //      when neither is active in the model.
     N_Vector _ele_buf    = N_VClone(y);
     N_Vector _ewt_buf    = N_VClone(y);
@@ -1590,7 +1590,7 @@ static void cvode_emit_trace_row(void* cvode_mem,
   CVodeGetLastStep(cvode_mem, &last_h);
 
   // Reconstruct dsm from ele + ewt.  IMPORTANT: `CVodeGetEstLocalErrors`
-  // returns `ele = acor · tq[2]` — already the *scaled* local-error
+  // returns `ele = acor · tq[2]`: already the *scaled* local-error
   // estimate, not the raw corrector-predictor difference.  Therefore
   // `WRMS(ele · ewt)` yields the controller's state-side `dsm` directly,
   // not a raw `acnrm`.  The CVODES public API exposes neither `acor` nor
@@ -1600,7 +1600,7 @@ static void cvode_emit_trace_row(void* cvode_mem,
   // STATE-ONLY: This trace shows the STATE contribution only.  The full
   // dsm CVODES uses internally for step control includes per-sensitivity
   // contributions via `cvSensUpdateNorm` (CV_STAGGERED) when sensErrCon
-  // is on — but `CVodeGetSensEstLocalErrors` does not exist in SUNDIALS
+  // is on: but `CVodeGetSensEstLocalErrors` does not exist in SUNDIALS
   // 6.4.x's public API, and `cv_acorS`/`cv_tq[2]` are not exposed via
   // any post-step Get function.  Reading them would require including
   // <cvodes/cvodes_impl.h>, which is not shipped with libsundials-dev.
@@ -1653,7 +1653,7 @@ static void cvode_emit_trace_row(void* cvode_mem,
 }} // anonymous namespace
 
 // =====================================================================
-// R entry point — matches CppODE's 15-SEXP signature
+// R entry point: matches CppODE's 15-SEXP signature
 // =====================================================================
 
 extern "C" SEXP solve_{modelname}(

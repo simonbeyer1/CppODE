@@ -1,5 +1,5 @@
 /*
- CppODE Newton Solver — simplified Newton iteration for NDF/BDF
+ CppODE Newton Solver: simplified Newton iteration for NDF/BDF
  ================================================================
 
  Free function template that performs one chord (simplified Newton)
@@ -44,7 +44,7 @@
 namespace cppode {
 
 // ============================================================================
-//  Scalar value extraction — pulled in from cppode_ad_traits.hpp
+//  Scalar value extraction: pulled in from cppode_ad_traits.hpp
 // ============================================================================
 
 namespace newton_detail {
@@ -66,12 +66,12 @@ struct newton_result {
 //
 //  Three variants:
 //
-//  1. wrms_norm_scalar — double vectors (for scalar Newton convergence)
+//  1. wrms_norm_scalar: double vectors (for scalar Newton convergence)
 //
-//  2. wrms_norm_correction — SCALAR ONLY from AD vectors
+//  2. wrms_norm_correction: SCALAR ONLY from AD vectors
 //     Measures only the value components.  Used for Newton convergence.
 //
-//  3. wrms_norm — AD-AWARE (for error control / order selection)
+//  3. wrms_norm: AD-AWARE (for error control / order selection)
 //     Includes all derivative components.
 // ============================================================================
 
@@ -92,7 +92,7 @@ inline double wrms_norm_scalar(const std::vector<double>& b,
   return (n > 0) ? std::sqrt(sumsq / n) : 0.0;
 }
 
-// WRMS norm of correction b, weighted against iterate y — SCALAR ONLY.
+// WRMS norm of correction b, weighted against iterate y: SCALAR ONLY.
 // Used for Newton convergence test (del, crate, dcon).
 template<class T>
 double wrms_norm_correction(const std::vector<T>& b,
@@ -110,7 +110,7 @@ double wrms_norm_correction(const std::vector<T>& b,
   return (n > 0) ? std::sqrt(sumsq / n) : 0.0;
 }
 
-// WRMS norm of vector v, weighted against reference y0 — AD-AWARE.
+// WRMS norm of vector v, weighted against reference y0: AD-AWARE.
 // Returns max(state_wrms, max_j sens_wrms[j]) over the state and
 // each sensitivity-parameter slice.  This matches CVODES's
 // `cvSensUpdateNorm` (CV_STAGGERED) convention: every sensitivity
@@ -235,10 +235,10 @@ newton_result ndf_newton_solve(
         tempv[i] *= scale;
     }
 
-    // WRMS norm of correction — AD-aware, max over (state, sens[j]).
+    // WRMS norm of correction: AD-aware, max over (state, sens[j]).
     // ewt is interleaved: [val_0, d0_0, d1_0, ..., val_1, d0_1, ...].
     // Each sensitivity vector contributes its own per-vector WRMS;
-    // the controller sees the worst — matching CVODES cvSensUpdateNorm.
+    // the controller sees the worst: matching CVODES cvSensUpdateNorm.
     { auto _t = prof.timer(prof_cat::error_norm);
       if (use_ewt) {
         double state_sumsq = 0.0;
@@ -291,7 +291,7 @@ newton_result ndf_newton_solve(
       // each sens-vector_wrms).  The step-size controller therefore
       // limits the worst-case local truncation error across the
       // augmented system, including each sensitivity parameter
-      // individually — matching CVODES `cvSensUpdateNorm`
+      // individually: matching CVODES `cvSensUpdateNorm`
       // (CV_STAGGERED).  A flat WRMS over all components averages
       // per-parameter errors and can hide one bad sensitivity behind
       // many small ones; the max-norm prevents that.

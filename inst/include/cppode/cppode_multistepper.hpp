@@ -1,5 +1,5 @@
 /*
- CppODE Multistep Stepper — Nordsieck multistep implementation.
+ CppODE Multistep Stepper: Nordsieck multistep implementation.
 
  Unified variable-order, variable-step Nordsieck multistep stepper
  covering two method variants selected at compile time via the
@@ -40,11 +40,11 @@
 
  Architecture:
  - lu_W<Value, is_sparse> member handles all LU operations
- - ndf_newton_solve()        free function — BDF/NDF Newton corrector
+ - ndf_newton_solve()        free function: BDF/NDF Newton corrector
                              (declared in cppode_newton.hpp)
- - adams_pece_solve()        free function — Adams PECE corrector
+ - adams_pece_solve()        free function: Adams PECE corrector
                              (defined inline below)
- - adams_set_coefficients()  free function — Adams Nordsieck coefficients
+ - adams_set_coefficients()  free function: Adams Nordsieck coefficients
                              (defined inline below)
  - multistepper              orchestrates the step pipeline
 
@@ -58,7 +58,7 @@
  Copyright (C) 2026 Simon Beyer
 
  Portions of this file are derived from SUNDIALS/CVODE(S)
- (cvode.c — cvSetAdams, cvAdjustParams, cvNlsFunctional, cvHin,
+ (cvode.c: cvSetAdams, cvAdjustParams, cvNlsFunctional, cvHin,
  error-weight machinery, NDF kappa modification, Adams PECE control),
  Copyright (c) 2002-2024 Lawrence Livermore National Security and
  Southern Methodist University, distributed under the BSD-3-Clause
@@ -84,7 +84,7 @@
 #include <cppode/cppode_stepper_traits.hpp>
 #include <cppode/cppode_profiler.hpp>
 #include <cppode/cppode_step_trace.hpp>
-#include <cppode/cppode_ad_lu.hpp>          // ad_lu::is_ad — used by adams_pece_solve
+#include <cppode/cppode_ad_lu.hpp>          // ad_lu::is_ad: used by adams_pece_solve
 #include <cppode/cppode_ad_traits.hpp>
 #include <cppode/cppode_dual_slab.hpp>
 #include <cppode/cppode_nordsieck_block.hpp>
@@ -92,7 +92,7 @@
 namespace cppode {
 
 // ============================================================================
-//  Scalar value extraction — pulled in from cppode_ad_traits.hpp
+//  Scalar value extraction: pulled in from cppode_ad_traits.hpp
 // ============================================================================
 
 namespace ndf_detail {
@@ -169,7 +169,7 @@ static constexpr int max_order_adams = 12;
 //  Computes the Nordsieck correction coefficients l[0..q] and the
 //  error-test constants tq[1..5] for variable-step Adams-Moulton of
 //  order q.  Literal translation of cvSetAdams / cvAdamsStart /
-//  cvAdamsFinish / cvAltSum — variable names kept identical to the C
+//  cvAdamsFinish / cvAltSum: variable names kept identical to the C
 //  source for line-by-line review.
 //
 //  VALIDATED at constant step size against the classical fixed-step
@@ -183,7 +183,7 @@ namespace adams_detail {
 // alt_sum <- cvAltSum :
 //   sum_{i=0..iend} (-1)^i * a[i] / (i+k)   (0 if iend < 0)
 // Computes the integral over [-1,0] of x^(k-1) * M(x) given the
-// coefficients of M(x) — used to normalize the Adams Lambda polynomial.
+// coefficients of M(x): used to normalize the Adams Lambda polynomial.
 template<class T, std::size_t N>
 inline double alt_sum(int iend, const std::array<T, N>& a, int k)
 {
@@ -202,17 +202,17 @@ inline double alt_sum(int iend, const std::array<T, N>& a, int k)
 // adams_set_coefficients <- cvSetAdams
 //
 // Inputs:
-//   q       — current order, 1 <= q <= 12.
-//   qwait   — order-change wait counter; tq[1] and tq[3] are only
+//   q      : current order, 1 <= q <= 12.
+//   qwait  : order-change wait counter; tq[1] and tq[3] are only
 //             computed when qwait == 1, exactly as in CVODE.
-//   h       — current step size.
-//   tau     — past step sizes; tau[1] is the most recent (= last
+//   h      : current step size.
+//   tau    : past step sizes; tau[1] is the most recent (= last
 //             accepted h), tau[2] the one before, etc.  Uses indices
 //             1..q-1.
 //
 // Outputs (by reference):
-//   l       — l[0..q] written, higher zeroed.  l[0] = 1 by construction.
-//   tq      — tq[1..5] written.
+//   l      : l[0..q] written, higher zeroed.  l[0] = 1 by construction.
+//   tq     : tq[1..5] written.
 //
 // Polynomial Lambda(x) of degree q:
 //   Lambda(-1) = 0,  Lambda(0) = 1,
@@ -331,7 +331,7 @@ void adams_set_coefficients(
 //
 //  Performs one PECE (Predict-Evaluate-Correct-Evaluate) Adams-Moulton
 //  step.  Same calling convention as newton_solve, but no LU, no
-//  Jacobian, no linear solve — cost per accepted step is 2 f-evals.
+//  Jacobian, no linear solve: cost per accepted step is 2 f-evals.
 //
 //  PECE layout:
 //    P : y_pred = Pascal predictor on Nordsieck array  (caller's job)
@@ -350,7 +350,7 @@ void adams_set_coefficients(
 
 struct pece_result {
   bool   converged;     // Did the PECE fixed-point iteration converge?
-  bool   diverged;      // Hard divergence — strong stiffness signal.
+  bool   diverged;      // Hard divergence: strong stiffness signal.
   double acnrm;         // WRMS norm of the accumulated correction.
   int    n_fevals;      // Number of f-evaluations used (2 for converged step).
   int    n_iters;       // Number of corrector iterations performed.
@@ -360,32 +360,32 @@ struct pece_result {
   // Used by the stiffness detector to estimate the dominant Lipschitz
   // constant on the Adams side where no Jacobian is available.
   // Zero if the corrector did not run at least 2 iterations (the ideal
-  // non-stiff case — no rate signal available).
+  // non-stiff case: no rate signal available).
   double rate_max;
 };
 
 // adams_pece_solve: one PECE Adams-Moulton corrector solve.
 //
 // Inputs:
-//   deriv_func   — user RHS, called as deriv_func(y, ydot, t).
-//   zn0          — Nordsieck slot 0 BEFORE predict: previous accepted
+//   deriv_func  : user RHS, called as deriv_func(y, ydot, t).
+//   zn0         : Nordsieck slot 0 BEFORE predict: previous accepted
 //                  state (used only for atol/rtol weighting).
-//   zn0_pred     — Nordsieck slot 0 AFTER predict: the predictor for y_n.
-//   zn1_pred     — Nordsieck slot 1 AFTER predict: h * y' at y_pred.
-//   h            — current step size.
-//   l1           — l[1] from adams_set_coefficients (leading correction
+//   zn0_pred    : Nordsieck slot 0 AFTER predict: the predictor for y_n.
+//   zn1_pred    : Nordsieck slot 1 AFTER predict: h * y' at y_pred.
+//   h           : current step size.
+//   l1          : l[1] from adams_set_coefficients (leading correction
 //                  weight).
-//   t_new        — time at the new step, t_n + h.
-//   tq4          — Newton-style convergence threshold inherited from
+//   t_new       : time at the new step, t_n + h.
+//   tq4         : Newton-style convergence threshold inherited from
 //                  the controller (CORTES / tq[2]).
-//   atol, rtol   — error weights for the WRMS norm.
-//   max_iter     — maximum corrector iterations (typical: 3-4).
+//   atol, rtol  : error weights for the WRMS norm.
+//   max_iter    : maximum corrector iterations (typical: 3-4).
 //
 // Outputs (by reference):
-//   acor         — accumulated correction y_n - y_pred.
-//   y            — final corrected y_n.
-//   tempv, ftemp — caller-owned scratch space (no allocation).
-//   crate        — Nash-style damped convergence rate, persisted across
+//   acor        : accumulated correction y_n - y_pred.
+//   y           : final corrected y_n.
+//   tempv, ftemp: caller-owned scratch space (no allocation).
+//   crate       : Nash-style damped convergence rate, persisted across
 //                  steps (diagnostic only on the Adams path).
 //
 // Returns: pece_result.
@@ -393,7 +393,7 @@ struct pece_result {
 //   converged=false, diverged=false → soft failure; controller retries
 //                                     with smaller h (or, for switching
 //                                     instantiations, also treated as a
-//                                     stiffness signal — see controller).
+//                                     stiffness signal: see controller).
 template<class DerivFunc, class Value, class TimeType>
 pece_result adams_pece_solve(
     DerivFunc& deriv_func,
@@ -468,7 +468,7 @@ pece_result adams_pece_solve(
       }
     }
 
-    // Rate estimate — needs m >= 1 (need previous delp).  LSODA caps
+    // Rate estimate: needs m >= 1 (need previous delp).  LSODA caps
     // rm at 1024 to guard against pathological growth.
     if (m > 0) {
       const double rm = (delp > 0.0)
@@ -480,7 +480,7 @@ pece_result adams_pece_solve(
     double dcon = del * std::min(1.0, crate) / tq4;
 
     if (dcon <= 1.0) {
-      // Converged — compute acnrm AD-aware, same convention as Newton.
+      // Converged: compute acnrm AD-aware, same convention as Newton.
       double acnrm;
       { auto _t = prof.timer(prof_cat::error_norm);
         acnrm = wrms_norm(acor, zn0, n, atol, rtol); }
@@ -517,7 +517,7 @@ pece_result adams_pece_solve(
 
 
 // ============================================================================
-//  multistep_method — compile-time method selector
+//  multistep_method: compile-time method selector
 //
 //  Selects which Nordsieck multistep family the stepper instantiates.
 //  Both variants share the same Nordsieck history array, the same
@@ -633,7 +633,7 @@ public:
   // The slab members embed pointers to their own storage_.data() into the
   // dual elements of the slab-bound vectors (m_zn[j].m_v, m_acor.m_v, …).
   // Copying would build a separate buffer with the same address-bound
-  // duals — UB. Moves are safe: std::vector::move preserves data() for
+  // duals: UB. Moves are safe: std::vector::move preserves data() for
   // both the slab storage and the dual-element vectors, so embedded tan_
   // pointers keep pointing at valid memory in the moved-to instance.
   multistepper(const multistepper&)            = delete;
@@ -725,7 +725,7 @@ public:
   bool use_ndf_kappa() const { return m_use_ndf_kappa; }
 
   // ====================================================================
-  //  convfail enum — mirrors convfail parameter to lsetup
+  //  convfail enum: mirrors convfail parameter to lsetup
   //
   //  CV_NO_FAILURES:  no Newton failures (first call or error-test retry)
   //                   → lsetup may reuse cached Jacobian if gamma is close
@@ -740,7 +740,7 @@ public:
   };
 
   // ====================================================================
-  //  q_max_current — effective max order for this method.
+  //  q_max_current: effective max order for this method.
   //  Adams: 12.  BDF/NDF: 5.  Used by the controller to clamp
   //  order-increase decisions.
   // ====================================================================
@@ -755,7 +755,7 @@ public:
   }
 
   // ====================================================================
-  //  do_step — public dispatcher
+  //  do_step: public dispatcher
   //
   //  Selects between the BDF/NDF Newton corrector path and the Adams
   //  PECE corrector path at compile time.
@@ -780,7 +780,7 @@ public:
   }
 
   // ====================================================================
-  //  on_step_accepted — called by the controller after a successful step.
+  //  on_step_accepted: called by the controller after a successful step.
   //  Currently a no-op (no mode-switching machinery).  Kept as a hook
   //  in case future per-step bookkeeping is needed.
   // ====================================================================
@@ -985,7 +985,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   // within DGMAX (which triggers callSetup above).  This avoids
   // expensive refactorizations on every step.
 
-  // Newton iteration — pass ewt for CVODE-style pre-prediction weights
+  // Newton iteration: pass ewt for CVODE-style pre-prediction weights
   auto result = ndf_newton_solve(
     m_lu,
     deriv_func,
@@ -1063,7 +1063,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   //  Mirrors the structure of step_bdf_family but uses
   //  adams_set_coefficients() instead of ndfSet() and adams_pece_solve()
   //  instead of ndf_newton_solve().  No LU, no Jacobian, no setup
-  //  triggers — pure non-stiff path.
+  //  triggers: pure non-stiff path.
   // ====================================================================
 
   template<class System, class TimeArg>
@@ -1157,11 +1157,11 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
 
     auto result = adams_pece_solve(
         deriv_func,
-        x,                    // zn0 — previous accepted state (for atol weighting)
-        m_zn[0].m_v,          // zn0_pred — Nordsieck slot 0 after predict
-        m_zn[1].m_v,          // zn1_pred — Nordsieck slot 1 after predict
+        x,                    // zn0: previous accepted state (for atol weighting)
+        m_zn[0].m_v,          // zn0_pred: Nordsieck slot 0 after predict
+        m_zn[1].m_v,          // zn1_pred: Nordsieck slot 1 after predict
         m_h,
-        rl1,                  // 1 / l[1] — matches cvNlsFunctional
+        rl1,                  // 1 / l[1]: matches cvNlsFunctional
         t_new_s,
         m_tq[4],
         m_atol, m_rtol,
@@ -1178,7 +1178,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     m_newton_converged = result.converged;   // reuse the same flag
 
 #ifdef CPPODE_STEP_TRACE
-    // Adams path doesn't go through the BDF setup gate — clear stash.
+    // Adams path doesn't go through the BDF setup gate: clear stash.
     m_trace_setup_fired  = false;
     m_trace_setup_reason = "";
     m_trace_pece_iters   = result.n_iters;
@@ -1221,7 +1221,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   // ====================================================================
 
   // WRMS norm using pre-prediction ewt, with AD support.
-  // Returns max(state_wrms, max_j sens_wrms[j]) — every sensitivity
+  // Returns max(state_wrms, max_j sens_wrms[j]): every sensitivity
   // vector is judged on its own per-vector WRMS, and the controller
   // sees the worst.  Matches CVODES `cvSensUpdateNorm` (CV_STAGGERED).
   double wrms_norm_ewt(const std::vector<value_type>& v) const
@@ -1277,7 +1277,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   {
     auto _tp = m_prof.timer(prof_cat::error_norm);
     using ndf_detail::scalar_value;
-    // Clamp to the current method's max order — for ++-instantiations
+    // Clamp to the current method's max order: for ++-instantiations
     // this is 5 in BDF/NDF mode and 12 in Adams mode.
     if (m_q >= q_max_current()) return 0.0;
     if (m_saved_tq5 == 0.0) return 0.0;
@@ -1295,7 +1295,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
 
     size_t ew = 0;  // ewt index (interleaved for AD)
     for (size_t i = 0; i < n; ++i) {
-      // Value component — use ewt (pre-prediction weights)
+      // Value component: use ewt (pre-prediction weights)
       double vi = scalar_value(m_acor.m_v[i])
       - cquot * scalar_value(m_zn[max_order].m_v[i]);
       double r = std::abs(vi) * m_ewt[ew++];
@@ -1314,7 +1314,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
       }
     }
 
-    // Max-norm over (state, each sens vector) — CVODES convention.
+    // Max-norm over (state, each sens vector): CVODES convention.
     double dup = (n > 0) ? std::sqrt(state_sumsq / n) : 0.0;
     for (unsigned j = 0; j < nd; ++j) {
       double sens_norm = std::sqrt(sens_sumsq[j] / n);
@@ -1351,7 +1351,17 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     {
       const int qp1 = m_q + 1;
 
-      if constexpr (detail::is_dynamic_dual<value_type>::value) {
+      if constexpr (detail::is_dual2nd<value_type>::value) {
+        // dual2nd: full per-slot update via vec_axpy_with_slab covers
+        // scalar + all tangent layers (the dual2nd specialisation calls
+        // through inherited operator+= on every state element). Skip the
+        // separate value-layer loop to avoid double-counting the scalar
+        // and val_tan_block additions.
+        for (int j = 0; j < qp1; ++j)
+          vec_axpy_with_slab(m_zn[j].m_v, m_zn_block.slab(j),
+                             static_cast<double>(m_l[j]),
+                             m_acor.m_v, m_acor_slab);
+      } else if constexpr (detail::is_dynamic_dual<value_type>::value) {
         using inner_t = typename value_type::value_type;
 
         // Value layer: per-element loop on the inline .x() field.
@@ -1518,7 +1528,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
       prepare_sensitivities(m_n_sens);
 
     // Value layer: per-element dual = dual copy.  Only the first (q+1)
-    // slots are alive — leave the rest untouched (consistent with the
+    // slots are alive: leave the rest untouched (consistent with the
     // legacy per-slot loop, which only ran for j ∈ [0, q]).
     for (int j = 0; j <= m_q; ++j) {
       auto& dst = m_zn_dense[j].m_v;
@@ -1530,8 +1540,31 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     // shape matches, a single std::memcpy of the (q+1) leading slots'
     // tangent storage replaces the (q+1) per-slot vec_copy_with_slab
     // calls. Slots [q+1, max_order] hold stale tangents but they're
-    // never read — eval_dense_into() only touches slots [0, m_q_dense].
-    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+    // never read: eval_dense_into() only touches slots [0, m_q_dense].
+    //
+    // For dual2nd: the val_layer per-element loop ABOVE already covered
+    // the inline outer.val_ scalar PLUS the inline gradient slots (via
+    // dual<S,N>::operator= recursion); val_tan and hess sub-blocks are
+    // independently flat S arrays that we can memcpy. We must NOT memcpy
+    // the outer block (would clobber the tan_ pointers that bind each
+    // dual<S,N> to m_zn_dense_block's own hess storage).
+    if constexpr (detail::is_dual2nd<value_type>::value) {
+      // dual2nd: memcpy hess sub-block (flat doubles). Outer block (with
+      // its inline gradient .val_ slots) was already copied per-element
+      // by the value-layer loop above via dual<dual<,>,>::operator=.
+      using S_inner = typename detail::tangent_slab<value_type>::inner_type;
+      if (m_zn_block.primed() && m_zn_dense_block.primed() &&
+          m_zn_block.n_rows() == m_zn_dense_block.n_rows() &&
+          m_zn_block.n_cols() == m_zn_dense_block.n_cols())
+      {
+        const std::size_t copy_slots = static_cast<std::size_t>(m_q + 1);
+        const std::size_t h_per_slot = m_zn_block.hess_slot_stride();
+        if (h_per_slot > 0)
+          std::memcpy(m_zn_dense_block.hess_block_data(),
+                      m_zn_block.hess_block_data(),
+                      copy_slots * h_per_slot * sizeof(S_inner));
+      }
+    } else if constexpr (detail::is_dynamic_dual<value_type>::value) {
       using inner_t = typename value_type::value_type;
       if (m_zn_block.primed() && m_zn_dense_block.primed() &&
           m_zn_block.n_rows() == m_zn_dense_block.n_rows() &&
@@ -1609,16 +1642,16 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   }
 
   // ====================================================================
-  //  trace_step — unified per-step trace row
+  //  trace_step: unified per-step trace row
   //
   //  One entry per invocation of step_* (regardless of whether the step
   //  is ultimately accepted by the controller).  When CPPODE_STEP_TRACE
-  //  is not defined this is a no-op — the compiler eliminates the body.
+  //  is not defined this is a no-op: the compiler eliminates the body.
   //
   //  The row is appended to the process-wide TraceBuffer declared in
   //  cppode_step_trace.hpp.  The generated entry point marshals the
   //  buffer into an R list after integration and clears it.  No file
-  //  I/O happens here — `solveODE()` on the R side decides what to do
+  //  I/O happens here: `solveODE()` on the R side decides what to do
   //  with the trace.
   //
   //  dsm ~ acnrm * tq[2] is the post-step error norm the controller's
@@ -1653,7 +1686,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
     const double acnrm_state =
       (n_state > 0) ? std::sqrt(acnrm_state_sq / static_cast<double>(n_state)) : 0.0;
 
-    // Resolve the mode label for the trace line — known at compile time.
+    // Resolve the mode label for the trace line: known at compile time.
     const char* mode_label;
     if constexpr (Method == multistep_method::adams) {
       mode_label = "ADAMS";
@@ -1760,7 +1793,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
   //  StateOut& x in one pass.
   //
   //  For non-dual / static-N value types (no slab) the routine collapses
-  //  to the same per-element Horner the previous calc_state had — no
+  //  to the same per-element Horner the previous calc_state had: no
   //  scratch copy, no overhead.
   // ====================================================================
 
@@ -1837,7 +1870,7 @@ for (int nls_attempt = 0; nls_attempt < 2; ++nls_attempt) {
       // Slab-less path falls through to the generic Horner below.
     }
 
-    // Generic (per-element ET) Horner — used for non-dual value types
+    // Generic (per-element ET) Horner: used for non-dual value types
     // and for the dynamic-dual case before slabs are primed.
     const auto& zq = m_zn_dense[q].m_v;
     for (size_t i = 0; i < n; ++i)
@@ -1868,7 +1901,7 @@ private:
   //  When the tangent block is primed and the inner type is plain
   //  double, the (n*M) × (q+1) tangent matrix is updated in one dtrmm
   //  call. Value layer stays per-element (the .x() fields aren't
-  //  contiguous across slots — they live inside the dual struct).
+  //  contiguous across slots: they live inside the dual struct).
   //  Nested-dual deriv2 falls back to the legacy per-slot loop.
   // ====================================================================
 
@@ -1916,7 +1949,19 @@ private:
   {
     if (m_q < 1) return;
 
-    if constexpr (detail::is_dynamic_dual<value_type>::value) {
+    if constexpr (detail::is_dual2nd<value_type>::value) {
+      // dual2nd: skip the separate value-layer loop. The per-slot
+      // vec_axpy_with_slab below (my dual2nd specialisation) does a FULL
+      // dual2nd update via inherited operator+=, covering scalar + all
+      // tangent layers in one pass. Running the value-layer loop on top
+      // would double-count the scalar + val_tan_block update.
+      const double sign = restore ? -1.0 : 1.0;
+      for (int k = 1; k <= m_q; ++k)
+        for (int j = m_q; j >= k; --j)
+          vec_axpy_with_slab(m_zn[j - 1].m_v, m_zn_block.slab(j - 1),
+                             sign,
+                             m_zn[j].m_v, m_zn_block.slab(j));
+    } else if constexpr (detail::is_dynamic_dual<value_type>::value) {
       using inner_t = typename value_type::value_type;
       const double sign = restore ? -1.0 : 1.0;
 
@@ -2158,7 +2203,7 @@ public:
   //
   //  CVODE uses a different Nordsieck history adjustment for Adams
   //  than for BDF.  On an order increase the new high-order slot
-  //  zn[L] (old L = new q) is simply set to zero — Adams does not
+  //  zn[L] (old L = new q) is simply set to zero: Adams does not
   //  consume a saved derivative estimate the way BDF does through
   //  zn[qmax].  On an order decrease each zn[j] is adjusted by a
   //  multiple of zn[q] derived from the polynomial
@@ -2180,7 +2225,7 @@ public:
   void adamsDecreaseOrder()
   {
     // Literal port of cvAdjustAdams (deltaq = -1).  Uses m_l[] as
-    // scratch for the polynomial coefficients — this is safe because
+    // scratch for the polynomial coefficients: this is safe because
     // set_order_for_next_step runs between complete_step and the next
     // do_step, and do_step rebuilds m_l via adams_set_coefficients().
     if (m_q == 2) return;   // matches cvAdjustOrder q==2 early-out

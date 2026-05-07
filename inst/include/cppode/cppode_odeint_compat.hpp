@@ -1,5 +1,5 @@
 /*
- ODE integration infrastructure for CppODE — Eigen-free.
+ ODE integration infrastructure for CppODE: Eigen-free.
 
  Provides:
  - state_wrapper<T> for std::vector and dense_matrix
@@ -48,7 +48,7 @@ enum controlled_step_result {
 };
 
 // ============================================================================
-//  state_wrapper<T> — thin wrapper providing resize semantics
+//  state_wrapper<T>: thin wrapper providing resize semantics
 // ============================================================================
 
 template<class T>
@@ -149,7 +149,7 @@ inline bool adjust_size_by_resizeability(Wrapper& wrapper, const Reference& x)
 }
 
 // ============================================================================
-//  initially_resizer — resize policy that adjusts once
+//  initially_resizer: resize policy that adjusts once
 // ============================================================================
 
 struct initially_resizer {

@@ -31,44 +31,126 @@ vignette: >
   %\VignetteIndexEntry{Integration Methods in CppODE}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
+fontsize: 10pt
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 ```
 
-# Scope
+# Overview
 
-This vignette describes the four time-stepping methods exposed by
-\texttt{CppODE()}. The methods share a common solver framework
-(adaptive step-size control, dense Hermite output, sparse and
-dense LU factorisation, time- and root-triggered events, and
-forward-mode sensitivity propagation via dual numbers) and differ
-only in how the individual time step is taken. The Butcher tableaus
-and numerical coefficients of each method are reproduced in
-Appendices \ref{app:bdf-coeffs}--\ref{app:tsit5-coeffs}.
+CppODE generates and compiles per-model C++ code for three related
+problems through three entry points that share a common R interface:
+\texttt{CppODE()}, \texttt{CVODE()}, and \texttt{funCpp()}.
+Table \ref{tab:entry-points} summarises their scope.
 
-We consider the autonomous initial-value problem
+\begin{table}[h]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{} l l l l @{}}
+\toprule
+                           & \texttt{CppODE()}                & \texttt{CVODE()}              & \texttt{funCpp()}             \\
+\midrule
+Problem class              & ODE                              & ODE                           & algebraic $y = g(x, p)$       \\
+Methods                    & \texttt{bdf, adams, rb4, tsit5}  & \texttt{bdf, adams}           &                             \\
+First-order sensitivities  & in-tree dual-number AD           & SUNDIALS analytic RHS         & in-tree dual-number AD        \\
+Second-order sensitivities & yes (nested duals)               & no                            & yes (symbolic)                \\
+External dependencies      & LAPACK; KLU optional             & SUNDIALS $\ge 6.0$; KLU opt.  & none                          \\
+Codegen                    & SymPy + \texttt{R CMD SHLIB}     & SymPy + \texttt{R CMD SHLIB}  & SymPy + \texttt{R CMD SHLIB}  \\
+\bottomrule
+\end{tabular}%
+}
+\caption{The three CppODE entry points and what they cover. The
+codegen pipeline (parse the user's expressions through SymPy, emit
+C++, compile via \texttt{R CMD SHLIB}, load via \texttt{dyn.load}) is
+shared, as is the \texttt{solveODE()} dispatcher used by both
+integrator backends.}
+\label{tab:entry-points}
+\end{table}
+
+The integrator entry points \texttt{CppODE()} and \texttt{CVODE()}
+expose the same R-side interface: the user supplies named character
+vectors of right-hand sides together with optional events, forcings,
+and parameter vectors, and the returned model handle is passed to
+\texttt{solveODE()}. The two backends differ only in the numerical
+core. \texttt{CppODE()} emits a self-contained C++ source that
+includes the headers under \texttt{inst/include/cppode/}; the
+resulting binary depends on LAPACK and, optionally, KLU.
+\texttt{CVODE()} emits a thin glue layer that links against the
+system-installed SUNDIALS CVODE/CVODES library and inherits its
+numerical behaviour.
+
+Section \ref{sec:cppode} describes the in-tree integrator
+\texttt{CppODE()} in full, including its four time-stepping methods,
+its forward-mode automatic-differentiation framework for parameter
+sensitivities, and the transport of sensitivities across events.
+Section \ref{sec:cvode} describes the SUNDIALS-backed
+\texttt{CVODE()} integrator. Section \ref{sec:funcpp} describes the
+algebraic-function compiler \texttt{funCpp()}, which compiles a
+system of expressions $y = g(x, p)$ together with optional first-
+and second-order derivatives, with no time integration. The
+principal use cases of \texttt{funCpp()} are observation maps that
+link integrator output to data in likelihood-based inference and
+reparametrisation Jacobians $\partial p/\partial \theta$ that seed
+sensitivity propagation through the integrators.
+
+# \texttt{CppODE()} \label{sec:cppode}
+
+## Initial value problem and four methods
+
+This section describes the in-tree integrator of \texttt{CppODE()}
+in detail: the four time-stepping methods, the adaptive step-size
+control they share, dense Hermite output, sparse and dense LU
+factorisation, time- and root-triggered events, and forward-mode
+sensitivity propagation through dual numbers. The methods differ only
+in how the individual time step is taken. The Butcher tableaus and
+numerical coefficients of each method are reproduced in Appendices
+\ref{app:bdf-coeffs}--\ref{app:tsit5-coeffs}.
+
+The initial-value problem solved by \texttt{CppODE()} is
 \begin{equation}
-  \dot{x}  = f(x, p_{\mathrm{dyn}}),\qquad x(t_0) = p_{\mathrm{init}}, \label{eq:ivp}
+  \dot{x}  = f\bigl(x,\, p_{\mathrm{dyn}},\, t\bigr),
+  \qquad x(t_0) = p_{\mathrm{init}},
+  \label{eq:ivp}
 \end{equation}
-with state $x \in \mathbb{R}^{n_x}$, parameter vector
-$p = (p_{\mathrm{init}}, p_{\mathrm{dyn}})$. The Jacobian
-of the right-hand side will be denoted $J = \partial f / \partial x$
-throughout.
+with state $x \in \mathbb{R}^{n_x}$ and parameter vector
+$p = (p_{\mathrm{init}}, p_{\mathrm{dyn}})$ collecting the initial
+conditions and the dynamic parameters. The right-hand side $f$ may
+depend explicitly on time, in which case the system is
+non-autonomous; an explicit time argument is also necessary for the
+forcing-function machinery used to inject time-dependent inputs. The
+Jacobian of $f$ with respect to the state is denoted
+$J = \partial f / \partial x$ throughout.
 
-# Stiffness and the choice of method
+## Stiffness and the choice of method
 
-A linear test problem $\dot y = \lambda y$ with $\lambda \in \mathbb{C}^-$
-is the standard vehicle for analysing stability. Substituting the
-test equation into a one-step method gives an amplification factor
-$R(z)$ with $z = h \lambda$; the method is called
-\emph{A-stable} if $|R(z)| \le 1$ for all $z$ with
-$\operatorname{Re}(z) \le 0$, and \emph{A($\alpha$)-stable} if the
-same bound holds in the wedge
-$\{ z \in \mathbb{C} : |\arg(-z)| \le \alpha \}$. \emph{L-stability}
-adds the requirement $R(z) \to 0$ as $\operatorname{Re}(z) \to -\infty$,
-which damps stiff transients in a single step.
+The choice between the four methods is governed primarily by whether
+the problem is \emph{stiff}. A problem is stiff on a given
+integration interval when its solution contains components evolving
+on time scales much shorter than the interval length. An explicit
+integration method applied to such a problem is forced to take step
+sizes set by the fastest component rather than by the accuracy
+requirement, leading to step counts that are uneconomic in practice.
+Implicit methods avoid this constraint by absorbing the fast
+components into a linear solve at each step.
+
+The standard tool for analysing the stability of a method is the
+linear scalar test equation
+$\dot y = \lambda y$ with $\lambda \in \mathbb{C}^-$, whose exact
+solution decays. Substituting this equation into a one-step method
+produces a single scalar amplification factor $R(z)$ acting on $y$
+per step, where $z = h \lambda$ combines the step size and the
+eigenvalue. The method is \emph{A-stable} if
+$|R(z)| \le 1$ on the entire left half-plane, so that the numerical
+solution decays whenever the exact one does, regardless of step
+size; \emph{A($\alpha$)-stable} if the same bound holds on the wedge
+$\{ z \in \mathbb{C} : |\arg(-z)| \le \alpha \}$ for some opening
+angle $\alpha < 90^{\circ}$; and \emph{L-stable} if it is A-stable
+and additionally $R(z) \to 0$ as
+$\operatorname{Re}(z) \to -\infty$, the latter condition being what
+damps very stiff transients out in a single step rather than carrying
+them along.
 
 The initial-value problem \eqref{eq:ivp} is called \emph{stiff} on
 $[t_0, t_{\mathrm{end}}]$ when an explicit method is forced to take
@@ -88,23 +170,33 @@ methods listed above, BDF/NDF and Rosenbrock4 satisfy this
 requirement; Adams-Moulton and Tsit5 do not, and will perform
 poorly on stiff systems regardless of the requested tolerance.
 
-# Multistep methods
+## Multistep methods
 
-Linear multistep methods compute $x_n$ from a linear combination
-of the past $k+1$ state and right-hand-side values
-$\{x_{n-j}, f_{n-j}\}_{j=0}^{k}$. CppODE implements both the BDF
-and Adams families through a unified Nordsieck representation, in
-which the $k+1$ past samples are replaced by the scaled
-derivative array
+Linear multistep methods build the solution at the new time step
+$x_n$ from a linear combination of the most recent $k+1$ states
+and right-hand-side values, $\{x_{n-j}, f_{n-j}\}_{j=0}^{k}$. They
+re-use information from earlier steps and so attain high accuracy
+with few right-hand-side evaluations per step, at the price of having
+to manage that history.
+
+CppODE implements both the BDF and the Adams families through a
+common internal representation, due to Nordsieck and used throughout
+SUNDIALS [@hindmarsh2005sundials]. The idea is to store, instead of
+the past $k+1$ states, a single \emph{scaled derivative array}
 \[
   z_n =\left(x_n,\, h_n \dot{x}_n,\, \dfrac{h_n^2}{2!} \ddot{x}_n,
                   \,\dots,\,
                   \dfrac{h_n^{k}}{k!} x_n^{(k)} \right),
 \]
-following @hindmarsh2005sundials. Variable-order and variable-step
-control then reduce to linear transformations of $z_n$.
+i.e.\ the value at the current time and its first $k$ derivatives,
+each multiplied by the appropriate power of the current step size to
+make the entries dimensionally homogeneous. Changing the step size or
+the integration order then becomes a single linear transformation of
+$z_n$ rather than a refit through the past data, which simplifies
+both the bookkeeping and the implementation of variable-order and
+variable-step control.
 
-## Backward Differentiation Formula ($\mathtt{bdf}$)
+### Backward Differentiation Formula ($\mathtt{bdf}$)
 
 The BDF formula of order $q$ defines $x_n$ implicitly by the
 condition
@@ -118,55 +210,44 @@ and A($\alpha$)-stable for $q \in \{3,4,5\}$; the stability angle
 $\alpha$ shrinks monotonically from $86^\circ$ at $q=3$ to
 $51^\circ$ at $q=5$.
 
-The Newton iteration for the corrector \eqref{eq:bdf} solves
+The implicit corrector \eqref{eq:bdf} is solved by Newton iteration,
 \begin{equation}
   W \Delta x^{(\nu)} = - \tilde r \left(x_n^{(\nu)}\right),
   \qquad
   x_n^{(\nu+1)} = x_n^{(\nu)} + \Delta x^{(\nu)},
   \label{eq:newton}
 \end{equation}
-at each iterate $\nu$, with leading coefficient
-$\beta_0 = 1/\alpha_0$ and a residual $\tilde r$ obtained by
-dividing the corrector residual by the scalar $h_n \beta_0$.
-Following the Hindmarsh/SUNDIALS scaling convention, CppODE
-defines the iteration matrix in scaled form,
+with leading coefficient $\beta_0 = 1/\alpha_0$ and the iteration
+matrix
 \begin{equation}
-  W = \frac{1}{h_n\, \beta_0}\symbb{1} - J(x_n^{(\nu)}, t_n),
+  W = \frac{1}{h_n\, \beta_0}\symbb{1} - J\bigl(x_n^{(\nu)}, t_n\bigr),
   \label{eq:bdf-W}
 \end{equation}
-which is the textbook iteration matrix $I - h_n \beta_0\, J$
-divided by the scalar factor $h_n \beta_0$. The same scaled form is
-adopted for Rosenbrock4 in \eqref{eq:rosenbrock-W} below (with
-$\beta_0$ replaced by the diagonal coefficient $\gamma$), and both
-methods share a single \texttt{factorize\_W} implementation in
-\texttt{cppode\_lu.hpp} that materialises $-J$ via codegen and adds
-$1/(h_n\beta_0)$ (resp.\ $1/(\gamma h_n)$) to the diagonal before
-factorisation. The scaled form admits an $O(n_x)$ diagonal-only
-refactorisation when only $h_n$ changes, and it leaves a clean
-$-J$ in cache for the implicit-function-theorem step needed by the
-AD-aware LU. The factorisation of $W$ is the dominant cost per step
-and is reused for as long as the contraction rate of the Newton
-iteration permits.
+in the form adopted by SUNDIALS [@hindmarsh2005sundials], which
+differs from the textbook expression $I - h_n \beta_0\, J$ by the
+overall scalar factor $h_n \beta_0$. The factorisation of $W$ is the
+dominant cost per accepted step and is reused for as long as the
+contraction rate of the Newton iteration permits.
 
-CppODE replaces classical BDF by the Numerical Differentiation
-Formulas (NDF) of @MATLABODESuite by default. The NDF
-modification adds a correction proportional to the Nordsieck
-predictor error,
+The default in CppODE is the Numerical Differentiation Formula (NDF)
+variant of @MATLABODESuite, which adds a correction proportional to
+the Nordsieck predictor error to the BDF corrector,
 \begin{equation}
 \sum_{m=1}^{q} \dfrac{1}{m}\, \nabla^{m} x_n - h_n f(x_n, t_n) - \kappa_q\, \gamma_q\, \left(x_n - x_n^{\mathrm{pred}}\right) = 0, \qquad \gamma_q  = \sum_{m=1}^{q} \dfrac{1}{m}, \label{eq:ndf}
 \end{equation}
 where $\nabla$ denotes the backward-difference operator. The
-algebraic effect is to scale $\beta_0$ in \eqref{eq:newton} by
-$(1 - \kappa_q)$ and to multiply the leading truncation-error
-coefficient $1/(q+1)$ by $\bigl(1 + \kappa_q (q+1) \gamma_q\bigr)$.
-Choosing $\kappa_q < 0$ shrinks the truncation-error coefficient
-without disturbing the iteration matrix, allowing larger step
-sizes at the same local error. The numerical $\kappa_q$ values
-adopted by CppODE are tabulated in Appendix \ref{app:bdf-coeffs};
-empirically they yield a $25\,\%$ step-size gain over classical
-BDF for $q \le 4$, at the price of a few degrees of stability angle.
-Setting \texttt{useNDF = FALSE} recovers the classical BDF formulas
-($\kappa_q \equiv 0$).
+algebraic effect of the modification is to scale $\beta_0$ in
+\eqref{eq:newton} by a factor $(1 - \kappa_q)$ and to multiply the
+leading truncation-error coefficient $1/(q+1)$ by the factor
+$1 + \kappa_q (q+1) \gamma_q$. With $\kappa_q < 0$ the truncation
+error decreases at fixed step size while the iteration matrix is
+unchanged, which permits a larger step at a fixed accuracy
+requirement. The values of $\kappa_q$ adopted by CppODE are
+tabulated in Appendix \ref{app:bdf-coeffs}; they reproduce the
+$25\,\%$ step-size gain over classical BDF reported by
+@MATLABODESuite for $q \le 4$, at the cost of a small reduction in
+stability angle. Setting \texttt{useNDF = FALSE} recovers the
+classical BDF formulas ($\kappa_q \equiv 0$).
 
 A typical accepted step performs one right-hand-side evaluation for
 the predictor and between one and three right-hand-side evaluations
@@ -176,7 +257,7 @@ when the Newton iteration stalls or when the step size or order
 changes substantially. BDF/NDF is the default method in CppODE and
 the recommended choice when stiffness is suspected.
 
-## Adams-Moulton in PECE form ($\mathtt{adams}$)
+### Adams-Moulton in PECE form ($\mathtt{adams}$)
 
 The Adams-Moulton family integrates the local interpolant of $f$
 over $[t_{n-1}, t_n]$. Writing $f$ as the unique polynomial through
@@ -187,15 +268,17 @@ gives
             f(x_{n-j}, t_{n-j}),
   \label{eq:adams}
 \end{equation}
-which is implicit in $x_n$ through the $j=0$ term. CppODE handles
-the implicitness in predictor-evaluate-corrector-evaluate (PECE)
-mode: an explicit predictor (Adams-Bashforth of order $q$) supplies
-$x_n^{P}$, the right-hand side is evaluated once at $x_n^{P}$, the
-corrector \eqref{eq:adams} is then evaluated explicitly using
-$f(x_n^{P}, t_n)$ in place of $f(x_n, t_n)$, and a final
-right-hand-side evaluation produces the value entered into the
-Nordsieck history. No Newton iteration and no linear solve are
-performed.
+which is implicit in $x_n$ through the $j=0$ term. CppODE evaluates
+the corrector in predict-evaluate-correct-evaluate (PECE) mode rather
+than by Newton iteration. An explicit predictor (Adams-Bashforth of
+the same order $q$) first supplies a candidate value $x_n^{P}$ for
+the new state; the right-hand side is then evaluated at $x_n^{P}$;
+the corrector \eqref{eq:adams} is evaluated explicitly with
+$f(x_n^{P}, t_n)$ in place of $f(x_n, t_n)$, yielding a refined
+$x_n$; and a final right-hand-side evaluation at the refined state
+is entered into the Nordsieck history. The procedure costs two
+right-hand-side evaluations per accepted step, with no nonlinear
+iteration and no linear solve.
 
 The Adams-Moulton stability domain on the negative real axis
 shrinks rapidly with order; for $q \ge 3$ it does not contain even
@@ -206,7 +289,7 @@ attainable order ($q_{\max} = 12$) and the cost of two right-hand-side evaluatio
 accepted step make it competitive with explicit Runge-Kutta methods
 of fixed order.
 
-# Single-step methods
+## Single-step methods
 
 Single-step methods carry no information beyond the current state.
 They achieve order $p > 1$ by evaluating internal stages within
@@ -216,7 +299,7 @@ trivial; both methods below restart at full order in a single step,
 unlike the multistep methods, which must rebuild the Nordsieck
 history at order $1$.
 
-## Rosenbrock ($\mathtt{rb4}$)
+### Rosenbrock ($\mathtt{rb4}$)
 
 A Rosenbrock method of $s$ stages with diagonal coefficient $\gamma$
 linearises the implicit Runge-Kutta condition about $(x_n, t_n)$ and
@@ -239,13 +322,13 @@ The method coefficients are listed in Table \ref{tab:rosenbrock-coeffs}.
 \toprule
 Symbol & Meaning \\
 \midrule
-$\alpha_{ij}$ & stage combination weights (strict lower triangular) \\
-$c_i$         & stage time abscissae, $c_i = \sum_{j<i}\alpha_{ij}$ \\
-$\gamma_{ij}$ & coupling coefficients (strict lower triangular) \\
-$\gamma$      & diagonal coefficient; governs L-stability \\
-$d_i$         & weights for the autonomous extension ($\partial f/\partial t$) \\
-$m_i$         & quadrature weights for the order-4 solution \\
-$\hat{m}_i$   & quadrature weights for the embedded order-3 error estimate \\
+$\alpha_{ij}$ & weights with which stage $i$ combines all earlier stages $k_j$, $j<i$ \\
+$c_i$         & time abscissa of stage $i$ inside the step, with $c_i = \sum_{j<i}\alpha_{ij}$ \\
+$\gamma_{ij}$ & weights with which the linear-solve correction at stage $i$ uses earlier stages \\
+$\gamma$      & common diagonal coefficient appearing in the iteration matrix $W$ \\
+$d_i$         & weights that pick up the explicit time dependence of $f$ via $\partial f/\partial t$ \\
+$m_i$         & weights combining the stages into the advanced solution $x_{n+1}$ \\
+$\hat{m}_i$   & weights combining the stages into the embedded order-3 estimator used for step control \\
 \bottomrule
 \end{tabular}
 \caption{Rosenbrock method coefficients.}
@@ -274,11 +357,12 @@ right-hand-side evaluations are required for output points.
 
 Rosenbrock methods are competitive with BDF on stiff problems whose
 Jacobian is cheap relative to the right-hand side, and they avoid
-the multistep restart cost after events. They are therefore the
-recommended stiff method for systems with frequent state
-discontinuities on medium sized problems.
+the order-rebuilding cost incurred by the multistep methods after an
+event. Rosenbrock4 is therefore the recommended stiff method for
+systems with frequent state discontinuities at moderate state
+dimension.
 
-## Tsitouras ($\mathtt{tsit5}$)
+### Tsitouras ($\mathtt{tsit5}$)
 
 Tsitouras is the explicit Runge-Kutta pair of order $5(4)$ derived
 by @TSITOURAS2011770 under the simplifying assumption that the first
@@ -301,11 +385,11 @@ than seven. The method coefficients are listed in Table \ref{tab:tsit5-coeffs}.
 \toprule
 Symbol & Meaning \\
 \midrule
-$a_{ij}$    & Runge-Kutta stage weights (strict lower triangular, first column zero) \\
-$c_i$       & stage time abscissae, $c_i = \sum_{j<i} a_{ij}$ \\
-$b_i$       & quadrature weights for the order-5 solution; $b_7 = 0$ \\
-$\hat{b}_i$ & quadrature weights for the embedded order-4 estimate; $\hat{b}_7 \ne 0$ \\
-$k_i$       & stage derivatives, $k_i = f\!\left(x_n + h_n\sum_{j<i}a_{ij}k_j,\; t_n + c_i h_n\right)$ \\
+$a_{ij}$    & weights with which stage $i$ combines earlier stages (lower triangular; first column is zero) \\
+$c_i$       & time abscissa of stage $i$ inside the step, with $c_i = \sum_{j<i} a_{ij}$ \\
+$b_i$       & weights combining the stages into the advanced order-5 solution; $b_7 = 0$ \\
+$\hat{b}_i$ & weights combining the stages into the embedded order-4 estimator; $\hat{b}_7 \ne 0$ \\
+$k_i$       & right-hand side at stage $i$: $k_i = f\!\left(x_n + h_n\sum_{j<i}a_{ij}k_j,\; t_n + c_i h_n\right)$ \\
 \bottomrule
 \end{tabular}
 \caption{Tsit5 method coefficients.}
@@ -335,10 +419,6 @@ amount of integration per right-hand-side call of the four methods
 considered here. It is the appropriate choice for non-stiff
 problems whose right-hand side is expensive to evaluate.
 
-# Common solver infrastructure
-
-The following machinery is shared across all four methods.
-
 ## Adaptive step-size control
 
 The error estimate $e_n$ delivered by each method is reduced to a
@@ -354,18 +434,20 @@ scalar through the weighted root-mean-square norm
 \end{equation}
 in which $w_{n,j}$ is a per-component tolerance combining an
 absolute floor $\mathtt{atol}$ and a relative scale
-$\mathtt{rtol}\,|x^{\mathrm{ref}}_{n,j}|$. Dividing $e_{n,j}$ by
-$w_{n,j}$ before squaring puts components of vastly different
-magnitudes on equal footing and removes the choice of physical
-units from the acceptance test. The reference state
-$x^{\mathrm{ref}}_n$ from which the relative scale is computed is
-the Nordsieck predictor in BDF/NDF and the component-wise maximum
-$\max(|x_n|, |x_{n+1}|)$ in the one-step methods; both conventions
-are standard and rarely alter the norm appreciably. A step is
-accepted whenever $\| e_n \|_{\mathrm{WRMS}} \le 1$.
+$\mathtt{rtol}\,|x^{\mathrm{ref}}_{n,j}|$. Normalising $e_{n,j}$ by
+$w_{n,j}$ before squaring places components of widely differing
+magnitudes on a common scale and removes the dependence of the
+acceptance test on the physical units of the state. The reference
+state $x^{\mathrm{ref}}_n$ that enters the relative term is the
+Nordsieck predictor in BDF/NDF and the component-wise maximum
+$\max(|x_n|, |x_{n+1}|)$ in the single-step methods; the two choices
+are both standard and produce numerically indistinguishable values
+of the norm in practice. A step is accepted when
+$\| e_n \|_{\mathrm{WRMS}} \le 1$.
 
-The proposed next step size is set by an order-aware controller of
-the type analysed in @hairer2010solving,
+The next step size $h_{n+1}$ is selected by a control law of the
+type analysed in @hairer2010solving, applied to the WRMS norm of the
+current step and, when active, the WRMS norm of the previous step,
 \[
   h_{n+1} = h_n \min \left\{\rho_{\max}, \max\left(\rho_{\min}, S\,
         \| e_n \|_{\mathrm{WRMS}}^{-1/(p+1)}
@@ -373,53 +455,76 @@ the type analysed in @hairer2010solving,
         \right) \right\},
 \]
 with safety factor $S < 1$, growth limits $\rho_{\min}, \rho_{\max}$,
-and PI-filter coefficient $\beta \in [0, 1]$. The multistep
-methods use $\beta = 0$ (I-controller); the single-step methods use
-$\beta > 0$ to damp high-frequency oscillations of $h_n$, following
-the PI control of @hairer2010solving.
+and a memory coefficient $\beta \in [0, 1]$. The case $\beta = 0$ is
+the standard integral or I-controller, in which $h_{n+1}$ depends on
+the current error norm only; CppODE uses this form for the multistep
+methods, where the Nordsieck representation already smooths the
+underlying signal. The case $\beta > 0$ is the proportional-integral
+(PI) controller of @hairer2010solving; the single-step methods adopt
+this form to damp the high-frequency oscillations in $h_n$ that a
+pure I-controller can otherwise produce on stiff or
+near-singular problems.
 
 ## Dense output
 
-Output requested at user-specified time points falling between two
-accepted steps is served by Hermite interpolation that consumes
-only information already produced for the step. No additional
-right-hand-side evaluations are performed for dense output. The
-local interpolation order matches the order of the step (order $4$
-for Rosenbrock4 and Tsit5; the multistep methods reuse the
-Nordsieck history, which carries derivatives up to order $q$).
+User-requested output times do not in general coincide with the
+adaptive step grid produced by the controller. Each accepted step
+therefore carries a local interpolant that allows evaluation of
+$x(t)$ at any time inside that step at the cost of polynomial
+arithmetic only. CppODE uses Hermite interpolation, which constrains
+both values and derivatives of the interpolant at the step
+endpoints. This form attains the same order as the underlying step
+without recourse to data outside the step: state and right-hand side
+at the two endpoints, augmented by stage values for the single-step
+methods. No additional right-hand-side evaluations are required for
+dense output. The local interpolation order is $4$ for Rosenbrock4
+and Tsit5; the multistep methods reuse the Nordsieck history, which
+carries derivatives up to order $q$.
 
 ## Automatic Forward sensitivities
 
 ### Dual-number arithmetic
 
-Forward-mode automatic differentiation propagates derivative
-information alongside the primal computation without forming finite
-differences or symbolic expressions. The fundamental object is a
-\emph{dual number}
+Parameter sensitivities of the trajectory are computed by forward-mode
+automatic differentiation rather than by finite differences (whose
+truncation and round-off errors require multiple integrations to
+control) or by symbolic derivation of the sensitivity equations
+(whose intermediate expressions grow rapidly with the dimension of
+$f$). Forward-mode AD augments every floating-point scalar in the
+computation with an additional component that records its directional
+derivative with respect to a chosen parameter direction. The
+arithmetic operations and elementary functions are overloaded to act
+on this augmented type so that the chain rule is applied
+automatically; the C++ source that evaluates $f$ is then compiled
+unchanged for both the primal and the sensitivity computation.
+
+The augmented type is the \emph{dual number}
 \[
   \tilde x = x + x'\,\varepsilon,
   \qquad \varepsilon^2 = 0,\quad \varepsilon \ne 0,
 \]
 where $x \in \mathbb{R}$ is the primal value and $x' \in \mathbb{R}$
-is its directional derivative with respect to some chosen seed
-direction. Arithmetic on dual numbers follows from the truncated
-Taylor expansion: for two dual numbers
+is the directional derivative. Treating $\tilde x$ as the first two
+terms of a Taylor expansion in $\varepsilon$ and discarding all
+higher powers (which vanish by $\varepsilon^2 = 0$), the arithmetic
+of dual numbers follows from the standard rules of calculus: for
 $\tilde x = x + x'\varepsilon$ and $\tilde y = y + y'\varepsilon$,
 \[
   \tilde x + \tilde y = (x+y) + (x'+y')\varepsilon,
   \qquad
   \tilde x \cdot \tilde y = xy + (xy' + x'y)\varepsilon,
 \]
-and for a smooth scalar function $g$,
+and for any smooth scalar function $g$,
 \[
   g(\tilde x) = g(x) + g'(x)\,x'\,\varepsilon.
 \]
-The chain rule is therefore implemented \emph{by construction}: any
+The chain rule is therefore intrinsic to the algebra: any
 composition of dual-number operations automatically tracks the
-derivative of the composed function. No code transformation or
-symbolic manipulation is required; the same source code that
-evaluates $f$ over $\mathbb{R}$ evaluates both $f$ and
-$\partial f/\partial x$ when called over the dual algebra.
+derivative of the composed function, and no code transformation or
+symbolic manipulation is required. The same source that evaluates
+$f$ over $\mathbb{R}$ evaluates both $f$ and $\partial f/\partial x$
+when called with dual-number inputs, by virtue of the overloaded
+operators and elementary functions.
 
 ### Sensitivity equations via dual evaluation
 
@@ -470,17 +575,20 @@ automatically.
 
 ### Seeding: from $S_p$ to $S_\theta$
 
-In practice the solver is differentiated not with respect to the
-raw parameter vector $p$ but with respect to a higher-level vector
-$\theta \in \mathbb{R}^M$ that influences both the dynamic
-parameters $p_{\mathrm{dyn}}$ and the initial condition
-$x_0 = p_{\mathrm{init}}(\theta)$. Define
+In many applications the natural parameters of inference are not the
+raw entries of $p$ but a higher-level vector $\theta \in \mathbb{R}^M$
+to which both the dynamic parameters $p_{\mathrm{dyn}}$ and the
+initial condition $x_0 = p_{\mathrm{init}}(\theta)$ are linked
+through a user-defined reparametrisation $p = \Phi(\theta)$. The
+quantity of interest is then
 \[
-  S_\theta = \frac{\partial x}{\partial \theta} \in \mathbb{R}^{n_x \times M}.
+  S_\theta = \frac{\partial x}{\partial \theta}
+           \in \mathbb{R}^{n_x \times M},
 \]
-By the chain rule,
-$S_\theta = S_p\,\partial p/\partial\theta$,
-and substituting into \eqref{eq:sensitivity-p} gives
+related to $S_p$ by the chain rule
+$S_\theta = S_p\,\partial p / \partial\theta$. Substituting this
+relation into \eqref{eq:sensitivity-p} yields the evolution equation
+for $S_\theta$ directly,
 \begin{equation}
   \dot S_\theta
     = \frac{\partial f}{\partial x}\,S_\theta
@@ -490,11 +598,14 @@ and substituting into \eqref{eq:sensitivity-p} gives
   S_\theta(t_0) = \frac{\partial p_{\mathrm{init}}}{\partial \theta}.
   \label{eq:sensitivity-theta}
 \end{equation}
-The matrix $\partial p/\partial\theta$ is the \emph{seed matrix},
-supplied by the user and fixed for the duration of the integration.
-Choosing $\partial p/\partial\theta = I_{n_p}$ recovers
-$S_\theta = S_p$; a non-trivial seed allows the sensitivity
-computation to be carried out in any $M$ directions of interest.
+The matrix $\partial p / \partial\theta$ is the \emph{seed matrix},
+supplied by the user (through the \texttt{sens1ini} argument of
+\texttt{solveODE()}) and held fixed for the duration of the
+integration. The choice $\partial p/\partial\theta = I_{n_p}$
+recovers the canonical case $S_\theta = S_p$; any other choice
+carries the sensitivity computation in $M$ specified directions of
+$\theta$-space at the same cost as integrating $M$ additional
+states alongside $x$.
 
 ### Dual-number aware error norm
 
@@ -536,28 +647,27 @@ of the state norm and the $M$ column norms,
   \label{eq:wrms-sens}
 \end{equation}
 
-The choice of the maximum rather than the flat WRMS is deliberate.
-A flat WRMS divides by the total component count $n_x(1+M)$ and
-therefore averages the squared errors across directions in $\theta$:
-a large error in one sensitivity column $k_0$ can be diluted by
-$M$ small errors in the remaining columns and the state, which
-would let the integrator take an over-aggressive step in the
-direction $k_0$. The maximum convention prevents this dilution and
-forces every direction in $\theta$ to satisfy the requested
-tolerance on its own. Since the controller still operates on a
-single scalar, the cost is at most a constant overhead in the
-number of accepted steps, and the control-law parameters
-($S, \rho_{\min}, \rho_{\max}, \beta$) need no adjustment.
+The maximum-of-norms convention is preferred to the flat WRMS,
+which divides by the total component count $n_x(1+M)$ and therefore
+averages the squared errors across directions in $\theta$: a large
+error in one sensitivity column $k_0$ can be obscured by $M$ small
+errors in the remaining columns and the state, leading the
+integrator to accept a step that is too large in the direction
+$k_0$. The maximum norm prevents this dilution and forces each
+direction in $\theta$ to satisfy the requested tolerance
+independently. Because the controller still operates on a single
+scalar, the cost relative to the flat norm is a constant overhead in
+the number of accepted steps, and the control-law parameters
+($S, \rho_{\min}, \rho_{\max}, \beta$) require no adjustment.
 
-The same WRMS structure also governs the Newton convergence test
-in BDF/NDF: a Newton iterate is accepted only when the iteration
-correction passes \eqref{eq:wrms-sens}, with the maximum again
-taken over state and per-column sensitivity components. The
-non-linear iteration therefore converges sensitivity-uniformly: a
-tight Newton solve in the primal does not allow a loose solve in
-some sensitivity direction, and a parameter direction that drives
-the correction up will trigger more Newton iterations or a step-size
-reduction even when the primal residual is already small.
+The same WRMS structure governs the Newton convergence test in
+BDF/NDF. A Newton iterate is accepted when the iteration correction
+satisfies \eqref{eq:wrms-sens}, with the maximum again taken over
+the state and the per-column sensitivity components. Convergence in
+the primal therefore does not allow a loose solve in any sensitivity
+direction; a parameter direction that drives the correction norm up
+triggers either further Newton iterations or a step-size reduction,
+even when the primal residual is already small.
 
 ## Events and restarts
 
@@ -591,42 +701,60 @@ events and is the reason Rosenbrock4 is the recommended stiff
 method when discontinuities are common, even though BDF/NDF is the
 default elsewhere.
 
-### Sensitivity transport: the geometric picture
+### Sensitivity transport across a discontinuity
 
-The discontinuous map $g$ acts on the trajectory $x(t, \theta)$ at
-the firing time $t^{*}(\theta)$. The sensitivity $S_\theta$ at the
-\emph{next grid time} after the event is therefore not simply
-$(\partial g/\partial x)\,S_\theta^{-}$ evaluated at the grid time:
-the firing time itself depends on $\theta$, and shifting it by
-$\delta t^{*}$ also shifts the trajectory by $f^{-}\,\delta t^{*}$
-on the pre-event side and by $f^{+}\,\delta t^{*}$ on the
-post-event side. Two distinct contributions therefore compose:
+The reset map $g$ acts on the trajectory $x(t, \theta)$ at the firing
+time $t^{*}(\theta)$. The naive update of the sensitivity, by the
+linearisation of $g$ around the pre-event state,
+$S_\theta^{+} = (\partial g/\partial x)\,S_\theta^{-}$, is incorrect
+in the presence of an event because the firing time itself depends
+on $\theta$. A perturbation $\delta t^{*}$ of the firing time induces
+short integrations of $\dot x = f$ on either side of the event, with
+$f$ taking different values before and after the reset. Denote by
+$f^{-}$ the right-hand side just before the reset, evaluated at
+$x^{-}$, and by $f^{+}$ the right-hand side just after the reset,
+evaluated at $g(x^{-}, t^{*})$. The sensitivity at the first grid
+time following the event then receives two contributions in
+addition to the linearised reset:
 
-1. The pre-event flow carries $x^{-}$ along $\dot x = f^{-}$ from
-   the grid time $t_*^{(0)} := \mathrm{scalar}(t^{*})$ to the
-   $\theta$-perturbed event time $t^{*}$, a distance
-   $\delta t^{*} = t^{*} - t_*^{(0)}$ that has zero scalar part but
-   non-zero $\theta$-derivatives;
-2. The post-event flow carries $g(x^{-}, t^{*})$ along
-   $\dot x = f^{+}$ from $t^{*}$ back to the next grid time, again
-   over a $\theta$-dependent distance.
+1. \emph{Pre-event drift.} The pre-event trajectory $x^{-}$ flows
+   along $\dot x = f^{-}$ from the grid time
+   $t_*^{(0)} := \mathrm{scalar}(t^{*})$ to the $\theta$-perturbed
+   firing time $t^{*}$, over a displacement
+   $\delta t^{*} = t^{*} - t_*^{(0)}$ whose scalar part vanishes but
+   whose $\theta$-derivatives do not.
+2. \emph{Post-event drift.} The reset state $g(x^{-}, t^{*})$ then
+   flows along $\dot x = f^{+}$ from $t^{*}$ back to the grid time
+   over the negative of the same displacement.
 
-If these two shifts are ignored and the sensitivity is updated by
-the naive expression $S_\theta^{+} = (\partial g/\partial x)\,
-S_\theta^{-}$, the result is wrong by a term of size
-$f^{\pm}\,(\partial t^{*}/\partial \theta)$ on each side. The
-correct first-order update absorbs both shifts into the saltation
-correction discussed at the end of this section.
+Both shifts contribute terms of order
+$f^{\pm}\,(\partial t^{*}/\partial \theta)$ to the sensitivity at the
+grid time. The correct first-order update reproduces a
+closed-form expression known as the \emph{saltation matrix},
+recovered below as a consequence of the construction.
 
-CppODE realises the correction purely through the dual-number
-arithmetic of the previous section, augmented by a Heun transport.
-Every quantity along the way is evaluated as a dual number: the
-right-hand side $f$, the event function $g_e$, the reset map $g$,
-and the time arguments themselves. The Heun sandwich therefore
-transports first-order \emph{and} second-order sensitivities in
-lockstep with the state. For pure-double integration (no AD), no
-transport is needed: the reset is applied as a plain map and the
-two sub-sections below are skipped.
+CppODE realises this correction by replacing the bare reset with a
+forward-drift-reset-backward-drift sequence, evaluated in
+dual-number arithmetic. Each drift is integrated by Heun's method, a
+two-stage second-order Runge-Kutta scheme also known as the improved
+Euler method, which averages the right-hand side at the start and
+the end of the interval. Applied to dual-typed input the average is
+a pure arithmetic operation: the scalar component of $x$ at the grid
+time is unchanged (since the displacement $\delta t^{*}$ has scalar
+part zero), but the $\theta$-derivatives of the displacement
+propagate into the state. A single Euler step would suffice for
+first-order sensitivities, but its truncation error of order
+$\delta t^{*\,2}$ contributes a non-vanishing second-order
+$\theta$-derivative through the dual algebra and would distort the
+Hessian. Heun's method has truncation error
+$O(\delta t^{*\,3})$ and recovers the correct second-order
+sensitivities. The reset map $g$ is applied between the two drifts
+in the same dual-number algebra, so its first- and second-order
+derivatives propagate automatically.
+
+When AD is disabled (pure-double integration), no transport is
+required: $g$ is applied to the state as an ordinary function, and
+the remainder of this section may be skipped.
 
 The construction differs in detail between time-triggered and
 root-triggered events, because the firing-time perturbation
@@ -639,26 +767,28 @@ function theorem.
 
 ### Time-triggered events
 
-For an event at $t = t_e(\theta)$, the integrator advances on the
-scalar grid $t_e^{(0)} := \mathrm{scalar}(t_e)$ and treats the dual
-residual
+When the firing time is supplied directly as a closed-form
+expression $t_e(\theta)$, the chain-rule derivatives of $t_e$ with
+respect to $\theta$ are immediately available. The integrator
+advances on the scalar grid time $t_e^{(0)} := \mathrm{scalar}(t_e)$
+and treats the small displacement
 \begin{equation}
   \delta t = t_e - t_e^{(0)},
   \qquad \mathrm{scalar}(\delta t) = 0,
   \label{eq:fixed-dt}
 \end{equation}
-as the directional perturbation of the firing time. Its first-order
-dual components carry $\partial t_e/\partial \theta_a$ and its
-second-order dual components carry $\partial^2 t_e/\partial \theta_a
-\partial \theta_b$, both inherited automatically from the user
-expression for $t_e(\theta)$. The state at $t_e^{(0)}$ is denoted
-$x^{-}$ and likewise carries $S_\theta$ in its first-order dual
-slots.
+as a dual number whose value is zero but whose first-order tangents
+are $\partial t_e/\partial \theta_a$ and whose second-order tangents
+are $\partial^2 t_e/\partial \theta_a \partial \theta_b$, both
+inherited automatically from the user-supplied expression for $t_e$.
+The state at the grid time $t_e^{(0)}$ is denoted $x^{-}$ and is
+itself a dual number that carries the pre-event sensitivities
+$S_\theta$ in its first-order tangent slots.
 
-The transport across the event is performed in three sub-steps: a
-forward Heun shift along $\dot x = f$ from $t_e^{(0)}$ to $t_e$,
-the reset map $g$ at $t_e$, and a backward Heun shift from $t_e$
-back to $t_e^{(0)}$,
+The transport across the event consists of three steps: a short Heun
+integration along $\dot x = f$ from $t_e^{(0)}$ forward to $t_e$, the
+reset map $g$ applied at $t_e$, and a short Heun integration backward
+from $t_e$ to $t_e^{(0)}$,
 \begin{equation}
 \begin{aligned}
   &\text{forward:}\quad
@@ -678,38 +808,37 @@ back to $t_e^{(0)}$,
 \end{aligned}
 \label{eq:fixed-heun}
 \end{equation}
-The forward leg evaluates $f$ at both endpoints
-($t_e^{(0)}$ and $t_e$); averaging the two evaluations is the
-standard Heun (improved Euler) rule and produces a result accurate
-to second order in $\delta t$. The reset $g$ is then applied on
-the event surface at $t_e$, and the backward leg is the symmetric
-Heun shift to the grid time, this time along the post-event flow.
+The forward leg evaluates the right-hand side at both endpoints of
+the short interval ($t_e^{(0)}$ and $t_e$); averaging the two values
+is the standard Heun update and produces a result accurate to
+second order in $\delta t$. The reset map $g$ is then applied on the
+event surface at $t_e$, and the backward leg is the same Heun rule
+shifted from $t_e$ back to the grid time, this time using the
+post-event right-hand side.
 
-A one-stage Euler shift would suffice for first-order sensitivities.
-This is because $\mathrm{scalar}(\delta t) = 0$ implies that the
-first-order dual content of $\delta t^{k}$ vanishes for every
-$k \ge 2$, so any term of order $\delta t^{2}$ or higher
-contributes nothing to $\partial x^{+}/\partial \theta$. Once
-second-order sensitivities are switched on, however, the situation
-changes: the curvature contribution
+A single Euler step would suffice for first-order sensitivities:
+since $\mathrm{scalar}(\delta t) = 0$, the powers $\delta t^{k}$ for
+$k \ge 2$ have zero first-order dual content, and any
+$O(\delta t^{2})$ term drops out of $\partial x^{+}/\partial \theta$.
+For second-order sensitivities, however, the curvature term
 \[
   \tfrac{1}{2}\bigl(J\,f + \partial f/\partial t\bigr)\,\delta t^{2},
   \qquad J = \partial f/\partial x,
 \]
 acquires a non-vanishing second-order dual component, because the
-square of $\delta t$ inherits a non-zero second derivative from the
-product of two first-derivative slots,
+square of $\delta t$ has a non-zero mixed derivative
 \[
   \frac{\partial^{2}(\delta t)^{2}}{\partial \theta_a\,\partial \theta_b}
     = 2\, \frac{\partial t_e}{\partial \theta_a}\,
           \frac{\partial t_e}{\partial \theta_b},
 \]
-even though both its value and its first derivatives are zero. The
-Heun midpoint absorbs the curvature term implicitly through the
-second right-hand-side evaluation at the shifted state \emph{and}
-the shifted time. The time argument in $f_2$ and $\tilde f_2$ is
-essential: omitting it would lose the
-$\tfrac{1}{2}(\partial f/\partial t)\,\delta t^{2}$ part for
+despite both its value and its first derivatives being zero. The
+Heun midpoint absorbs this curvature term through the second
+right-hand-side evaluation at the shifted state \emph{and} the
+shifted time. The use of the dual-typed time argument $t_e$ rather
+than $t_e^{(0)}$ alone in $f_2$ and $\tilde f_2$ is therefore
+essential: omitting it would discard the
+$\tfrac{1}{2}(\partial f/\partial t)\,\delta t^{2}$ contribution for
 systems with explicit time dependence, even though the time shift
 itself is invisible at the scalar level
 ($\mathrm{scalar}(\delta t) = 0$).
@@ -747,9 +876,12 @@ provides no information about how $t^{*}$ depends on $\theta$.
 
 #### The dual residual via the implicit function theorem
 
-Differentiating \eqref{eq:root-condition} once with respect to
-$\theta$ and using the chain rule gives, by the implicit function
-theorem,
+The implicit function theorem yields the derivative of
+$t^{*}(\theta)$ directly from the constraint $G(t^{*}, \theta) = 0$,
+without explicit inversion, provided $G$ is smooth at the crossing
+and $\partial G/\partial t \neq 0$ there. Differentiating
+\eqref{eq:root-condition} once with respect to $\theta$ and applying
+the chain rule gives
 \begin{equation}
   \frac{\partial t^{*}}{\partial \theta}
     = -\frac{G_\theta}{G_t}
@@ -758,10 +890,14 @@ theorem,
   \label{eq:dt-star-first}
 \end{equation}
 in which the denominator is the total time derivative
-$\dot g_e = \nabla_x g_e \cdot f + \partial g_e/\partial t$ along
-the trajectory and transversality of the crossing implies
-$\dot g_e \neq 0$. In dual form, \eqref{eq:dt-star-first} is
-realised as the quotient
+$\dot g_e = \nabla_x g_e \cdot f + \partial g_e/\partial t$ along the
+trajectory at the crossing. The non-vanishing-denominator condition
+$\dot g_e \neq 0$ is the geometric statement that the trajectory
+crosses the event surface transversally rather than grazing it; for
+grazing crossings the firing time itself is not differentiable in
+$\theta$ and a separate fallback applies, see the discussion of
+simultaneous events below. In dual-number form,
+\eqref{eq:dt-star-first} is realised as the quotient
 \begin{equation}
   \delta t^{*} = -\frac{g_e(x^{-}, t_*^{(0)})}
                        {\dot g_e(x^{-}, t_*^{(0)})},
@@ -813,15 +949,15 @@ of $\dot g_e$. Equation \eqref{eq:dt-star-second} touches only the
 second-order dual components of $\delta t^{*}$; the value and
 first-order parts are unchanged.
 
-#### Heun transport
+#### Forward-reset-backward sandwich
 
-With $\delta t^{*}$ in hand, the forward-reset-backward Heun
-procedure of \eqref{eq:fixed-heun} transports $x^{-}$ across the
-event surface to the grid time $t_*^{(0)}$, with $\delta t$
-replaced by $\delta t^{*}$ and the event time
-$t_e$ replaced by $t_*^{(0)} + \delta t^{*}$. The structure of the
-five right-hand-side evaluations and the role of the time
-arguments is identical.
+With $\delta t^{*}$ in hand, the same forward-reset-backward Heun
+procedure of \eqref{eq:fixed-heun} carries $x^{-}$ across the event
+to the grid time $t_*^{(0)}$, with $\delta t$ replaced by
+$\delta t^{*}$ and the event time $t_e$ replaced by
+$t_*^{(0)} + \delta t^{*}$. The five right-hand-side evaluations and
+the dual-typed time arguments play exactly the same role as in the
+time-triggered case.
 
 #### Simultaneous events
 
@@ -852,24 +988,31 @@ because the two saltation contributions $f^{\pm}\,(\partial t^{*}/\partial \thet
 
 ### Connection to the saltation matrix
 
-The first-order content of the construction above coincides with
-the classical saltation matrix of Filippov-type non-smooth
-dynamics, generalised to state resets,
+The standard treatment of sensitivity transport across a
+discontinuity yields a closed-form correction, the \emph{saltation
+matrix}, which generalises the bare reset Jacobian
+$\partial g/\partial x$ by an additive term accounting for the
+$\theta$-dependence of the firing time:
 \[
   S_\theta^{+} = \frac{\partial g}{\partial x}\,S_\theta^{-}
     + \left( \frac{\partial g}{\partial t}
              + \frac{\partial g}{\partial x}\,f^{-} - f^{+} \right)
-       \frac{\partial t^{*}}{\partial \theta},
+       \frac{\partial t^{*}}{\partial \theta}.
 \]
-both for fixed-time events ($\partial t^{*}/\partial \theta =
-\partial t_e/\partial \theta$ supplied directly) and for root events
-($\partial t^{*}/\partial \theta$ obtained from
-\eqref{eq:dt-star-first}). The implicit-function derivation chosen
-here extends naturally to second-order sensitivities, which the
-saltation-matrix form does not, and is the form realised in
+The first-order content of the dual-number
+forward-drift-reset-backward-drift construction reproduces this
+expression exactly, both for time-triggered events
+($\partial t^{*}/\partial \theta = \partial t_e/\partial \theta$
+supplied directly through the user expression for $t_e(\theta)$) and
+for root events ($\partial t^{*}/\partial \theta$ computed from
+\eqref{eq:dt-star-first}). The motivation for adopting the
+implicit-function and dual-number formulation in CppODE is that it
+extends naturally to second-order sensitivities, for which the
+classical saltation-matrix form has no closed-form analogue in the
+literature. The implementation resides in
 \texttt{cppode\_integrate\_times.hpp}.
 
-# Method selection
+## Method selection
 
 The recommended choice of method for the most common scenarios is
 summarised in Table \ref{tab:method-selection}.
@@ -899,6 +1042,252 @@ sizes that make the integration uneconomic, while an implicit
 method applied to a non-stiff problem incurs only a constant
 overhead per step. In the absence of prior knowledge of the
 spectrum of $J$, BDF/NDF is the safer default.
+
+# \texttt{CVODE()} \label{sec:cvode}
+
+The \texttt{CVODE()} entry point compiles a model against the
+system-installed SUNDIALS CVODE/CVODES library and exposes the
+result through the same \texttt{solveODE()} interface as
+\texttt{CppODE()}. The two backends therefore differ only in the
+numerical core; the codegen pipeline, the
+\texttt{events}, \texttt{forcings}, \texttt{rootfunc}, and
+\texttt{fixed} arguments, the shape of the returned object, and the
+column ordering of \texttt{parms} and \texttt{sens1ini} all behave
+identically. SUNDIALS ($\ge 6.0$) must be installed on the build host;
+KLU (used for sparse Jacobians) is detected the same way and is
+required when \texttt{sparse = TRUE}.
+
+## What is shared
+
+The symbolic Jacobian $J = \partial f / \partial x$ is derived through
+SymPy at code-generation time and emitted as analytic C++ exactly as
+in \texttt{CppODE()}. The KLU sparse linear solver path activates
+automatically when the Jacobian is sufficiently sparse and the
+SuiteSparse libraries were detected at install time; the dense
+fallback uses LAPACK. Forcing functions are PCHIP-interpolated,
+events apply a discontinuous reset to the state, and root events
+fire when a user-supplied scalar function crosses zero.
+
+## What differs
+
+\textbf{Sensitivity right-hand side.} CVODES integrates the
+analytic forward-sensitivity equation
+\begin{equation}
+  \dot S_k = J(x, p)\, S_k + \frac{\partial f}{\partial p_k},
+  \qquad k = 1, \dots, n_p,
+  \label{eq:cvodes-sens}
+\end{equation}
+directly. The in-tree backend recovers the same equation by
+evaluating $f$ on dual-typed state, cf.\ \eqref{eq:sensitivity-p}.
+The two formulations are mathematically equivalent. Numerically, the
+analytic right-hand side avoids the per-evaluation arena allocation
+required by the dual-number path and is preferable on large
+problems with a sparse $\partial f/\partial p$; conversely, the
+dual-number path benefits from SymPy's common-subexpression
+elimination on small problems for which integrator control flow
+dominates the cost.
+
+\textbf{Available methods.} CVODE provides only the multistep families.
+Calling \texttt{CVODE(method = "bdf")} or
+\texttt{CVODE(method = "adams")} selects between them; the single-step
+methods \texttt{rb4} and \texttt{tsit5} are not available through this
+backend. The cost-per-step accounting and the stability properties
+documented for the multistep methods in Section \ref{sec:cppode}
+therefore carry over directly.
+
+\textbf{Second-order sensitivities.} CVODES exposes only first-order
+forward sensitivities; the nested-dual construction has no counterpart
+in the SUNDIALS API. \texttt{CVODE()} therefore does not accept
+\texttt{deriv2 = TRUE}.
+
+\textbf{Saltation transport across events.} Events on
+\texttt{CVODE()} models use the same forward-drift-reset-backward-drift
+sequence as \texttt{CppODE()}, with the first-order saltation
+correction of equations \eqref{eq:fixed-heun} and
+\eqref{eq:dt-star-first}. The transport is performed in the
+generated glue layer rather than inside CVODES, since CVODES exposes
+no entry point at which the sensitivity solver can be informed of
+the discontinuity.
+
+\textbf{Reparametrisation seeding.} The chain-rule construction
+$S_\theta = S_p\,\partial p / \partial \theta$ of equation
+\eqref{eq:sensitivity-theta} is identical to the \texttt{CppODE()}
+case. \texttt{solveODE()} accepts the same \texttt{sens1ini} matrix
+shapes (legacy, full, and partial) and the same row-name conventions;
+only second-order $S_\theta$ is unavailable.
+
+## When to choose which backend
+
+\texttt{CVODE()} is appropriate when bit-for-bit reproducibility
+against the SUNDIALS reference implementation is required, when the
+deployment environment can satisfy the SUNDIALS dependency, or when
+the SUNDIALS KLU path is preferred over the in-tree sparse solver
+on large sparse problems. \texttt{CppODE()} is appropriate when the
+package must be self-contained, when second-order sensitivities are
+required, or when the single-step methods are required (Tsit5 for
+non-stiff problems with expensive right-hand sides; Rosenbrock4 for
+stiff problems with frequent events).
+
+# \texttt{funCpp()} \label{sec:funcpp}
+
+The \texttt{funCpp()} entry point compiles a system of algebraic
+expressions
+\begin{equation}
+  y_i = g_i(x_1, \dots, x_{n_x}, p_1, \dots, p_{n_p}),
+  \qquad i = 1, \dots, n_y,
+  \label{eq:funcpp}
+\end{equation}
+together with optional first- and second-order derivatives. No time
+integration is performed: each call evaluates $g$ at one or more
+rows of $(x, p)$ values and returns the corresponding outputs,
+Jacobians, and Hessians as requested. Two use cases motivate the
+function. The first is the evaluation of observation maps
+$y = g(x, p)$ that connect integrator output to data in
+likelihood-based inference; the mapping is applied at every
+observation point and its Jacobian enters the gradient of the
+log-likelihood. The second is the evaluation of reparametrisation
+Jacobians $\partial p / \partial \theta$ that supply the seed matrix
+in equation \eqref{eq:sensitivity-theta} when the dynamic model is
+fitted in a transformed parameter space.
+
+## Unified API and two computational paths
+
+Both values of the \texttt{derivMode} argument expose the same
+R-side methods: \texttt{func}, \texttt{jac}, \texttt{hess}, and the
+combined \texttt{evaluate}. They differ only in how the underlying C
+entry points are generated and dispatched.
+
+\begin{itemize}
+\item \verb|"symbolic"|: the analytic Jacobian and Hessian of $g$
+are derived by SymPy at code-generation time. The compiled module
+exposes \texttt{\_eval}, \texttt{\_jacobian} (when \texttt{deriv}),
+and \texttt{\_hessian} (when \texttt{deriv2}). When seeds are
+supplied, the chain rule is applied by BLAS-3 DGEMM through two
+\texttt{extern "C"} wrappers \texttt{\_chain\_jac} and
+\texttt{\_chain\_hess}, which delegate to the inline routines in
+\texttt{cppode\_chain\_blas.hpp}.
+
+\item \verb|"dual"| (default): no SymPy step. The compiled module
+exposes \texttt{\_eval}, \texttt{\_eval\_ad} (when \texttt{deriv}, on
+\texttt{cppode::dual<double, 0>}), and \texttt{\_eval\_ad2} (when
+\texttt{deriv2}, on the nested-dual alias
+\texttt{cppode::dual2nd<double, 0>}). The chain rule is applied
+inside the AD evaluation by seeding the dual-number tangent slots;
+the same source that evaluates $g$ over $\mathbb{R}$ then also
+evaluates the chain-ruled $\partial y/\partial\theta$ and
+$\partial^2 y/\partial\theta^2$.
+\end{itemize}
+
+The two paths are equivalent in exact arithmetic. The dual path
+avoids the SymPy expansion of $\partial g/\partial p$ and
+$\partial^2 g/\partial p^2$, whose intermediate expressions can grow
+sharply with the depth of the compositions in $g$. The symbolic
+path benefits from SymPy's common-subexpression elimination when
+the analytic derivatives remain compact.
+
+\begin{table}[h]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{} l l l @{}}
+\toprule
+Call                                       & dual path                                           & symbolic path \\
+\midrule
+\texttt{func(x, p)}                        & \texttt{\_eval}                                     & \texttt{\_eval} \\
+\texttt{jac(x, p)} (no seeds)              & \texttt{\_eval\_ad} with identity seed              & \texttt{\_jacobian} \\
+\texttt{jac(x, p, dX, dP)}                 & \texttt{\_eval\_ad} with user seeds                 & \texttt{\_jacobian + \_chain\_jac} \\
+\texttt{hess(x, p)} (no seeds)             & \texttt{\_eval\_ad2} with identity seed             & \texttt{\_hessian} \\
+\texttt{hess(x, p, dX, dP[, dX2, dP2])}    & \texttt{\_eval\_ad2} with all seeds                 & \texttt{\_hessian + \_chain\_hess} \\
+\texttt{evaluate(\ldots, deriv2 = FALSE)}  & one \texttt{\_eval\_ad}-pass                        & \texttt{\_eval + \_jacobian} (+ chain) \\
+\texttt{evaluate(\ldots, deriv2 = TRUE)}   & one \texttt{\_eval\_ad2}-pass                       & \texttt{\_eval + \_jacobian + \_hessian} (+ chain) \\
+\bottomrule
+\end{tabular}%
+}
+\caption{Dispatch within \texttt{funCpp()}. Both modes accept the same
+arguments and return arrays of the same shape; only the C entries
+called and the location of the chain-rule contraction differ.}
+\label{tab:funcpp-dispatch}
+\end{table}
+
+The combined entry point \texttt{evaluate()} is provided because in
+the dual path a single nested-dual evaluation produces the value,
+the first-order sensitivities, and the second-order sensitivities
+together; obtaining all three through separate calls to
+\texttt{func}, \texttt{jac}, and \texttt{hess} would repeat the
+underlying evaluation three times. In the symbolic path
+\texttt{evaluate()} simply combines the three independent C calls
+and applies the chain rule once.
+
+## Chain rule via dX, dP, dX2, dP2
+
+The seed arguments encode the Jacobian and (optionally) Hessian of an
+upstream parameter map $\Phi: \theta \mapsto (x, p)$:
+\begin{itemize}
+\item \texttt{dX[obs, name, theta]} -- $\partial x_i/\partial\theta_a$,
+indexed per observation row, per state name, per direction $\theta_a$.
+\item \texttt{dP[name, theta]} -- $\partial p_j/\partial\theta_a$,
+constant across observations.
+\item \texttt{dX2[obs, name, theta1, theta2]} -- second-order
+sensitivities $\partial^2 x_i/\partial\theta_a\partial\theta_b$,
+optional. Defaults to zero (linear / affine $\Phi$).
+\item \texttt{dP2[name, theta1, theta2]} -- second-order parameter
+sensitivities $\partial^2 p_j/\partial\theta_a\partial\theta_b$,
+optional. Defaults to zero.
+\end{itemize}
+Symbols listed in \texttt{fixed} have their seed rows zeroed before
+the contraction; symbols absent from the seeds also contribute zero,
+not an error.
+
+In the symbolic path the seeds are bundled into one matrix
+$S \in \mathbb{R}^{n_{\mathrm{obs}} \times n_{\mathrm{diff}} \times
+n_\theta}$ over the canonical-symbol basis
+$n_{\mathrm{diff}} = n_x + n_p$. The chain rule for the Jacobian is
+\begin{equation}
+  \frac{\partial y}{\partial\theta}\bigg|_{\mathrm{obs}}
+    = J\bigl(x_{\mathrm{obs}}, p\bigr) \cdot S_{\mathrm{obs}},
+\end{equation}
+implemented as one DGEMM per observation in
+\texttt{cppode::chain\_jac}. For the Hessian, two contributions
+combine,
+\begin{equation}
+  \frac{\partial^2 y}{\partial\theta\,\partial\theta^\top}\bigg|_{\mathrm{obs},\,o}
+    = S_{\mathrm{obs}}^\top \, H_o\bigl(x_{\mathrm{obs}}, p\bigr) \,
+      S_{\mathrm{obs}}
+    + \sum_{i} J_{o, i}\bigl(x_{\mathrm{obs}}, p\bigr) \,
+        S2_{\mathrm{obs}, i, \cdot, \cdot},
+\end{equation}
+implemented as two DGEMMs plus one DGEMV per (obs, output) in
+\texttt{cppode::chain\_hess}. The second term vanishes when $\Phi$ is
+affine (\texttt{dX2} and \texttt{dP2} unset).
+
+In the dual path the same contractions are obtained automatically by
+seeding the dual-number tangent slots. Each input scalar $x_i$ becomes
+\begin{equation*}
+  \tilde x_i = (x_i + \mathrm{d}X_{i,\cdot}\,\varepsilon_{\mathrm{in}})
+             + \bigl(\mathrm{d}X_{i,\cdot}
+                     + \mathrm{d}X2_{i,\cdot,\cdot}\,\varepsilon_{\mathrm{in}}\bigr)\,\varepsilon_{\mathrm{out}},
+\end{equation*}
+i.e.\ a nested dual whose inner tangent slots carry $\partial x_i/\partial\theta$
+and whose outer tangent slot $k$ is itself an inner dual carrying
+$\partial x_i/\partial\theta_k$ as its value and
+$\partial^2 x_i/\partial\theta_k\partial\theta$ as its inner tangents.
+The dual-number multiplication rule then propagates both the
+$S^\top H S$ and the $J \cdot S2$ terms in one nested-arithmetic
+evaluation; the inner-tangent values of $\tilde y$ are read out as
+$\partial y/\partial\theta$, and the cross slots $\tilde y[k][m]$ as
+$\partial^2 y/\partial\theta_k\partial\theta_m$.
+
+## Pass-through of unmodelled inputs
+
+The \texttt{attach.input} flag controls whether unmodelled columns of
+the input are appended to the output. When \texttt{attach.input =
+TRUE}, columns of the input matrix that do not appear among the named
+variables of \eqref{eq:funcpp} are passed through to the output
+unchanged: their value rows are copied, their Jacobian rows are zero
+for variables and the identity for parameters, and their Hessian rows
+are zero. The convention removes the need to extend $g$ with no-op
+identities when the observation map does not consume every column of
+the integrator output, and matches the row-name-driven
+partial-shape \texttt{sens1ini} convention used by \texttt{solveODE()}.
 
 \clearpage
 
@@ -945,7 +1334,7 @@ $q$ & {$\kappa_q$} & Step-size gain over BDF$q$ & Stability angle \\
 2 & -0.1111 & $+26\,\%$ & A-stable           \\
 3 & -0.0823 & $+26\,\%$ & $80^\circ$         \\
 4 & -0.0415 & $+12\,\%$ & $66^\circ$         \\
-5 &  0.0000 & ---       & $51^\circ$ ($=$ BDF5) \\
+5 &  0.0000 & $0\,\%$   & $51^\circ$ ($=$ BDF5) \\
 \bottomrule
 \end{tabular}
 \caption{NDF correction coefficients $\kappa_q$ adopted by CppODE,

@@ -176,7 +176,7 @@ public:
   // Slab-prime forwarder, mirroring the multistepper-side wrapper. Also
   // primes the dense wrapper's own m_x1 / m_x2 buffers (alternating state
   // slots used by the stepper as in/out across steps). They may still be
-  // size 0 here — initialize() / resize_impl re-prime once they grow.
+  // size 0 here: initialize() / resize_impl re-prime once they grow.
   void prepare_sensitivities(unsigned n_sens)
   {
     m_n_sens = n_sens;

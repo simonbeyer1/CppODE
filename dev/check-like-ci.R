@@ -5,7 +5,7 @@
 # Requirements:
 #   * pandoc on PATH or reachable via RSTUDIO_PANDOC (for CppODE_LotkaVolterra.Rmd)
 #   * vignettes/Methods.pdf exists (otherwise run dev/render-methods.R first)
-#   * ghostscript optional — without it --compact-vignettes=gs+qpdf simply
+#   * ghostscript optional: without it --compact-vignettes=gs+qpdf simply
 #     skips compaction instead of failing.
 
 # On Windows without pandoc on PATH: try the usual RStudio bundle locations.

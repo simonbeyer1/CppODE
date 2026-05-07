@@ -1,5 +1,5 @@
 /*
- KLU sparse LU solver wrapper for CppODE — raw CSC interface.
+ KLU sparse LU solver wrapper for CppODE: raw CSC interface.
 
  Takes raw int, double pointers (Ap, Ai, Ax) directly.
  Uses klu_refactor() after the first klu_factor() for maximum speed.
