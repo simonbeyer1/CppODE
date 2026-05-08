@@ -165,16 +165,11 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
   n_total_sens <- n_sens_initials + n_sens_params
 
   # --- Resolve nStack (compile-time AD slab width) ---
-  # Inf (default): heap-allocated AD (dual<double, 0> / F<double, 0>); width
-  #                determined at runtime from ncol(sens1ini). Incompatible with
-  #                deriv2 -- promoted to NULL silently in that case so the
-  #                default does not break second-order use.
+  # Inf (default): heap-allocated AD (dual<double, 0> / dual2nd<double, 0>);
+  #                width determined at runtime from ncol(sens1ini).
   # NULL:          stack-allocated with width = n_total_sens.
   # K (positive integer): stack with width K. The runtime per-call active
   #                sens dimension M = ncol(sens1ini) must satisfy M <= K.
-  if (deriv2 && is.numeric(nStack) && length(nStack) == 1L && is.infinite(nStack)) {
-    nStack <- NULL  # heap AD is incompatible with deriv2; fall back to stack default
-  }
   if (!deriv && is.numeric(nStack) && length(nStack) == 1L && is.infinite(nStack)) {
     nStack <- NULL  # heap AD is meaningful only with deriv = TRUE
   }
@@ -183,7 +178,6 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
     is_heap <- FALSE
   } else if (is.numeric(nStack) && length(nStack) == 1L && is.infinite(nStack) && nStack > 0) {
     if (!deriv) stop("'nStack = Inf' requires deriv = TRUE")
-    if (deriv2) stop("'nStack = Inf' is not supported with deriv2 = TRUE")
     nStack_width <- 0L  # routes codegen to <double, 0> (heap spec)
     is_heap <- TRUE
   } else if (is.numeric(nStack) && length(nStack) == 1L && is.finite(nStack) && nStack >= 0 &&
@@ -563,12 +557,12 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "        // First-order sensitivities (inner layer): seed from Phi' or identity",
       "        if (has_sens1ini) {",
       "          if (n_sens > 0) {  // M=0 under reparam: leave F default (no propagation)",
-      "            x[i].x().diff(0);  // allocate n_sens components",
+      sprintf("            x[i].x().diff(0%s);  // allocate n_sens components", dyn_arg),
       "            for (int av = 0; av < n_sens; ++av)",
       "              x[i].x().d(av) = sens1ini[IDX1(i, av)];",
       "          }",
       "        } else {",
-      "          x[i].x().diff(ai);  // identity: d(ai) = 1",
+      sprintf("          x[i].x().diff(ai%s);  // identity: d(ai) = 1", dyn_arg),
       "        }",
       "        // Second-order sensitivities (outer layer): seed from Phi'' or zeros.",
       "        // Note: .diff(idx) is DESTRUCTIVE (zeros tangents, sets [idx]=1,",
@@ -576,16 +570,16 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "        // depend, then use .d() (non-destructive accessor) to write values.",
       "        if (has_sens2ini) {",
       "          if (n_sens > 0) {",
-      "            x[i].diff(0);  // arm outer m_depend",
+      sprintf("            x[i].diff(0%s);  // arm outer m_depend", dyn_arg),
       "            for (int av1 = 0; av1 < n_sens; ++av1) {",
-      "              x[i].d(av1).diff(0);  // arm inner m_depend of m_diff[av1]",
+      sprintf("              x[i].d(av1).diff(0%s);  // arm inner m_depend of m_diff[av1]", dyn_arg),
       "              x[i].d(av1).x() = sens1ini[IDX1(i, av1)];  // first-order value",
       "              for (int av2 = 0; av2 < n_sens; ++av2)",
       "                x[i].d(av1).d(av2) = sens2ini[IDX2(i, av1, av2)];",
       "            }",
       "          }",
       "        } else {",
-      "          x[i].diff(ai);  // identity/allocate outer (inner m_depend stays false)",
+      sprintf("          x[i].diff(ai%s);  // identity/allocate outer (inner m_depend stays false)", dyn_arg),
       "        }",
       "      }",
       "    }"
@@ -649,26 +643,26 @@ CppODE <- function(rhs, events = NULL, rootfunc = NULL, fixed = NULL, forcings =
       "        // First-order (inner layer): seed from Phi' or identity fallback",
       "        if (has_sens1ini) {",
       "          if (n_sens > 0) {  // M=0 under reparam: leave F default",
-      "            full_params[param_index].x().diff(0);  // allocate n_sens components",
+      sprintf("            full_params[param_index].x().diff(0%s);  // allocate n_sens components", dyn_arg),
       "            for (int av = 0; av < n_sens; ++av)",
       "              full_params[param_index].x().d(av) = sens1ini[IDX1(global_idx, av)];",
       "          }",
       "        } else {",
-      "          full_params[param_index].x().diff(ai);  // identity: dp_i/dp_j = delta_ij",
+      sprintf("          full_params[param_index].x().diff(ai%s);  // identity: dp_i/dp_j = delta_ij", dyn_arg),
       "        }",
       "        // Second-order (outer layer): see note in state-seed block.",
       "        if (has_sens2ini) {",
       "          if (n_sens > 0) {",
-      "            full_params[param_index].diff(0);  // arm outer m_depend",
+      sprintf("            full_params[param_index].diff(0%s);  // arm outer m_depend", dyn_arg),
       "            for (int av1 = 0; av1 < n_sens; ++av1) {",
-      "              full_params[param_index].d(av1).diff(0);  // arm inner m_depend",
+      sprintf("              full_params[param_index].d(av1).diff(0%s);  // arm inner m_depend", dyn_arg),
       "              full_params[param_index].d(av1).x() = sens1ini[IDX1(global_idx, av1)];",
       "              for (int av2 = 0; av2 < n_sens; ++av2)",
       "                full_params[param_index].d(av1).d(av2) = sens2ini[IDX2(global_idx, av1, av2)];",
       "            }",
       "          }",
       "        } else {",
-      "          full_params[param_index].diff(ai);  // identity/allocate outer",
+      sprintf("          full_params[param_index].diff(ai%s);  // identity/allocate outer", dyn_arg),
       "        }",
       "      }",
       "    }"

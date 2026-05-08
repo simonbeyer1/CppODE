@@ -738,15 +738,25 @@ def _write_eval_ad2_function(buf, out_names, ctx, modelname):
         buf.write("        }\n")
     buf.write(f"        {modelname}_eval_one<AD>(x_ad.data(), p_ad.data(), y_ad.data());\n")
     buf.write("        for (int i = 0; i < n_out; ++i) {\n")
-    buf.write("            y[obs + (size_t)n_obs * i] = y_ad[i].scalar();\n")
+    # Read through a const reference so d1_at / dd_at pick the bounds-safe
+    # const overloads (which route through .d(.).d(.) and return a
+    # thread-local zero when the outer or inner tangent layer is non-depend).
+    # The non-const overloads use raw operator[] for armed-storage write
+    # semantics: they segfault for outputs that are constant in some/all
+    # parameters (e.g. `y = la` identity pass-through, where the inner
+    # tangent layer is never seeded because dP2 may be NULL) by dereferencing
+    # the inner tan_ == nullptr.
+    buf.write("            const AD& y_const = y_ad[i];\n")
+    buf.write("            y[obs + (size_t)n_obs * i] = y_const.scalar();\n")
     buf.write("            for (int k = 0; k < n_theta; ++k) {\n")
     buf.write("                // dy / d2y read from outer tangent slots (inline gradient and\n")
-    buf.write("                // Hessian rows). The redundant val_tan_block was removed; LU\n")
-    buf.write("                // and writeback both read from the canonical outer.tan_[k].\n")
-    buf.write("                dy[obs + (size_t)n_obs * (i + (size_t)n_out * k)] = y_ad[i].d1_at(k);\n")
+    buf.write("                // Hessian rows). Const overloads of d1_at / dd_at are bounds-safe;\n")
+    buf.write("                // the non-const ones assume armed storage and would deref the\n")
+    buf.write("                // inner tan_ for outputs constant in all parameters.\n")
+    buf.write("                dy[obs + (size_t)n_obs * (i + (size_t)n_out * k)] = y_const.d1_at(k);\n")
     buf.write("                for (int m = 0; m < n_theta; ++m) {\n")
     buf.write("                    d2y[obs + (size_t)n_obs * (i + (size_t)n_out * (k + (size_t)n_theta * m))]\n")
-    buf.write("                        = y_ad[i].dd_at(k, m);\n")
+    buf.write("                        = y_const.dd_at(k, m);\n")
     buf.write("                }\n")
     buf.write("            }\n")
     buf.write("        }\n")

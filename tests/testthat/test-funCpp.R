@@ -151,3 +151,24 @@ test_that("funCpp dual and symbolic agree under second-order chain rule", {
   expect_equal(out$dual$dy,  out$symbolic$dy,  tolerance = 1e-10)
   expect_equal(out$dual$d2y, out$symbolic$d2y, tolerance = 1e-9)
 })
+
+# -- dual + deriv2 + identity pass-through (regression) ------------------------
+# Repro of a previous segfault: when an output is just `param` (or `var`) the
+# inner Hessian seed is never armed. The non-const dual2nd::dd_at writeback
+# used raw operator[] and dereferenced the inner tan_ == nullptr. The codegen
+# now reads through a const view so dd_at takes the bounds-safe overload.
+
+test_that("funCpp dual deriv2 handles identity pass-through", {
+  trafo <- c(la = "la", y2 = "la^2 + b", zero = "0")
+  pars  <- list(la = 1.5, b = 0.7)
+  for (mode in c("dual", "symbolic")) {
+    f <- funCpp(trafo, parameters = c("la", "b"),
+                deriv = TRUE, deriv2 = TRUE, derivMode = mode,
+                compile = TRUE, modelname = paste0("xs_passthru_", mode))
+    out <- do.call(f$evaluate, c(pars, list(deriv2 = TRUE)))
+    if (mode == "dual") d <- out else s <- out
+  }
+  expect_equal(unname(d$y),   unname(s$y),   tolerance = 1e-12)
+  expect_equal(unname(d$dy),  unname(s$dy),  tolerance = 1e-10)
+  expect_equal(unname(d$d2y), unname(s$d2y), tolerance = 1e-10)
+})

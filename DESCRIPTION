@@ -33,7 +33,6 @@ SystemRequirements: C++17; Python (>= 3.8) with SymPy; optional system
     affected features error cleanly at runtime with install hints.
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
 Imports:
     reticulate
 Suggests:
@@ -46,3 +45,4 @@ Suggests:
     tidyr,
     dplyr
 VignetteBuilder: knitr, R.rsp
+Config/roxygen2/version: 8.0.0
