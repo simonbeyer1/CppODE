@@ -20,7 +20,8 @@ run_modes <- function(expr, parameters, x_vals, dP, dP2 = NULL) {
     f <- funCpp(expr, parameters = parameters,
                 deriv = TRUE, deriv2 = TRUE, derivMode = mode,
                 compile = TRUE,
-                modelname = paste0("d2prim_", digest::digest(c(expr, mode))))
+                modelname = paste0("d2prim_", mode, "_",
+                                   gsub("[^A-Za-z0-9]+", "_", paste(expr, collapse = "_"))))
     args <- as.list(x_vals)
     args$dP <- dP
     if (!is.null(dP2)) args$dP2 <- dP2
