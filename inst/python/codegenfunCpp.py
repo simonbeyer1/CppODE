@@ -417,6 +417,51 @@ def _strip_std_prefix(cpp):
     return cpp
 
 
+# =====================================================================
+# Common subexpression elimination
+#
+# funCpp expressions produced by upstream symbolic pipelines can be enormous
+# with heavy internal repetition (the same sub-tree appearing dozens of times
+# across outputs and within a single output). Without CSE every occurrence is
+# re-emitted verbatim, which blows up C++ compile time and, in AD mode, the
+# size of the dual expression-template tree walked once per observation.
+#
+# sp.cse lifts subexpressions shared across (or within) a group of expressions
+# into numbered temporaries materialised once. In the AD-templated `_eval_one`
+# helper the temp is stored into a `const T` local, which forces the dual ET to
+# evaluate at the temp boundary so later references are a scalar dual load
+# instead of a re-walk of the whole tree (mirrors codegenCppODE.py::_cse_temps).
+# =====================================================================
+
+def _cse_exprs(exprs, prefix='_cse_t'):
+    """Apply sympy CSE across a list of parsed sympy expressions.
+
+    Returns (temps, simplified): temps is a list of (Symbol, subexpr) in
+    dependency order; simplified is the rewritten expression list (same length
+    and order as the input). When sympy finds no shared structure temps is
+    empty and simplified == list(exprs), so callers fall back to direct
+    emission with zero overhead. No gating on expression count: a single giant
+    expression with internal repetition is the primary case CSE targets here.
+    """
+    syms = sp.numbered_symbols(prefix=prefix, cls=sp.Symbol)
+    return sp.cse(list(exprs), symbols=syms, optimizations='basic')
+
+
+def _parse_entry(expr, ctx):
+    """Parse a Jacobian/Hessian entry to a sympy expression.
+
+    Entries arrive as strings from derivSymb() (or already-parsed sympy).
+    Returns sp.Integer(0) for entries that are exactly zero so callers can
+    skip them before CSE, preserving the original sparse-emission behaviour.
+    """
+    if not isinstance(expr, str):
+        return expr
+    s = expr.strip()
+    if s == "0" or s == "0.0":
+        return sp.Integer(0)
+    return ctx._parse_expr(s)
+
+
 def _generate_cpp_code(exprs, ctx, jacobian, hessian, ad, deriv2, modelname, version):
     """Assemble the complete C++ source for the model.
 
@@ -524,8 +569,19 @@ def _write_eval_template(buf, exprs, out_names, ctx, modelname, ad):
         buf.write("    (void)p;\n")
     buf.write("\n")
 
-    for i, out_name in enumerate(out_names):
-        cpp_code = _strip_std_prefix(ctx.to_cpp(exprs[out_name]))
+    # CSE across all outputs: shared subexpressions are lifted into `const T`
+    # temps materialised once per call. For T=dual this collapses the ET tree
+    # walked per observation; for T=double it just shrinks the emitted source.
+    ordered = [exprs[nm] for nm in out_names]
+    temps, simplified = _cse_exprs(ordered, prefix='_cse_t')
+    for sym, sub in temps:
+        sub_cpp = _strip_std_prefix(ctx.to_cpp(sub))
+        buf.write(f"    const T {sym.name} = {sub_cpp};\n")
+    if temps:
+        buf.write("\n")
+
+    for i, expr in enumerate(simplified):
+        cpp_code = _strip_std_prefix(ctx.to_cpp(expr))
         buf.write(f"    y_local[{i}] = {cpp_code};\n")
 
     buf.write("}\n")
@@ -794,23 +850,29 @@ def _write_jacobian_function(buf, jacobian, out_names, ctx, modelname):
         buf.write("        const double* x_obs = x + obs * n_vars;\n")
         buf.write("        (void)x_obs;  // suppress unused warning\n")
 
+    # Collect non-zero (output, symbol) entries, then CSE across them: shared
+    # denominators / factors across df/dsym entries lift into `const double`
+    # temps materialised once per obs (temps depend on x_obs/p, so they live
+    # inside the obs loop).
+    entries = []  # (output_i, symbol_j, sympy_expr)
     for i, out_name in enumerate(out_names):
         if out_name not in jacobian:
             continue
-
-        jac_exprs = jacobian[out_name]
-        has_nonzero = False
-        for j, expr in enumerate(jac_exprs):
-            cpp_code = ctx.to_cpp(expr)
-            if cpp_code == "0.0" or cpp_code == "0":
+        for j, expr in enumerate(jacobian[out_name]):
+            e = _parse_entry(expr, ctx)
+            if e == 0:
                 continue
-            has_nonzero = True
-            # R column-major: obs + n_obs * (output + n_out * symbol)
-            buf.write(f"        jac[obs + (size_t)n_obs * ({i} + n_out * {j})] = {cpp_code};\n")
+            entries.append((i, j, e))
 
-        # Blank line between output blocks (not after the last one)
-        if has_nonzero and i < len(out_names) - 1:
-            buf.write("\n")
+    temps, simplified = _cse_exprs([e for _, _, e in entries], prefix='_cse_jt')
+    for sym, sub in temps:
+        buf.write(f"        const double {sym.name} = {ctx.to_cpp(sub)};\n")
+    if temps:
+        buf.write("\n")
+
+    for (i, j, _), e in zip(entries, simplified):
+        # R column-major: obs + n_obs * (output + n_out * symbol)
+        buf.write(f"        jac[obs + (size_t)n_obs * ({i} + n_out * {j})] = {ctx.to_cpp(e)};\n")
 
     buf.write("    }\n}\n\n")
 def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
@@ -843,26 +905,29 @@ def _write_hessian_function(buf, hessian, out_names, ctx, modelname):
         buf.write("        const double* x_obs = x + obs * n_vars;\n")
         buf.write("        (void)x_obs;  // suppress unused warning\n")
 
+    # Collect non-zero (output, sym1, sym2) entries, then CSE across them.
+    entries = []  # (output_i, sym1_j, sym2_k, sympy_expr)
     for i, out_name in enumerate(out_names):
         if out_name not in hessian:
             continue
-
-        hess_matrix = hessian[out_name]
-        has_nonzero = False
-        for j, hess_row in enumerate(hess_matrix):
+        for j, hess_row in enumerate(hessian[out_name]):
             for k, expr in enumerate(hess_row):
-                cpp_code = ctx.to_cpp(expr)
-                if cpp_code == "0.0" or cpp_code == "0":
+                e = _parse_entry(expr, ctx)
+                if e == 0:
                     continue
-                has_nonzero = True
-                # R column-major: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
-                buf.write(
-                    f"        hess[obs + (size_t)n_obs * ({i} + n_out * ({j} + n_symbols * {k}))] = {cpp_code};\n"
-                )
+                entries.append((i, j, k, e))
 
-        # Blank line between output blocks (not after the last one)
-        if has_nonzero and i < len(out_names) - 1:
-            buf.write("\n")
+    temps, simplified = _cse_exprs([e for _, _, _, e in entries], prefix='_cse_ht')
+    for sym, sub in temps:
+        buf.write(f"        const double {sym.name} = {ctx.to_cpp(sub)};\n")
+    if temps:
+        buf.write("\n")
+
+    for (i, j, k, _), e in zip(entries, simplified):
+        # R column-major: obs + n_obs * (output + n_out * (sym1 + n_symbols * sym2))
+        buf.write(
+            f"        hess[obs + (size_t)n_obs * ({i} + n_out * ({j} + n_symbols * {k}))] = {ctx.to_cpp(e)};\n"
+        )
 
     buf.write("    }\n}\n\n")
 
